@@ -157,16 +157,17 @@ if __name__ == '__main__':
 
 
 class TrustPackageTests(unittest.TestCase):
-    def test_trust_package_has_only_ca_and_pref(self):
+    def test_trust_package_is_flat_with_manifest_listing_ca_and_pref(self):
         data = cp.trust_package(b'P12DATA', 'pa<ss', 'Field Kit')
-        outer = zipfile.ZipFile(io.BytesIO(data))
-        names = outer.namelist()
-        self.assertEqual(names[0], 'MANIFEST/manifest.xml')
-        self.assertIn('Field_Kit_TRUST', outer.read('MANIFEST/manifest.xml').decode())
-        inner = zipfile.ZipFile(io.BytesIO(outer.read(names[1])))
-        files = sorted(n.split('/')[-1] for n in inner.namelist())
-        self.assertEqual(files, ['preference.pref', 'truststore-root.p12'])
-        pref = inner.read([n for n in inner.namelist() if n.endswith('.pref')][0]).decode()
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertEqual(sorted(z.namelist()), ['MANIFEST/manifest.xml', 'trust.pref', 'truststore-root.p12'])
+        manifest = z.read('MANIFEST/manifest.xml').decode()
+        self.assertIn('Field_Kit_TRUST', manifest)
+        self.assertIn('zipEntry="truststore-root.p12"', manifest)
+        self.assertIn('zipEntry="trust.pref"', manifest)
+        self.assertEqual(z.read('truststore-root.p12'), b'P12DATA')
+        pref = z.read('trust.pref').decode()
         self.assertIn('pa&lt;ss', pref)
+        self.assertIn('>cert/truststore-root.p12<', pref)
         self.assertNotIn('cot_streams', pref)
         self.assertNotIn('certificateLocation', pref)

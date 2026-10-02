@@ -153,32 +153,29 @@ def remote_address(record):
 def trust_package(truststore, password, name='PortableTAK'):
     """ATAK data package that only makes ATAK trust this server's CA (no user
     certificate, no connection). Import it once; then QR enrollment works.
-    Same layout as the server-generated ATAK packages (outer mission package
-    wrapping a config zip)."""
+
+    Flat layout, the one Sit(x) and TAK Server use for certificate packages: the
+    manifest lists the trust store and a preference file at the top level. (An
+    earlier nested layout had no inner manifest, so ATAK could file it away
+    without applying the trust.)"""
     import uuid
     from xml.sax.saxutils import escape as _escape
-    inner_dir = uuid.uuid4().hex
     pref = ("<?xml version='1.0' standalone='yes'?>\n<preferences>\n"
-            '  <preference version="1" name="com.atakmap.app_preferences">\n'
-            '    <entry key="caLocation" class="class java.lang.String">/storage/emulated/0/atak/cert/truststore-root.p12</entry>\n'
-            f'    <entry key="caPassword" class="class java.lang.String">{_escape(password)}</entry>\n'
-            '  </preference>\n</preferences>\n')
-    inner = io.BytesIO()
-    with zipfile.ZipFile(inner, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.writestr(f'{inner_dir}/truststore-root.p12', truststore)
-        z.writestr(f'{inner_dir}/preference.pref', pref)
-    outer_dir = uuid.uuid4().hex
+            '<preference version="1" name="com.atakmap.app_preferences">'
+            '<entry key="caLocation" class="class java.lang.String">cert/truststore-root.p12</entry>'
+            f'<entry key="caPassword" class="class java.lang.String">{_escape(password)}</entry>'
+            '</preference>\n</preferences>\n')
     label = re.sub(r'[^A-Za-z0-9_.-]', '_', name)[:40] + '_TRUST'
-    manifest = ('<MissionPackageManifest version="2">\n  <Configuration>\n'
-                f'    <Parameter name="uid" value="{uuid.uuid4()}"/>\n'
-                f'    <Parameter name="name" value="{_escape(label)}"/>\n'
-                '  </Configuration>\n  <Contents>\n'
-                f'    <Content ignore="false" zipEntry="{outer_dir}/trust.zip"/>\n'
-                '  </Contents>\n</MissionPackageManifest>\n')
+    manifest = ('<MissionPackageManifest version="2"><Configuration>'
+                f'<Parameter name="uid" value="{uuid.uuid4()}"/>'
+                f'<Parameter name="name" value="{_escape(label)}"/></Configuration><Contents>'
+                '<Content ignore="false" zipEntry="truststore-root.p12"/>'
+                '<Content ignore="false" zipEntry="trust.pref"/></Contents></MissionPackageManifest>\n')
     out = io.BytesIO()
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('truststore-root.p12', truststore)
+        z.writestr('trust.pref', pref)
         z.writestr('MANIFEST/manifest.xml', manifest)
-        z.writestr(f'{outer_dir}/trust.zip', inner.getvalue())
     return out.getvalue()
 
 

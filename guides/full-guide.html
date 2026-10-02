@@ -89,7 +89,8 @@ shortcuts appear: <b>Stop PortableTAK</b>, <b>PortableTAK Dashboard</b>, <b>Port
 </ol>
 <h3>Stop</h3>
 <p>Double-click <b>Stop PortableTAK</b> on the desktop. Wait for "You can remove the drive now", then unplug.
-(The dashboard's <i>Stop Server</i> button only pauses the TAK services; it does not release the drive.)</p>
+On a computer the dashboard shows this reminder instead of Start/Stop buttons: only the Start and Stop shortcuts can
+attach and release the drive.</p>
 <h3>WinTAK on the same computer</h3>
 <p>Create a user for WinTAK and use <b>WinTAK Setup</b> in the dashboard. WinTAK connects to the computer's address shown at start.</p>
 <h3>Start automatically</h3>
@@ -251,7 +252,7 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <tr><td>Windows: "No PortableTAK drive found"</td><td>Plug the drive in and wait until the PORTABLETAK drive appears in File Explorer, then start again.</td></tr>
 <tr><td>Windows: asks to restart</td><td>WSL was just installed. Restart, then start PortableTAK again.</td></tr>
 <tr><td>Windows: phones cannot connect</td><td>Phones must be on the same network as the computer. Changed Wi-Fi since starting? Use <b>Stop PortableTAK</b> and start it again so it uses the new address, then set phones up again (QR or package). Windows 11 22H2+ is required.</td></tr>
-<tr><td>ATAK: "The TAK Server's identity could not be verified" after QR setup</td><td>ATAK no longer trusts the drive (often after deleting servers in ATAK). Import the <b>ATAK Package</b> for that user instead (it carries everything ATAK needs), or import the ATAK Trust Package again and rescan.</td></tr>
+<tr><td>ATAK: "The TAK Server's identity could not be verified" after QR setup</td><td>ATAK no longer trusts the drive (deleting servers in ATAK can remove the trust). Import the <b>ATAK Trust Package (for QR)</b> again from Client Setup, then scan a fresh QR. Or import the <b>ATAK Package</b> for that user, which carries everything ATAK needs.</td></tr>
 <tr><td>Drone feed never shows Live</td><td>The controller must be on the server's network, with the IP address and port <b>8554</b> from the Video Feeds card and exactly the same stream name. Video only starts once the aircraft is flying.</td></tr>
 <tr><td>Windows: drive vanished from File Explorer</td><td>Normal while PortableTAK runs. Use <b>Stop PortableTAK</b> to get it back.</td></tr>
 <tr><td>Windows offers to format the drive, or macOS to initialize it</td><td>Always Cancel / Ignore. The Linux partition holds the server.</td></tr>
