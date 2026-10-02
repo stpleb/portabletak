@@ -976,3 +976,6 @@ Node02 installer 37fc39803f0a68d2a5c9736fa0663c786f3e7700dc66f59590f11019ca86d5c
 - 11 usbipd-win 5.3.0 MSIs (x64 1c984914…, arm64 efd7c4eb…, = GitHub release digests) on Start-here (.portabletak/windows); launcher installs the matching one with msiexec /qn, winget only as fallback.
 - GitHub: private repo https://github.com/stpleb/portabletak (gh 2.102 via Homebrew; owner signed in). Source only (no test credentials, keys, Sit(x) TLS zip); secret scan clean (only a fake key in a test). work/sync-repo.sh copies sources and pushes. Release assets (setup bundles, node package, build inputs) after the current rebuild.
 - Owner: Node01 power likely fixed (PiSugar replaced). Two Lexars: ASGARD (protected) + a spare usable for tests.
+- Final rebuild of 2026-10-02 (trust package flat, items 8–11): bundles Windows dbff0e47…, Mac b5cc2a84…; node package 8e395128…; build inputs d196a485… (172 MB). SanDisk Start-here refreshed (incl. usbipd MSIs; 47% used) and ejected.
+- GitHub Release v2026.10.02 (private repo): https://github.com/stpleb/portabletak/releases/tag/v2026.10.02 — Windows/Mac setup zips, node package, build inputs, SHA256SUMS.txt (all uploaded).
+- Node01 updated to node package 8e395128… (check PASS, rc 0, backup host-20261002_224659, autoload still on, API running). Node02 was off (not updated).
