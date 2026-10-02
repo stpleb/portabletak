@@ -1,0 +1,50 @@
+#!/bin/sh
+
+MOUNT="/mnt/asgard"
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT")"
+
+is_mounted()
+{
+    mount | grep -F " on $1 " >/dev/null 2>&1
+}
+
+unmount_one()
+{
+    TARGET="$1"
+
+    if is_mounted "$TARGET"; then
+        if ! umount "$TARGET"; then
+            echo "PORTABLETAK_UNPREPARE_ERROR=unable_to_unmount:$TARGET"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+if ! mount | grep -F " on $MOUNT " >/dev/null 2>&1; then
+    echo "PORTABLETAK_UNPREPARE_ERROR=cartridge_not_mounted"
+    return 10 2>/dev/null
+fi
+
+if [ -x "$ROOT/usr/bin/epmd" ] && is_mounted "$ROOT/dev"; then
+    chroot "$ROOT" /usr/bin/epmd -kill >/dev/null 2>&1 || true
+    sleep 1
+fi
+
+unmount_one "$ROOT/asgard/opentak/venv" || return 29 2>/dev/null
+unmount_one "$ROOT/asgard/opentak" || return 20 2>/dev/null
+unmount_one "$ROOT/var/lib/rabbitmq" || return 21 2>/dev/null
+unmount_one "$ROOT/asgard/postgres" || return 22 2>/dev/null
+unmount_one "$ROOT/tmp" || return 27 2>/dev/null
+unmount_one "$ROOT/run" || return 28 2>/dev/null
+
+unmount_one "$ROOT/dev/pts" || return 23 2>/dev/null
+unmount_one "$ROOT/proc" || return 24 2>/dev/null
+unmount_one "$ROOT/sys" || return 25 2>/dev/null
+unmount_one "$ROOT/dev" || return 26 2>/dev/null
+
+echo "PORTABLETAK_RUNTIME_PREPARED=0"
+echo "PORTABLETAK_CHROOT_MOUNTS=REMOVED"
+
+return 0 2>/dev/null

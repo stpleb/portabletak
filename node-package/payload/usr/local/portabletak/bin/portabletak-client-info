@@ -1,0 +1,78 @@
+#!/bin/sh
+
+. /usr/local/portabletak/lib/host-profile.sh
+
+MOUNT="/mnt/asgard"
+CONF="$MOUNT/config/tak-network.conf"
+OTS_CONF="$MOUNT/opentak/data/config.yml"
+
+INSTANCE="PortableTAK Server"
+SERVICE_IP=""
+SERVICE_DEV=""
+HTTPS_PORT="8443"
+ENROLL_PORT="8446"
+COT_SSL_PORT="8089"
+COT_TCP_PORT="8088"
+
+if [ -r "$MOUNT/portabletak/cartridge.conf" ]; then
+    INSTANCE="$(
+        awk -F= '
+            $1 == "PORTABLETAK_INSTANCE_NAME" {
+                sub(/^[^=]*=/, "")
+                print
+            }
+        ' "$MOUNT/portabletak/cartridge.conf" 2>/dev/null
+    )"
+fi
+
+if [ -r "$CONF" ]; then
+    SERVICE_IP="$(
+        awk -F= '
+            $1 == "ASGARD_SERVICE_IP" {
+                gsub(/"/, "", $2)
+                print $2
+            }
+        ' "$CONF" 2>/dev/null
+    )"
+
+    if [ -z "$SERVICE_IP" ]; then
+        SERVICE_IP="$PT_SERVICE_IP"
+    fi
+
+    SERVICE_DEV="$(
+        awk -F= '
+            $1 == "ASGARD_SERVICE_DEV" {
+                gsub(/"/, "", $2)
+                print $2
+            }
+        ' "$CONF" 2>/dev/null
+    )"
+fi
+
+if [ -r "$OTS_CONF" ]; then
+    VALUE="$(
+        awk '
+            /^[[:space:]]*OTS_MARTI_HTTPS_PORT:/ {
+                print $2
+            }
+        ' "$OTS_CONF" 2>/dev/null
+    )"
+
+    [ -n "$VALUE" ] && HTTPS_PORT="$VALUE"
+fi
+
+echo "PORTABLETAK_CLIENT_INSTANCE=$INSTANCE"
+echo "PORTABLETAK_CLIENT_SERVER=$SERVICE_IP"
+echo "PORTABLETAK_CLIENT_INTERFACE=$SERVICE_DEV"
+echo "PORTABLETAK_CLIENT_HTTPS_PORT=$HTTPS_PORT"
+echo "PORTABLETAK_CLIENT_ENROLL_PORT=$ENROLL_PORT"
+echo "PORTABLETAK_CLIENT_COT_SSL_PORT=$COT_SSL_PORT"
+echo "PORTABLETAK_CLIENT_COT_TCP_PORT=$COT_TCP_PORT"
+
+if [ -r "$MOUNT/opentak/data/ca/truststore-root.p12" ]; then
+    echo "PORTABLETAK_CLIENT_TRUSTSTORE=AVAILABLE"
+else
+    echo "PORTABLETAK_CLIENT_TRUSTSTORE=UNAVAILABLE"
+fi
+
+return 0 2>/dev/null

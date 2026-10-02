@@ -1,0 +1,99 @@
+#!/bin/sh
+
+RUNTIME="/tmp/portabletak"
+LOCK="$RUNTIME/lifecycle.lock"
+
+DETECT="/usr/local/portabletak/bin/portabletak-detect"
+DISCOVER="/usr/local/portabletak/bin/portabletak-discover"
+MOUNT_TOOL="/usr/local/portabletak/bin/portabletak-mount"
+START_TOOL="/usr/local/portabletak/bin/portabletak-start"
+
+start_completed_cartridge()
+{
+    DETECTION="$($DETECT)"
+    DETECTION_RC=$?
+
+    if [ "$DETECTION_RC" -ne 0 ]; then
+        echo "PORTABLETAK_AUTOLOAD_ERROR=cartridge_validation_failed"
+        return 20
+    fi
+
+    STATE="$(printf '%s\n' "$DETECTION" |
+        sed -n 's/^PORTABLETAK_PROVISIONING_STATE=//p' |
+        head -n 1)"
+
+    case "$STATE" in
+        existing|provisioned)
+            if [ ! -x "$START_TOOL" ]; then
+                echo "PORTABLETAK_AUTOLOAD_ERROR=start_tool_missing"
+                return 21
+            fi
+
+            echo "PORTABLETAK_ACTION=starting"
+            if ! "$START_TOOL"; then
+                echo "PORTABLETAK_AUTOLOAD_ERROR=start_failed"
+                return 22
+            fi
+            echo "PORTABLETAK_AUTOLOAD=RUNNING"
+            ;;
+        new|provisioning|failed|recovery)
+            echo "PORTABLETAK_AUTOLOAD=AWAITING_ACTION"
+            echo "PORTABLETAK_PROVISIONING_STATE=$STATE"
+            ;;
+        *)
+            echo "PORTABLETAK_AUTOLOAD_ERROR=invalid_provisioning_state"
+            return 23
+            ;;
+    esac
+}
+
+mkdir -p "$RUNTIME"
+
+exec 9>"$LOCK"
+
+if ! flock -n 9; then
+    echo "PORTABLETAK_AUTOLOAD=BUSY"
+    return 10 2>/dev/null
+fi
+
+if "$DETECT" >/dev/null 2>&1; then
+    echo "PORTABLETAK_AUTOLOAD=ALREADY_MOUNTED"
+    start_completed_cartridge
+    return $? 2>/dev/null
+fi
+
+DISCOVERY="$("$DISCOVER")"
+DISCOVERY_RC=$?
+
+if [ "$DISCOVERY_RC" -ne 0 ]; then
+    echo "PORTABLETAK_AUTOLOAD=NO_CARTRIDGE"
+    return 0 2>/dev/null
+fi
+
+DEVICE="$(printf '%s\n' "$DISCOVERY" |
+    sed -n 's/^PORTABLETAK_DEVICE=//p' |
+    head -n 1)"
+
+if [ -z "$DEVICE" ]; then
+    echo "PORTABLETAK_AUTOLOAD_ERROR=device_missing"
+    return 11 2>/dev/null
+fi
+
+echo "PORTABLETAK_AUTOLOAD=CARTRIDGE_FOUND"
+echo "PORTABLETAK_DEVICE=$DEVICE"
+echo "PORTABLETAK_ACTION=mounting"
+
+if ! "$MOUNT_TOOL"; then
+    echo "PORTABLETAK_AUTOLOAD_ERROR=mount_failed"
+    return 12 2>/dev/null
+fi
+
+if ! "$DETECT" >/dev/null 2>&1; then
+    echo "PORTABLETAK_AUTOLOAD_ERROR=post_mount_validation_failed"
+    return 13 2>/dev/null
+fi
+
+echo "PORTABLETAK_AUTOLOAD=READY"
+
+start_completed_cartridge
+return $? 2>/dev/null

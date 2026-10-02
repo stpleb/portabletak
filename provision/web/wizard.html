@@ -1,0 +1,28 @@
+<main id="provisionWizard" hidden>
+  <header><div><h1>PortableTAK Server</h1><div class="label">First-run setup</div></div></header>
+  <section class="card">
+    <h2>Create a new server</h2>
+    <p id="provisionMessage" role="status" aria-live="polite">Checking cartridge...</p>
+    <form id="provisionForm" style="display:grid;gap:10px;max-width:460px">
+      <label for="setupName">Server name</label>
+      <input id="setupName" name="instance_name" maxlength="64" value="PortableTAK Server" required autocomplete="off">
+      <p class="label">The initial administrator account is named administrator. Add TAK users from the Users page after setup.</p>
+      <label for="setupAdminPassword">Administrator password</label>
+      <input id="setupAdminPassword" name="administrator_password" type="password" minlength="8" maxlength="128" required autocomplete="new-password">
+      <label for="setupAdminConfirm">Confirm administrator password</label>
+      <input id="setupAdminConfirm" type="password" minlength="8" maxlength="128" required autocomplete="new-password">
+      <label for="setupClientPassword">Truststore / client certificate password</label>
+      <input id="setupClientPassword" name="client_password" type="password" minlength="8" maxlength="128" required autocomplete="new-password">
+      <label for="setupClientConfirm">Confirm certificate password</label>
+      <input id="setupClientConfirm" type="password" minlength="8" maxlength="128" required autocomplete="new-password">
+      <p class="label">Use different passwords, each 8–128 printable ASCII characters (12 or more is recommended; shorter is easier to guess). Client packages contain the certificate password.</p>
+      <details><summary>Network settings</summary><p>Service address: 10.41.250.10/32<br>Interface: br-ahwlan</p><p class="label">Advanced network settings are pending runtime validation.</p></details>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button id="setupValidate" type="button">Check settings</button>
+        <button id="setupSubmit" type="submit" class="primary" disabled>Create server</button>
+        <button id="setupRefresh" type="button">Refresh status</button>
+      </div>
+    </form>
+    <p class="label">Development preview. Server activation is unavailable in this build.</p>
+  </section>
+</main>

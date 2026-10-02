@@ -1,0 +1,25 @@
+#!/usr/bin/python3
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+from lifecycle_lock import OPERATIONS, run_locked
+from portabletak_provision import ProvisionError
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Run one PortableTAK operation under the shared lifecycle lock')
+    parser.add_argument('operation', choices=sorted(OPERATIONS))
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command = args.command[1:] if args.command[:1] == ['--'] else args.command
+    try:
+        return run_locked(args.operation, command)
+    except ProvisionError as error:
+        print('PORTABLETAK_ERROR=' + error.code, file=sys.stderr)
+        return 75 if error.code == 'lifecycle_busy' else 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

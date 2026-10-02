@@ -1,0 +1,190 @@
+#!/bin/sh
+
+CONF="/mnt/asgard/config/tak-network.conf"
+
+if [ -r "$CONF" ]; then
+    . "$CONF"
+else
+    case "$1" in
+        release|status)
+            # The cartridge may be gone (emergency stop after USB loss). Its
+            # address can still be released using the adapter's defaults.
+            PORTABLETAK_SERVICE_IP="10.41.250.10"
+            PORTABLETAK_SERVICE_PREFIX="32"
+            PORTABLETAK_SERVICE_DEV="br-ahwlan"
+            echo "PORTABLETAK_NETWORK_CONFIG=ADAPTER_DEFAULTS"
+            ;;
+        *)
+            echo "PORTABLETAK_NETWORK_ERROR=config_missing"
+            return 20 2>/dev/null
+            ;;
+    esac
+fi
+
+IP="${PORTABLETAK_SERVICE_IP:-$ASGARD_SERVICE_IP}"
+PREFIX="${PORTABLETAK_SERVICE_PREFIX:-$ASGARD_SERVICE_PREFIX}"
+DEV="${PORTABLETAK_SERVICE_DEV:-$ASGARD_SERVICE_DEV}"
+
+if [ -z "$IP" ] || [ -z "$PREFIX" ] || [ -z "$DEV" ]; then
+    echo "PORTABLETAK_NETWORK_ERROR=config_invalid"
+    return 20 2>/dev/null
+fi
+
+device_exists()
+{
+    ip link show dev "$DEV" >/dev/null 2>&1
+}
+
+is_local()
+{
+    ip -4 addr show dev "$DEV" 2>/dev/null |
+        grep -q "inet $IP/$PREFIX"
+}
+
+probe_collision()
+{
+    if is_local; then
+        return 1
+    fi
+
+    ip neigh del "$IP" dev "$DEV" >/dev/null 2>&1 || true
+    ping -c 1 -W 1 "$IP" >/dev/null 2>&1 || true
+
+    NEIGH="$(ip neigh show "$IP" dev "$DEV" 2>/dev/null)"
+
+    echo "$NEIGH" |
+        grep -Eq 'REACHABLE|STALE|DELAY|PROBE|PERMANENT'
+}
+
+do_status()
+{
+    echo "PORTABLETAK_SERVICE_IP=$IP"
+    echo "PORTABLETAK_SERVICE_PREFIX=$PREFIX"
+    echo "PORTABLETAK_SERVICE_DEV=$DEV"
+
+    if ! device_exists; then
+        echo "PORTABLETAK_NETWORK_DEVICE=MISSING"
+        echo "PORTABLETAK_SERVICE_IP_STATE=UNAVAILABLE"
+        return 2
+    fi
+
+    echo "PORTABLETAK_NETWORK_DEVICE=READY"
+
+    if is_local; then
+        echo "PORTABLETAK_SERVICE_IP_STATE=CLAIMED_LOCAL"
+    else
+        echo "PORTABLETAK_SERVICE_IP_STATE=RELEASED"
+    fi
+
+    return 0
+}
+
+do_check()
+{
+    if ! device_exists; then
+        echo "PORTABLETAK_NETWORK_DEVICE=MISSING"
+        return 21
+    fi
+
+    if is_local; then
+        echo "PORTABLETAK_SERVICE_IP_STATE=CLAIMED_LOCAL"
+        echo "PORTABLETAK_COLLISION_CHECK=NOT_REQUIRED"
+        return 0
+    fi
+
+    echo "PORTABLETAK_ACTION=collision_check"
+
+    if probe_collision; then
+        echo "PORTABLETAK_COLLISION=DETECTED"
+        echo "PORTABLETAK_CLAIM=BLOCKED"
+        return 22
+    fi
+
+    echo "PORTABLETAK_COLLISION=NONE"
+    echo "PORTABLETAK_CLAIM=SAFE"
+    return 0
+}
+
+do_claim()
+{
+    if ! device_exists; then
+        echo "PORTABLETAK_NETWORK_DEVICE=MISSING"
+        return 21
+    fi
+
+    if is_local; then
+        echo "PORTABLETAK_SERVICE_IP=ALREADY_CLAIMED"
+        return 0
+    fi
+
+    echo "PORTABLETAK_ACTION=collision_check"
+
+    if probe_collision; then
+        echo "PORTABLETAK_COLLISION=DETECTED"
+        echo "PORTABLETAK_CLAIM=BLOCKED"
+        return 22
+    fi
+
+    echo "PORTABLETAK_COLLISION=NONE"
+    echo "PORTABLETAK_ACTION=claiming_service_ip"
+
+    if ! ip addr add "$IP/$PREFIX" dev "$DEV"; then
+        echo "PORTABLETAK_NETWORK_ERROR=claim_failed"
+        return 23
+    fi
+
+    if ! is_local; then
+        echo "PORTABLETAK_NETWORK_ERROR=claim_verification_failed"
+        return 24
+    fi
+
+    echo "PORTABLETAK_SERVICE_IP=CLAIMED"
+    return 0
+}
+
+do_release()
+{
+    if ! device_exists; then
+        echo "PORTABLETAK_NETWORK_DEVICE=MISSING"
+        return 21
+    fi
+
+    if ! is_local; then
+        echo "PORTABLETAK_SERVICE_IP=ALREADY_RELEASED"
+        return 0
+    fi
+
+    echo "PORTABLETAK_ACTION=releasing_service_ip"
+
+    if ! ip addr del "$IP/$PREFIX" dev "$DEV"; then
+        echo "PORTABLETAK_NETWORK_ERROR=release_failed"
+        return 25
+    fi
+
+    if is_local; then
+        echo "PORTABLETAK_NETWORK_ERROR=release_verification_failed"
+        return 26
+    fi
+
+    echo "PORTABLETAK_SERVICE_IP=RELEASED"
+    return 0
+}
+
+case "$1" in
+    status)
+        do_status
+        ;;
+    check)
+        do_check
+        ;;
+    claim)
+        do_claim
+        ;;
+    release)
+        do_release
+        ;;
+    *)
+        echo "PORTABLETAK_NETWORK_ERROR=invalid_action"
+        return 2 2>/dev/null
+        ;;
+esac

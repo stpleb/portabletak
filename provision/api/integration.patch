@@ -1,0 +1,11 @@
+--- api/app.py
++++ api/app.py
+@@ -714,3 +714,8 @@
+ @app.post("/api/safe-remove")
+ def safe_remove():
+     return perform_action("safe_remove")
++
++
++# First-run status and validation; activation remains fail-closed.
++from provision_routes import router as provision_router
++app.include_router(provision_router)

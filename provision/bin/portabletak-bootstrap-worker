@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+"""Background first-run worker. Provisioning input is accepted only on stdin."""
+
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from bootstrap_engine import BootstrapEngine
+from bootstrap_job import BootstrapJobSupervisor
+from linux_bootstrap_backend import LinuxBootstrapBackend
+from portabletak_provision import Controller, MAX_INPUT, ProvisionError
+from release import expected_base_seal
+from host_profile import read_profile, select_adapter
+
+
+def main():
+    supervisor = BootstrapJobSupervisor()
+    error = 'bootstrap_failed'
+    try:
+        raw = sys.stdin.buffer.read(MAX_INPUT + 1)
+        if len(raw) > MAX_INPUT:
+            raise ProvisionError('input_too_large')
+        try:
+            request = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise ProvisionError('invalid_json') from None
+        seal = expected_base_seal()
+        controller = Controller(expected_base_seal=seal)
+        controller.stage(request)
+        backend = LinuxBootstrapBackend(seal, host_adapter=select_adapter(read_profile()))
+        BootstrapEngine(controller, backend).run(request)
+        supervisor.finish(os.getpid(), True)
+        return 0
+    except ProvisionError as failure:
+        error = failure.code
+    except Exception:
+        error = 'bootstrap_failed'
+    try:
+        supervisor.finish(os.getpid(), False, error)
+    except Exception:
+        pass
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

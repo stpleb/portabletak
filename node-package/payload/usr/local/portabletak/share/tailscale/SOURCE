@@ -1,0 +1,5 @@
+Tailscale 1.102.4, official static build for Linux arm64 (BSD-3-Clause).
+Source archive: https://pkgs.tailscale.com/stable/tailscale_1.102.4_arm64.tgz
+Archive SHA-256 (matches pkgs.tailscale.com .sha256): 9dd1e6a592a014bbaea0103167ffe299adeda4ba14e078ce9c2895364f6c4c3f
+Used by bin/portabletak-tailscale in userspace-networking mode; state lives on the cartridge
+(config/tailscale). Nothing runs unless a cartridge has been enabled for remote access.

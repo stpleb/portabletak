@@ -1,0 +1,95 @@
+#!/bin/sh
+
+. /usr/local/portabletak/lib/host-profile.sh
+
+MOUNT="/mnt/asgard"
+META="$MOUNT/portabletak/cartridge.conf"
+METADATA_LIB="/usr/local/portabletak/lib/metadata.sh"
+
+if [ ! -r "$METADATA_LIB" ]; then
+    echo "PORTABLETAK_ERROR=metadata_library_missing"
+    return 10 2>/dev/null
+fi
+
+. "$METADATA_LIB"
+
+echo "PORTABLETAK_PRODUCT=PortableTAK Server"
+
+LINE="$(mount | grep -F " on $MOUNT " | head -n 1)"
+
+if [ -z "$LINE" ]; then
+    echo "PORTABLETAK_STORAGE=UNMOUNTED"
+    echo "PORTABLETAK_RUNTIME=UNAVAILABLE"
+    return 0 2>/dev/null
+fi
+
+DEVICE="${LINE%% *}"
+
+echo "PORTABLETAK_STORAGE=MOUNTED"
+echo "PORTABLETAK_DEVICE=$DEVICE"
+echo "PORTABLETAK_MOUNT=$MOUNT"
+
+if [ ! -r "$META" ]; then
+    echo "PORTABLETAK_CARTRIDGE=INVALID"
+    echo "PORTABLETAK_RUNTIME=UNAVAILABLE"
+    return 0 2>/dev/null
+fi
+
+FORMAT="$(portabletak_metadata_get "$META" PORTABLETAK_FORMAT)"
+ARCH="$(portabletak_metadata_get "$META" PORTABLETAK_ARCH)"
+CARTRIDGE_ID="$(portabletak_metadata_get "$META" PORTABLETAK_CARTRIDGE_ID)"
+INSTANCE_NAME="$(portabletak_metadata_get "$META" PORTABLETAK_INSTANCE_NAME)"
+INSTANCE_TYPE="$(portabletak_metadata_get "$META" PORTABLETAK_INSTANCE_TYPE)"
+PROVISIONING_STATE="$(portabletak_metadata_get "$META" PORTABLETAK_PROVISIONING_STATE)"
+
+if [ "$FORMAT" != "1" ] || \
+   [ -z "$ARCH" ] || \
+   [ -z "$CARTRIDGE_ID" ] || \
+   [ -z "$INSTANCE_NAME" ] || \
+   [ -z "$INSTANCE_TYPE" ] || \
+   [ -z "$PROVISIONING_STATE" ]; then
+    echo "PORTABLETAK_CARTRIDGE=INVALID"
+    echo "PORTABLETAK_RUNTIME=UNAVAILABLE"
+    return 0 2>/dev/null
+fi
+
+echo "PORTABLETAK_CARTRIDGE=VALID"
+echo "PORTABLETAK_FORMAT=$FORMAT"
+echo "PORTABLETAK_ARCH=$ARCH"
+echo "PORTABLETAK_CARTRIDGE_ID=$CARTRIDGE_ID"
+echo "PORTABLETAK_INSTANCE_NAME=$INSTANCE_NAME"
+echo "PORTABLETAK_INSTANCE_TYPE=$INSTANCE_TYPE"
+echo "PORTABLETAK_PROVISIONING_STATE=$PROVISIONING_STATE"
+
+RUNTIME_PREPARED=0
+FOUNDATION_RUNNING=0
+APPLICATION_RUNNING=0
+
+if mount | grep -F " on $(/usr/local/portabletak/lib/pt-rootfs "$MOUNT")/dev " >/dev/null 2>&1; then
+    RUNTIME_PREPARED=1
+fi
+
+if pt_ps | grep -E "[b]eam.smp|[p]ostgres" >/dev/null 2>&1; then
+    FOUNDATION_RUNNING=1
+fi
+
+if pt_ps | grep -E "[o]pentakserver|[c]ot_parser|[e]ud_handler|[m]ediamtx|[n]ginx" >/dev/null 2>&1; then
+    APPLICATION_RUNNING=1
+fi
+
+if [ "$FOUNDATION_RUNNING" -eq 0 ] && \
+   [ "$APPLICATION_RUNNING" -eq 0 ]; then
+    echo "PORTABLETAK_RUNTIME=STOPPED"
+elif [ "$RUNTIME_PREPARED" -eq 1 ] && \
+     [ "$FOUNDATION_RUNNING" -eq 1 ] && \
+     [ "$APPLICATION_RUNNING" -eq 1 ]; then
+    echo "PORTABLETAK_RUNTIME=RUNNING"
+else
+    echo "PORTABLETAK_RUNTIME=PARTIAL"
+fi
+
+echo "PORTABLETAK_RUNTIME_PREPARED=$RUNTIME_PREPARED"
+echo "PORTABLETAK_FOUNDATION_RUNNING=$FOUNDATION_RUNNING"
+echo "PORTABLETAK_APPLICATION_RUNNING=$APPLICATION_RUNNING"
+
+return 0 2>/dev/null

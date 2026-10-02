@@ -1,0 +1,64 @@
+#!/bin/sh
+
+MOUNT="/mnt/asgard"
+ROOT="$MOUNT/rootfs"
+META="$MOUNT/portabletak/cartridge.conf"
+METADATA_LIB="/usr/local/portabletak/lib/metadata.sh"
+
+is_mounted()
+{
+    mount | grep -F " on $1 " >/dev/null 2>&1
+}
+
+fail()
+{
+    echo "PORTABLETAK_BOOTSTRAP_PREPARE_ERROR=$1"
+    return "$2" 2>/dev/null
+}
+
+is_mounted "$MOUNT" || fail cartridge_not_mounted 10 || return $?
+[ -r "$META" ] || fail metadata_missing 11 || return $?
+[ -r "$METADATA_LIB" ] || fail metadata_library_missing 12 || return $?
+. "$METADATA_LIB"
+
+TYPE="$(portabletak_metadata_get "$META" PORTABLETAK_INSTANCE_TYPE)" ||
+    fail instance_type_missing 13 || return $?
+STATE="$(portabletak_metadata_get "$META" PORTABLETAK_PROVISIONING_STATE)" ||
+    fail provisioning_state_missing 14 || return $?
+
+[ "$TYPE" = "generic" ] || fail generic_cartridge_required 15 || return $?
+case "$STATE" in
+    provisioning|failed) ;;
+    *) fail invalid_bootstrap_state 16 || return $? ;;
+esac
+
+[ -x "$ROOT/bin/sh" ] || fail rootfs_missing 17 || return $?
+for directory in postgres rabbitmq opentak; do
+    [ -d "$MOUNT/$directory" ] || fail "${directory}_storage_missing" 18 || return $?
+done
+
+mkdir -p "$ROOT/dev" "$ROOT/dev/pts" "$ROOT/proc" "$ROOT/sys" \
+    "$ROOT/run" "$ROOT/tmp" "$ROOT/asgard/postgres" "$ROOT/asgard/opentak" \
+    "$ROOT/var/lib/rabbitmq"
+
+if ! is_mounted "$ROOT/dev"; then mount -o bind /dev "$ROOT/dev" || return 20; fi
+if ! is_mounted "$ROOT/dev/pts"; then mount -o bind /dev/pts "$ROOT/dev/pts" || return 21; fi
+if ! is_mounted "$ROOT/proc"; then mount -o bind /proc "$ROOT/proc" || return 22; fi
+if ! is_mounted "$ROOT/sys"; then mount -o bind /sys "$ROOT/sys" || return 23; fi
+if ! is_mounted "$ROOT/run"; then mount -t tmpfs -o mode=755 tmpfs "$ROOT/run" || return 27; fi
+if ! is_mounted "$ROOT/tmp"; then mount -t tmpfs -o mode=1777 tmpfs "$ROOT/tmp" || return 28; fi
+if ! is_mounted "$ROOT/asgard/postgres"; then mount -o bind "$MOUNT/postgres" "$ROOT/asgard/postgres" || return 24; fi
+if ! is_mounted "$ROOT/var/lib/rabbitmq"; then mount -o bind "$MOUNT/rabbitmq" "$ROOT/var/lib/rabbitmq" || return 25; fi
+if ! is_mounted "$ROOT/asgard/opentak"; then mount -o bind "$MOUNT/opentak" "$ROOT/asgard/opentak" || return 26; fi
+# Dual-chip cartridge on an x86_64 host: the x86_64 venv replaces the arm64 one
+# inside the chroot, and provisioned config written to rootfs/ is mirrored.
+if [ "$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT" --arch)" = x86_64 ]; then
+    [ -x "$MOUNT/arch/amd64/venv/bin/python" ] || fail cartridge_has_no_x86_64_software 19 || return $?
+    if ! is_mounted "$ROOT/asgard/opentak/venv"; then
+        mount -o bind "$MOUNT/arch/amd64/venv" "$ROOT/asgard/opentak/venv" || return 29
+    fi
+    /usr/bin/python3 /usr/local/portabletak/lib/arch_sync.py "$MOUNT" >/dev/null || return 30
+fi
+
+echo "PORTABLETAK_BOOTSTRAP_RUNTIME=PREPARED"
+return 0 2>/dev/null

@@ -1,0 +1,83 @@
+#!/usr/bin/python3
+"""Lay the pinned clean base onto a blank USB disk.
+
+  portabletak-media-layout list
+  portabletak-media-layout check-archive ARCHIVE
+  portabletak-media-layout plan DISK
+  portabletak-media-layout write DISK ARCHIVE --confirm "ERASE <fingerprint>"
+                                 [--receipt PATH] [--replace-ext-uuid UUID]
+
+Only `write` changes anything. It replaces the whole disk, so it requires the
+confirmation phrase printed by `plan` for that exact hardware identity.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+from lifecycle_lock import LifecycleLock
+from media_layout import (LayoutError, list_disks, plan, protected_filesystems,
+                          verify_archive, write)
+from portabletak_provision import ProvisionError, write_json
+from release import expected_base_archive, expected_base_seal
+
+
+def emit(data):
+    print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='portabletak-media-layout')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('list')
+    check = commands.add_parser('check-archive')
+    check.add_argument('archive')
+    show = commands.add_parser('plan')
+    show.add_argument('disk')
+    show.add_argument('--replace-ext-uuid')
+    run = commands.add_parser('write')
+    run.add_argument('disk')
+    run.add_argument('archive')
+    run.add_argument('--confirm', required=True)
+    run.add_argument('--receipt')
+    run.add_argument('--replace-ext-uuid')
+    args = parser.parse_args()
+    seal, archive_sha = expected_base_seal(), expected_base_archive()
+    try:
+        protected = protected_filesystems()
+        if args.command == 'list':
+            emit(list_disks(protected=protected))
+        elif args.command == 'check-archive':
+            emit(verify_archive(args.archive, archive_sha, seal,
+                                progress=lambda n: print(f'PORTABLETAK_LAYOUT_VERIFIED={n}',
+                                                         file=sys.stderr)))
+        elif args.command == 'plan':
+            emit(plan(args.disk, protected=protected, replace_ext_uuid=args.replace_ext_uuid))
+        else:
+            if os.geteuid() != 0:
+                raise LayoutError('root_required')
+            if args.receipt and Path(args.receipt).exists():
+                raise LayoutError('receipt_exists')
+            guard = LifecycleLock()
+            guard.acquire('layout')
+            try:
+                receipt = write(args.disk, args.confirm, args.archive, archive_sha, seal,
+                                protected=protected, replace_ext_uuid=args.replace_ext_uuid,
+                                log=lambda line: print(line, flush=True))
+            finally:
+                guard.release()
+            if args.receipt:
+                write_json(Path(args.receipt), receipt)
+            emit(receipt)
+            print('PORTABLETAK_LAYOUT=COMPLETE')
+            print('PORTABLETAK_NEXT=portabletak-publish-identity after mounting at /mnt/asgard')
+        return 0
+    except (LayoutError, ProvisionError) as error:
+        print('PORTABLETAK_LAYOUT_ERROR=' + str(error), file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

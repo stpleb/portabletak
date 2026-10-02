@@ -1,0 +1,276 @@
+<!doctype html><html><head><meta charset="utf-8"><title>PortableTAK Setup and Troubleshooting Guide</title><link rel="stylesheet" href="style.css"></head><body>
+<h1>PortableTAK Setup and Troubleshooting Guide</h1>
+<p class="subtitle">A complete TAK server (OpenTAKServer) that lives on a USB drive and runs on an OpenMANET node or a Windows computer.</p>
+
+<h2>1. What PortableTAK is</h2>
+<p>The drive holds the whole server: its software, its database, its users and certificates, and its settings.
+The computer or node it is plugged into only provides power, network and processing. Move the drive and the
+same server, with the same users and phones, comes up somewhere else.</p>
+<ul>
+<li><b>One drive = one server.</b> Each drive has its own certificate authority, users and data.</li>
+<li><b>Runs on:</b> OpenMANET nodes (Raspberry Pi), Windows 11 computers (Intel/AMD and ARM) and Apple Silicon Macs. The drive carries
+software for both processor types and picks the right one automatically.</li>
+<li><b>Moves between hosts:</b> on the first start on a new node or computer, the server adapts itself to that host
+(addresses and server certificate). Phones already set up keep working.</li>
+<li><b>Works offline.</b> Internet is only needed for optional Remote Access (Tailscale).</li>
+</ul>
+
+<h3>What is on the drive</h3>
+<p>Plugged into Windows or a Mac, only a small <b>PORTABLETAK</b> volume is visible. It holds:</p>
+<table>
+<tr><td><b>Start PortableTAK (Windows)</b> / <b>(Mac)</b></td><td>Runs the server on this computer.</td></tr>
+<tr><td><b>Scan to open the dashboard (node).png</b></td><td>QR code for the dashboard when the drive is in a node.</td></tr>
+<tr><td><b>Quick Start</b>, <b>Quick Reference</b>, this guide</td><td>Documentation (PDF).</td></tr>
+</table>
+<p>The server itself is on a second, Linux partition that Windows and macOS cannot read. If Windows offers to
+<b>format</b> or macOS offers to <b>initialize</b> a disk, always choose <b>Cancel</b> or <b>Ignore</b>.</p>
+
+<h2>2. Making a drive (PortableTAK Setup)</h2>
+<p>Drives are made with <b>PortableTAK Setup</b>, on a Windows 11 computer or a Mac (Apple Silicon). Both make the same drive.</p>
+<h3>On Windows 11</h3>
+<ol>
+<li>Unzip <b>PortableTAK-Windows-Setup</b>. Plug in a USB drive of <b>16 GB or more</b> (it will be erased).</li>
+<li>Double-click <b>PortableTAK Setup (Windows)</b> and click <b>Yes</b>. The first time, it may install WSL and ask you to restart; then run it again.</li>
+<li>Choose a ready-to-use drive (name and passwords now) or a blank drive, pick the USB drive from the list and type the confirmation phrase.</li>
+<li>Wait about 10 minutes. The drive is built, written and verified.</li>
+</ol>
+<h3>On a Mac</h3>
+<ol>
+<li>One-time: install Homebrew, then in Terminal: <code>brew install colima docker</code>.</li>
+<li>Plug in a USB drive of <b>16 GB or more</b>. It will be erased.</li>
+<li>Double-click <b>PortableTAK Setup.command</b> (first time: right-click → Open).</li>
+<li>Enter the <b>server name</b>, the <b>administrator password</b> (dashboard sign-in) and the <b>client password</b>
+(protects certificate packages; used for QR enrollment). Passwords: 8+ characters, 12+ recommended, and the two
+must be different. Typos can be retried.</li>
+<li>Pick the drive from the list and type <code>ERASE diskN</code> exactly as shown. macOS asks for your Mac password.</li>
+<li>Wait about 8–10 minutes: setup, writing and verification. The drive is ejected when done.</li>
+</ol>
+<p><b>Blank drives:</b> choose option 2 at the start to make a drive that is not set up yet (useful for
+preparing several drives). The first time a blank drive starts on Windows, <b>Start PortableTAK</b> asks for
+the server name and both passwords and sets it up on that computer. A blank drive cannot be set up from a node.</p>
+<div class="box">Setup uses the Mac's internet once (map icon sets). Without internet the drive still works; the
+icons download later the first time the server runs with internet.</div>
+<div class="box warn"><b>Never clone a set-up drive</b> to make more. Clones share the same keys, users and
+certificate authority. Always make each drive with PortableTAK Setup.</div>
+
+<h2>3. Using the drive on an OpenMANET node</h2>
+<p>The node needs the PortableTAK host package installed (one time, by an administrator).</p>
+<ol>
+<li>Plug the drive into a <b>blue USB&nbsp;3 port</b> on a running node. It starts by itself in 3–5 minutes, and also
+after every reboot or power loss.</li>
+<li>Connect a phone or laptop to the node's Wi-Fi and open <code>https://10.41.254.1:8444</code>
+(or scan the QR code on the drive). Accept the certificate warning (Advanced → Continue).</li>
+<li>Sign in as <code>administrator</code>.</li>
+</ol>
+<p><b>Addresses on a node:</b> phones on the node's own Wi-Fi use <code>10.41.254.1</code>. Devices elsewhere on the
+mesh use <code>10.41.250.10</code>. Both are in every client package.</p>
+<p><b>Internet sharing:</b> if the node's Ethernet port has internet, the node shares it with its Wi-Fi clients
+automatically and stops when the uplink goes away (phones then use cellular for internet).</p>
+<p><b>Unplugging:</b> press <b>Safe Remove</b> in the dashboard and wait for "safe to remove". Pulling the drive or
+power without this is survivable: the next start checks and repairs the drive. Avoid it when you can.</p>
+
+<h2>4. Using the drive on a Windows computer</h2>
+<h3>Requirements</h3>
+<ul>
+<li>Windows 11 version 22H2 or newer (Intel/AMD or ARM). Administrator rights (Windows asks).</li>
+<li>Virtualization enabled (it is on most computers; WSL reports it if not).</li>
+</ul>
+<h3>Start</h3>
+<ol>
+<li>Plug in the drive, open the <b>PORTABLETAK</b> drive in File Explorer, double-click <b>Start PortableTAK (Windows)</b>, click <b>Yes</b>.</li>
+<li>First time on a computer only (needs internet): it installs WSL (Windows Subsystem for Linux) if missing (type
+<b>Y</b>; then restart and start it again), installs <b>usbipd</b> (Microsoft's recommended tool that hands the USB drive
+to WSL), turns on WSL mirrored networking, opens the firewall for PortableTAK, and installs the small PortableTAK
+host. The first start of the server on a computer takes a few minutes.</li>
+<li>If the drive is blank, the window asks for the server name and passwords (typos can be retried) and sets it up (5–10 minutes).</li>
+<li>The window shows <b>this computer's address</b>. Phones and WinTAK use it. The dashboard opens in the browser.</li>
+<li>While the server runs, the drive is attached to the PortableTAK host and disappears from File Explorer. Desktop
+shortcuts appear: <b>Stop PortableTAK</b>, <b>PortableTAK Dashboard</b>, <b>PortableTAK Status</b>.</li>
+</ol>
+<h3>Stop</h3>
+<p>Double-click <b>Stop PortableTAK</b> on the desktop. Wait for "You can remove the drive now", then unplug.
+(The dashboard's <i>Stop Server</i> button only pauses the TAK services; it does not release the drive.)</p>
+<h3>WinTAK on the same computer</h3>
+<p>Create a user for WinTAK and use <b>WinTAK Setup</b> in the dashboard. WinTAK connects to the computer's address shown at start.</p>
+<h3>Start automatically</h3>
+<p>Run <code>%LOCALAPPDATA%\PortableTAK\PortableTAK.ps1 install-helper</code> in PowerShell once. From then on, plugging the
+drive into that computer starts PortableTAK and opens the dashboard. <code>remove-helper</code> turns it off.</p>
+<div class="box"><b>Laptop on the move:</b> PortableTAK uses the computer's address at start. If you change networks
+(for example from home Wi-Fi to a hotspot), stop and start PortableTAK so it re-binds to the new address. Phones
+keep their certificates. Only the address they connect to changes, so add the new address in the TAK app or use Remote Access.</div>
+
+<h3>Using the drive on a Mac</h3>
+<p>Apple Silicon Macs can run the server too, in a small Linux virtual machine. One-time preparation: install
+Homebrew and run <code>brew install qemu</code>.</p>
+<ol>
+<li>Plug in the drive and double-click <b>Start PortableTAK (Mac)</b> on the PORTABLETAK volume. Enter your Mac
+password when asked (it gives the server access to the drive).</li>
+<li>Blank drives ask for the name and passwords first. The dashboard then opens at <code>http://localhost:8090</code>,
+and the window shows the Mac's address for phones and WinTAK (other devices reach the dashboard at
+<code>https://&lt;that address&gt;:8444</code>). Allow incoming connections for qemu if macOS asks.</li>
+<li>The PORTABLETAK volume disappears while the server runs. To stop, press Return in the window or double-click
+<b>Stop PortableTAK</b> on the Desktop; then eject and unplug.</li>
+</ol>
+
+<h2>5. Adding phones and devices</h2>
+<ol>
+<li><b>Users → Create User</b>: one user per person. In each TAK app, give every device its own <b>callsign</b>.</li>
+<li>Under <b>Manage User / Download Setup Package</b> choose one:
+<table>
+<tr><th>Device</th><th>Use</th><th>Notes</th></tr>
+<tr><td>ATAK (Android)</td><td><b>ATAK Package</b></td><td>Import → Local SD. Contains every server address (Wi-Fi, mesh, Tailscale).
+Wi-Fi and Tailscale entries are enabled. The others are present but off.</td></tr>
+<tr><td>iTAK (iPhone)</td><td><b>iTAK Package</b> + <b>iTAK Remote Package</b></td><td>iTAK only uses the first server in a package.
+Import both for Wi-Fi and cellular.</td></tr>
+<tr><td>WinTAK</td><td><b>WinTAK Setup</b></td><td>Import in WinTAK.</td></tr>
+<tr><td>ATAK / iTAK by QR</td><td><b>ATAK QR Setup</b> / <b>iTAK QR Setup</b></td><td>The device must trust the server first.
+For ATAK, import the <b>ATAK Trust Package (for QR)</b> from Client Setup once per phone, then scan. A QR code works for 3 uses.
+With remote access set up, ATAK QR Setup also adds the Tailscale server; on iPhone use the <b>iTAK Remote QR</b> for cellular.</td></tr>
+</table></li>
+<li>The server connection turns green in the app.</li>
+</ol>
+
+<h2>6. Remote access over cellular (Tailscale)</h2>
+<p>Remote access lets phones reach the server from anywhere they have internet (cellular or any Wi-Fi),
+without opening ports on a router. It uses <b>Tailscale</b>, a free private network: the server and the phones
+all sign in to the <b>same Tailscale account</b> and can then reach each other. Set it up once per server.</p>
+
+<h3>What you need</h3>
+<ul>
+<li>A free Tailscale account (<code>tailscale.com</code>). Use one account for the server and all its phones.</li>
+<li>Internet on the server side: the node's Ethernet port, or the computer's normal internet.</li>
+<li>The Tailscale app on every phone (App Store / Google Play).</li>
+</ul>
+
+<h3>Step 1: connect the drive (once)</h3>
+<p>The drive has its own Tailscale identity. It is the same on an OpenMANET node, a Windows computer or a Mac,
+so phones set up once keep working wherever the drive runs. The computer does not need the Tailscale app.</p>
+<ol>
+<li>Make sure the server has internet: the node's Ethernet port (or a phone tethered by USB), or the computer's normal internet.</li>
+<li>Dashboard → <b>Remote Access</b> → <b>Enable remote access</b>.</li>
+<li>Open the link that appears, sign in to Tailscale and press <b>Connect</b> to approve the server.</li>
+<li>Back in the dashboard press <b>Finish setup</b>. The server restarts (about 2 minutes) and shows its remote address (100.x.y.z).</li>
+</ol>
+
+<h3>Step 2: set up each phone</h3>
+<ol>
+<li>Install the <b>Tailscale</b> app, sign in with the <b>same account</b>, and switch it on (allow the VPN profile when asked).</li>
+<li>Set up ATAK with <b>ATAK QR Setup</b> or the <b>ATAK Package</b> (Users → your user). Either one gives the phone
+two servers: the local one and "<i>server name</i> (Tailscale)". On iPhone import the <b>iTAK Remote Package</b>
+(or scan the <b>iTAK Remote QR</b>) as a second server; keep the normal iTAK one for local Wi-Fi.
+Phones set up before Step 1 must be set up again.</li>
+<li>Test: switch the phone's Wi-Fi off. With Tailscale on, the Tailscale server turns green over cellular.</li>
+</ol>
+
+<h3>Step 3: open the dashboard from anywhere</h3>
+<p>With remote access set up you can manage the server from anywhere with internet, not only on its Wi-Fi.</p>
+<ol>
+<li>Find the drive's Tailscale address: dashboard → <b>Remote Access</b> ("Remote clients: 100.x.y.z or
+portabletak-xxxxxxxx.….ts.net"). It is the same on every node and computer the drive runs on. Write it down.</li>
+<li>On the phone or laptop you will use, install the <b>Tailscale</b> app, sign in to the <b>same account</b> and switch it <b>on</b>.</li>
+<li>Open a browser at <code>https://&lt;Tailscale address&gt;:8444</code>, for example <code>https://100.102.110.115:8444</code>.
+The <code>.ts.net</code> name works too.</li>
+<li>The browser warns that the connection is not private (PortableTAK uses its own certificate authority).
+Choose <b>Advanced</b> → <b>Proceed</b> (Chrome) or <b>Show Details</b> → <b>visit this website</b> (Safari).</li>
+<li>Sign in with the administrator password, the same as on Wi-Fi.</li>
+</ol>
+<div class="box">If the page does not load: the Tailscale app must be <b>on</b> (check it shows <i>Connected</i>), the server
+must have internet, and the address must start with <code>https://</code> and end with <code>:8444</code>.
+On the server's own Wi-Fi you can also use <code>https://10.41.254.1:8444</code> (node).</div>
+
+<h3>If remote access does not work</h3>
+<table>
+<tr><th style="width:36%">Symptom</th><th>Fix</th></tr>
+<tr><td>Node: "Could not start" after Enable</td><td>The node has no internet. Connect its Ethernet to a router or hotspot and try again.</td></tr>
+<tr><td>"Could not start" after Enable on a computer</td><td>The computer has no internet, or a firewall blocks Tailscale. Check the internet connection and try again.</td></tr>
+<tr><td>Phone stays red on cellular</td><td>Tailscale app off or signed in to a different account; the phone was set up before Step 1 (set it up again: ATAK QR Setup or a new package); the server side lost internet.</td></tr>
+<tr><td>Works on cellular but not on the server's Wi-Fi</td><td>Normal for iTAK if only the Remote Package is imported: also import the normal iTAK Package.</td></tr>
+
+</table>
+
+<h2>7. Drone video (Skydio X10D and other RTSP drones)</h2>
+<p>A drone can send live video to PortableTAK, and every TAK client sees it in its video list. This is the
+PortableTAK version of a Sit(x) Video Alias. Drone feeds need no sign-in to send or watch, so anyone who can reach
+the server (its Wi-Fi or mesh, or your Tailscale) can watch them.</p>
+<h3>Connect the drone to PortableTAK (its position on the TAK map)</h3>
+<ol>
+<li>Dashboard → <b>Users</b> → create a user for the aircraft (e.g. <code>skydio1</code>) → <b>Device TLS Package</b>.
+Unzip it onto a USB-C stick. It holds the trust store, the client certificate, <code>secure.pref</code> and a
+<b>README.txt</b> with every value to type (the same layout as a Sit(x) TLS package). Keep it private: it contains the certificate passwords.</li>
+<li>On the controller: Global Settings → Sharing → TAK/CoT → TAK Connections → Add a Connection. Server name (one word),
+server IP and port <b>8089</b> from the README. Advanced Options → SSL/TLS: the trust store
+(<code>truststore-root.p12</code>) and the client certificate (<code>skydio1.p12</code>), each with the password from the README.</li>
+</ol>
+<h3>Step 1: add a feed (dashboard)</h3>
+<ol>
+<li>Dashboard → <b>Video Feeds</b> → type a feed name → <b>Add feed</b>. Use lowercase letters, numbers and dashes, for
+example <code>skydio1</code>. One name per aircraft.</li>
+<li>The card then shows the exact drone settings, with this server's address. <b>Drone settings</b> shows them again later.</li>
+</ol>
+<h3>Step 2: set up the Skydio X10D controller</h3>
+<ol>
+<li>Connect the controller's Wi-Fi to the same network as the server (the node's Wi-Fi, or the Wi-Fi the Windows/Mac computer uses).</li>
+<li>Menu (three lines, top left) → <b>Sharing</b> → <b>RTSP</b> → <b>External</b>.</li>
+<li>Stream name: the feed name (e.g. <code>skydio1</code>). IP address: the server's address shown in the card
+(node Wi-Fi: <code>10.41.254.1</code>). Port: <b>8554</b>.</li>
+<li><b>Start Stream</b>. The video starts once the aircraft takes off; the card shows <b>Live</b>.</li>
+</ol>
+<h3>Step 3: watch it</h3>
+<p>ATAK / WinTAK: open <b>Video</b> and pick the feed by name. Or add it by hand: type RTSP, address
+<code>&lt;server&gt;:8554/skydio1</code>, and leave user name and password blank.</p>
+
+<h3>Flying away from the server: Skydio on a phone hotspot</h3>
+<p>When the drone team is on cellular and the server is elsewhere, the controller joins an ATAK phone's hotspot and
+that phone forwards the drone's traffic to the server over its own Tailscale. Nothing is installed on the controller;
+the phone needs the free <b>Termux</b> app. Dashboard → <b>Video Feeds</b> → <b>Drone far from this server</b> has the
+one command to paste. Step by step: <b>PortableTAK Skydio X10D Guide</b> (Setup B).</p>
+
+<h2>8. Backups, moving and erasing</h2>
+<ul>
+<li><b>Backups:</b> <b>Backup / Restore</b> creates checked backups on the drive. Download important ones and keep them elsewhere.</li>
+<li><b>Moving the drive</b> to another node or computer: stop or safely remove it, plug it in elsewhere. It adapts by itself.</li>
+<li><b>Erase Drive</b> (bottom of the dashboard): returns the drive to brand new. It deletes all users, certificates,
+settings, remote access, data and on-drive backups. It asks for the administrator password and the word ERASE,
+and cannot be undone. Set the drive up again with PortableTAK Setup afterwards.</li>
+</ul>
+
+<h2 class="pb">9. Troubleshooting</h2>
+<table>
+<tr><th style="width:32%">Problem</th><th>What to do</th></tr>
+<tr><td>Phone says "host unreachable" or never connects</td><td>Check the phone is on the node's Wi-Fi (or the same network as the Windows computer).
+Use the right address (node Wi-Fi: 10.41.254.1). On Android, set the Wi-Fi to DHCP (not static); if it still fails,
+forget and rejoin the network. Over cellular, the Tailscale app must be on.</td></tr>
+<tr><td>Connection red only on cellular</td><td>Remote Access must be enabled and finished, the node/computer needs internet, and the phone's Tailscale app must be connected.</td></tr>
+<tr><td>Another device shows grey or disappears</td><td>Make sure each device has a different callsign. Grey can also mean that device lost its connection; it returns when it reconnects.</td></tr>
+<tr><td>iPhone sees only one server</td><td>Expected: iTAK reads one server per package. Import the <b>iTAK Remote Package</b> as well.</td></tr>
+<tr><td>ATAK says "registration failed" or "TAK Server profile request failed" after QR setup</td><td>The phone scanned a QR made before an update, or the server's address changed since. Delete the server in ATAK, then scan a fresh <b>ATAK QR Setup</b>. If the server still turns green, it is harmless.</td></tr>
+<tr><td>"Invalid credentials" / QR enrollment fails</td><td>Use the user's own name and password, not the administrator. ATAK must trust the server first (import the ATAK Trust Package once). Generate a new QR (each works 3 times).</td></tr>
+<tr><td>Certificate warning in the browser</td><td>Normal: the server uses its own certificate authority. Choose Advanced → Continue. To remove it, install the drive's trust certificate on that device.</td></tr>
+<tr><td>Dashboard sign-in refused after several tries</td><td>Wait a few minutes (sign-in is rate-limited per device), then use the administrator password chosen at setup.</td></tr>
+<tr><td>Node: server does not start after plugging in</td><td>Wait 5 minutes. Re-seat the drive firmly in a blue USB&nbsp;3 port. Power-cycle the node; PortableTAK starts on boot.</td></tr>
+<tr><td>Windows: "No PortableTAK drive found"</td><td>Plug the drive in and wait until the PORTABLETAK drive appears in File Explorer, then start again.</td></tr>
+<tr><td>Windows: asks to restart</td><td>WSL was just installed. Restart, then start PortableTAK again.</td></tr>
+<tr><td>Windows: phones cannot connect</td><td>Phones must be on the same network as the computer. Changed Wi-Fi since starting? Use <b>Stop PortableTAK</b> and start it again so it uses the new address, then set phones up again (QR or package). Windows 11 22H2+ is required.</td></tr>
+<tr><td>ATAK: "The TAK Server's identity could not be verified" after QR setup</td><td>ATAK no longer trusts the drive (often after deleting servers in ATAK). Import the <b>ATAK Package</b> for that user instead (it carries everything ATAK needs), or import the ATAK Trust Package again and rescan.</td></tr>
+<tr><td>Drone feed never shows Live</td><td>The controller must be on the server's network, with the IP address and port <b>8554</b> from the Video Feeds card and exactly the same stream name. Video only starts once the aircraft is flying.</td></tr>
+<tr><td>Windows: drive vanished from File Explorer</td><td>Normal while PortableTAK runs. Use <b>Stop PortableTAK</b> to get it back.</td></tr>
+<tr><td>Windows offers to format the drive, or macOS to initialize it</td><td>Always Cancel / Ignore. The Linux partition holds the server.</td></tr>
+<tr><td>"More than one PortableTAK drive is attached" / server does not start with two drives plugged in</td><td>Use one PortableTAK drive per node or computer at a time. Unplug the other drive and start again (node: power-cycle or re-plug).</td></tr>
+<tr><td>The drive was unplugged without Safe Remove / Stop PortableTAK (or power was lost)</td><td>Usually no harm: plug it back in and start PortableTAK. It checks and repairs the drive automatically and cleans up the previous session. Next time use <b>Safe Remove</b> (dashboard) or <b>Stop PortableTAK</b> (desktop) first.</td></tr>
+<tr><td>Map icons missing</td><td>They download automatically the first time the server runs with internet.</td></tr>
+<tr><td>Forgot the administrator password</td><td>It cannot be recovered. Use a backup made elsewhere, or erase and set up the drive again.</td></tr>
+</table>
+
+<h3>Logs</h3>
+<p><b>Windows:</b> <code>%LOCALAPPDATA%\PortableTAK\portabletak.log</code>. <b>Node</b> (administrators, over SSH):
+<code>/usr/local/portabletak/bin/portabletak-health</code> and the logs under <code>/mnt/asgard/opentak/data/logs</code>.</p>
+
+<h2>10. Security notes</h2>
+<ul>
+<li>The dashboard requires sign-in. It is reachable on the TAK network at port 8444 (HTTPS), and with remote access
+also from devices signed in to your Tailscale account (nobody else can reach it). It is protected against
+cross-site requests and password guessing. Choose a strong administrator password for real use.</li>
+<li>First-time setup can only be done on the computer that runs the drive, never from a phone.</li>
+<li>The drive contains the server's private keys. Keep it physically secure. Erase drives before giving them away.</li>
+</ul>
+</body></html>

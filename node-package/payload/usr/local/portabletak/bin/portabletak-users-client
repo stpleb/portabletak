@@ -1,0 +1,55 @@
+#!/usr/bin/python3
+
+import json
+import socket
+import sys
+
+HOST = "127.0.0.1"
+PORT = 18090
+
+raw = sys.stdin.read()
+
+try:
+    request = json.loads(raw)
+except Exception:
+    print(json.dumps({
+        "ok": False,
+        "error": "invalid_json",
+    }))
+    raise SystemExit(2)
+
+try:
+    with socket.create_connection(
+        (HOST, PORT),
+        timeout=5,
+    ) as sock:
+        # Connecting is quick; issuing a certificate and packages on a Pi is not.
+        sock.settimeout(170)
+        sock.sendall(
+            (
+                json.dumps(request)
+                + "\n"
+            ).encode("utf-8")
+        )
+
+        sock.shutdown(socket.SHUT_WR)
+
+        data = b""
+
+        while True:
+            chunk = sock.recv(65536)
+
+            if not chunk:
+                break
+
+            data += chunk
+
+except Exception as exc:
+    print(json.dumps({
+        "ok": False,
+        "error": "worker_unavailable",
+        "detail": str(exc),
+    }))
+    raise SystemExit(20)
+
+print(data.decode("utf-8").strip())

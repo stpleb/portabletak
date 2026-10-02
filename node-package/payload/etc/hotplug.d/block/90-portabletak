@@ -1,0 +1,39 @@
+#!/bin/sh
+# PortableTAK on OpenWrt: react to USB drives coming and going (only on nodes
+# where PortableTAK autoload is enabled).
+#  - drive plugged in while the node runs: start it (same as at boot)
+#  - the running cartridge's drive pulled without Safe Remove: clean up
+#    (stop its processes, detach mounts, release the service address)
+ls /etc/rc.d/S*portabletak-autoload >/dev/null 2>&1 || exit 0
+MOUNT_SRC="$(awk '$2=="/mnt/asgard"{print $1; exit}' /proc/mounts)"
+
+case "$ACTION" in
+    remove)
+        [ -n "$MOUNT_SRC" ] || exit 0
+        case "$MOUNT_SRC" in "/dev/$DEVNAME"|"/dev/$DEVNAME"[0-9]*|"/dev/${DEVNAME}p"[0-9]*) ;; *) exit 0 ;; esac
+        [ -b "$MOUNT_SRC" ] && exit 0
+        mkdir -p /tmp/portabletak
+        [ -f /tmp/portabletak/unplug-cleanup ] && exit 0      # disk and partition both report removal
+        : > /tmp/portabletak/unplug-cleanup
+        logger -t portabletak "drive $MOUNT_SRC removed without Safe Remove; cleaning up"
+        (
+            /usr/local/portabletak/bin/portabletak-tailscale stop
+            /usr/local/portabletak/bin/portabletak-emergency-stop
+            for m in $(awk '$2 ~ "^/mnt/asgard" {print $2}' /proc/mounts | sort -r); do umount -l "$m"; done
+            logger -t portabletak "cleanup after unplug finished"
+            rm -f /tmp/portabletak/unplug-cleanup
+        ) </dev/null >/dev/null 2>&1 &
+        ;;
+    add)
+        [ "$DEVTYPE" = partition ] || exit 0
+        [ -n "$MOUNT_SRC" ] && exit 0                 # a cartridge is already running
+        [ -f /tmp/portabletak/hotplug-start ] && exit 0
+        mkdir -p /tmp/portabletak && : > /tmp/portabletak/hotplug-start
+        (
+            sleep 5                                   # let all partitions appear
+            logger -t portabletak "drive plugged in ($DEVNAME); starting autoload"
+            /usr/local/portabletak/bin/portabletak-boot
+            rm -f /tmp/portabletak/hotplug-start
+        ) </dev/null >/dev/null 2>&1 &
+        ;;
+esac

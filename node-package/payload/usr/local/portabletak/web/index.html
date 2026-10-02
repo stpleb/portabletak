@@ -1,0 +1,2001 @@
+<!doctype html>
+<html lang="en">
+<head>
+<script src="/auth.js"></script>
+<script src="/remote-access.js" defer></script>
+<script src="/video-feeds.js" defer></script>
+<script src="/factory-reset.js" defer></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PortableTAK Server</title>
+
+<style>
+:root {
+    color-scheme: dark;
+    --bg: #0b0f14;
+    --panel: #121922;
+    --panel2: #18222e;
+    --border: #293748;
+    --text: #e8eef5;
+    --muted: #8fa1b5;
+    --good: #49d17d;
+    --warn: #e5b94c;
+    --bad: #ef6b73;
+    --accent: #63a7ff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+h1 {
+    margin: 0;
+    font-size: 28px;
+}
+
+.subtitle {
+    color: var(--muted);
+    margin-top: 5px;
+}
+
+.badge {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-weight: 700;
+    background: var(--panel);
+}
+
+.good {
+    color: var(--good);
+}
+
+.warn {
+    color: var(--warn);
+}
+
+.bad {
+    color: var(--bad);
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 14px;
+}
+
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 17px;
+}
+
+.card h2 {
+    margin: 0 0 14px 0;
+    font-size: 15px;
+    color: var(--muted);
+    font-weight: 650;
+}
+
+.big {
+    font-size: 24px;
+    font-weight: 750;
+}
+
+.row {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 9px;
+    font-size: 14px;
+}
+
+.label {
+    color: var(--muted);
+}
+
+.actions {
+    margin-top: 18px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+button {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 13px 10px;
+    background: var(--panel2);
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+button:disabled {
+    opacity: .35;
+    cursor: not-allowed;
+}
+
+input {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    background: var(--panel2);
+    color: var(--text);
+    font-size: 15px;
+}
+
+.user-item {
+    border-top: 1px solid var(--border);
+    padding: 12px 0;
+}
+
+.user-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+}
+
+.user-name {
+    font-weight: 750;
+}
+
+.user-meta {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 5px;
+}
+
+.user-actions {
+    margin-top: 9px;
+}
+
+button.primary {
+    background: #17365b;
+}
+
+button.danger {
+    background: #4b2025;
+}
+
+#activity {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    min-height: 90px;
+    max-height: 270px;
+    overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: #c5d1dd;
+}
+
+.footer {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    margin-top: 18px;
+}
+
+@media (max-width: 650px) {
+    main {
+        padding: 15px;
+    }
+
+    header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .actions {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+</style>
+
+<style>
+@media (max-width: 640px) {
+    body {
+        padding: 10px !important;
+    }
+
+    .container,
+    main,
+    .page,
+    .wrapper {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 0 !important;
+    }
+
+    .grid {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        gap: 10px !important;
+    }
+
+    .card {
+        width: 100% !important;
+        box-sizing: border-box !important;
+        padding: 14px !important;
+    }
+
+    h1 {
+        font-size: 1.7rem !important;
+        line-height: 1.15 !important;
+    }
+
+    h2 {
+        font-size: 1.2rem !important;
+        line-height: 1.2 !important;
+    }
+
+    .row {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+        align-items: flex-start !important;
+    }
+
+    .user-actions,
+    .user-package-actions {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        gap: 8px !important;
+    }
+
+    button,
+    .user-actions button,
+    .user-package-actions button {
+        width: 100% !important;
+        min-height: 44px !important;
+        margin-left: 0 !important;
+        box-sizing: border-box !important;
+    }
+
+    summary {
+        line-height: 1.3 !important;
+        padding: 4px 0 !important;
+    }
+
+    #atakQrOverlay,
+    #itakQrOverlay {
+        padding: 10px !important;
+    }
+
+    #atakQrOverlay > div,
+    #itakQrOverlay > div {
+        width: 100% !important;
+        max-width: 360px !important;
+        padding: 16px !important;
+        box-sizing: border-box !important;
+    }
+
+    #atakQrImage,
+    #itakQrImage {
+        width: 240px !important;
+        max-width: 100% !important;
+        height: auto !important;
+    }
+
+    #atakQrOpenLink {
+        width: 100% !important;
+        box-sizing: border-box !important;
+    }
+
+    pre,
+    code {
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+    }
+}
+
+@media (max-width: 390px) {
+    body {
+        padding: 8px !important;
+    }
+
+    .card {
+        padding: 12px !important;
+    }
+
+    h1 {
+        font-size: 1.55rem !important;
+    }
+
+    h2 {
+        font-size: 1.1rem !important;
+    }
+
+    #atakQrImage,
+    #itakQrImage {
+        width: 220px !important;
+    }
+}
+</style>
+
+</head>
+
+<body>
+<main>
+
+<header>
+    <div>
+        <h1 id="serverName">PortableTAK Server</h1>
+        <div class="subtitle">Portable TAK Management</div>
+    </div>
+    <div id="runtimeBadge" class="badge">Loading...</div>
+</header>
+
+<section class="grid">
+
+<div class="card">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Server</h2>
+    <div id="runtime" class="big">...</div>
+
+    <div class="row">
+        <span class="label">Cartridge</span>
+        <span id="cartridge">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Storage</span>
+        <span id="storage">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Device</span>
+        <span id="device">...</span>
+    </div>
+</div>
+
+<div class="card">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Runtime Health</h2>
+
+    <div class="row">
+        <span class="label">Prepared</span>
+        <span id="prepared">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Foundation</span>
+        <span id="foundation">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Application</span>
+        <span id="application">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Provisioning</span>
+        <span id="provisioning">...</span>
+    </div>
+</div>
+
+<div class="card">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Network</h2>
+
+    <div class="row">
+        <span class="label">Service IP</span>
+        <span id="serviceIp">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Interface</span>
+        <span id="serviceDev">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">IP State</span>
+        <span id="serviceState">...</span>
+    </div>
+</div>
+
+<div class="card">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Service Health</h2>
+
+    <div class="row">
+        <span class="label">PostgreSQL</span>
+        <span id="postgresql">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">RabbitMQ</span>
+        <span id="rabbitmq">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">MediaMTX</span>
+        <span id="mediamtx">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">OpenTAKServer</span>
+        <span id="ots">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">CoT Parser</span>
+        <span id="cot">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">EUD SSL</span>
+        <span id="eud">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">nginx</span>
+        <span id="nginx">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Connected TAK Devices</span>
+        <span id="clients">0</span>
+    </div>
+</div>
+
+<div class="card">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Identity</h2>
+
+    <div class="row">
+        <span class="label">Type</span>
+        <span id="instanceType">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Architecture</span>
+        <span id="architecture">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Format</span>
+        <span id="format">...</span>
+    </div>
+</div>
+
+</section>
+
+<section class="actions" id="nodeActions">
+    <button id="mountButton" onclick="runAction('mount')">Mount</button>
+    <button id="startButton" class="primary" onclick="runAction('start')">Start Server</button>
+    <button id="stopButton" onclick="runAction('stop')">Stop Server</button>
+    <button id="safeButton" class="danger" onclick="safeRemove()">Safe Remove</button>
+    <div style="grid-column:1 / -1;font-size:0.9em;opacity:0.8;margin-top:4px;text-align:center;line-height:1.45;padding:0 6px">
+        Before unplugging the drive press <b>Safe Remove</b> and wait for "safe to remove".
+        <b>Stop Server</b> only pauses the TAK services.
+    </div>
+</section>
+<!-- On a Windows or Mac computer the launcher attached the drive, so only it can stop it and give it back. -->
+<section class="card" id="computerActions" style="display:none;margin-top:18px;text-align:center;line-height:1.5">
+    <div id="computerActionsText"></div>
+</section>
+
+<section class="card" style="margin-top:18px">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Client Setup</h2>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <button onclick="refreshClientInfo()">Refresh Client Setup</button>
+        <button onclick="downloadTrustPackage()" title="Import once in ATAK before using ATAK QR Setup">ATAK Trust Package (for QR)</button>
+    </div>
+
+    <div id="clientSetupStatus" class="label">
+        Press Refresh Client Setup to load connection details.
+    </div>
+
+    <div style="margin-top:14px" class="grid">
+
+        <div class="card">
+            <h2>ATAK</h2>
+
+            <div class="row">
+                <span class="label">Server</span>
+                <span id="atakServer">...</span>
+            </div>
+
+            <div class="row">
+                <span class="label">SSL CoT</span>
+                <span id="atakCot">...</span>
+            </div>
+
+            <div class="row">
+                <span class="label">Enrollment</span>
+                <span id="atakEnroll">...</span>
+            </div>
+
+            <div class="row">
+                <span class="label">Truststore</span>
+                <span id="atakTrust">...</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>iTAK</h2>
+
+            <div class="row">
+                <span class="label">Server</span>
+                <span id="itakServer">...</span>
+            </div>
+
+            <div class="row">
+                <span class="label">SSL CoT</span>
+                <span id="itakCot">...</span>
+            </div>
+
+            <div class="row">
+                <span class="label">Enrollment</span>
+                <span id="itakEnroll">...</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>WinTAK</h2>
+
+            <div class="row">
+                <span class="label">Server</span>
+                <span id="wintakServer">...</span>
+            </div>
+
+            <div class="row">
+                <span class="label">SSL CoT</span>
+                <span id="wintakCot">...</span>
+            </div>
+
+            <div class="row">
+                <span class="label">Secure API</span>
+                <span id="wintakHttps">...</span>
+            </div>
+        </div>
+
+    </div>
+    <div style="margin-top:18px">
+        <details>
+            <summary style="cursor:pointer;color:white;font-weight:600">
+                Advanced / Manual Setup
+            </summary>
+
+            <div style="margin-top:14px">
+                <p class="label">
+                    Manual certificate and trust configuration tools.
+                </p>
+
+                <button onclick="downloadTruststore()">
+                    Download Truststore
+                </button>
+            </div>
+        </details>
+    </div>
+
+</section>
+
+<section class="card" style="margin-top:18px">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Users</h2>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+        <button onclick="refreshUsers()">Refresh Users</button>
+        <button onclick="showCreateUser()">Create User</button>
+    </div>
+
+    <div id="usersStatus" class="label">
+        Press Refresh Users to load accounts.
+    </div>
+
+    <div id="userForm" style="display:none;margin-top:18px">
+        <h2 id="userFormTitle">Create User</h2>
+
+        <div style="display:grid;gap:10px;max-width:420px">
+            <input
+                id="userUsername"
+                type="text"
+                placeholder="Username (lowercase)" autocapitalize="none" autocorrect="off" spellcheck="false"
+                autocomplete="off"
+            >
+
+            <input
+                id="userPassword"
+                type="password"
+                placeholder="Password"
+                autocomplete="new-password"
+            >
+
+            <input
+                id="userPasswordConfirm"
+                type="password"
+                placeholder="Confirm password"
+                autocomplete="new-password"
+            >
+
+            <div style="display:flex;gap:10px">
+                <button
+                    id="userSubmitButton"
+                    class="primary"
+                    onclick="submitUserForm()"
+                >
+                    Create User
+                </button>
+
+                <button onclick="cancelUserForm()">
+                    Cancel
+                </button>
+            </div>
+
+
+
+    
+        </div>
+    </div>
+    <div id="usersList" style="margin-top:14px"></div>
+</section>
+
+<section class="card" style="margin-top:18px">
+    <details>
+        <summary style="cursor:pointer;color:white;font-size:1.35rem;font-weight:600">
+            Backup / Restore
+        </summary>
+
+        <div style="margin-top:14px">
+            <button onclick="createPortableTakBackup()">
+                Create Backup
+            </button>
+
+            <div id="backupStatus" class="label" style="margin-top:12px">
+                No backup action in progress.
+            </div>
+
+            <div id="backupList" style="margin-top:14px"></div>
+        </div>
+    </details>
+</section>
+
+<section class="card" style="margin-top:18px">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">Activity</h2>
+    <div id="activity">Dashboard ready.</div>
+</section>
+
+<div class="footer">
+    PortableTAK Server Management Interface
+</div>
+
+</main>
+
+<script>
+let busy = false;
+let lastStatus = {};
+
+const byId = (id) => document.getElementById(id);
+
+function value(v, fallback = "—") {
+    return (v === undefined || v === null || v === "") ? fallback : v;
+}
+
+function yesNo(v) {
+    if (v === "1") return "Yes";
+    if (v === "0") return "No";
+    return value(v);
+}
+
+function stateClass(state) {
+    if (state === "RUNNING" || state === "VALID" || state === "CLAIMED_LOCAL") {
+        return "good";
+    }
+
+    if (state === "PARTIAL") {
+        return "warn";
+    }
+
+    if (state === "ERROR" || state === "INVALID") {
+        return "bad";
+    }
+
+    return "";
+}
+
+function setText(id, text, className = "") {
+    const el = byId(id);
+    el.textContent = text;
+    el.className = className;
+}
+
+async function fetchJson(url, options = {}) {
+    const response = await fetch(url, options);
+    const body = await response.json();
+
+    if (!response.ok) {
+        throw new Error(JSON.stringify(body));
+    }
+
+    return body;
+}
+
+// Windows/Mac: the start window attached the drive; stopping and releasing it is done there.
+function showHostActions(kind) {
+    const computer = kind === "windows" || kind === "mac";
+    byId("nodeActions").style.display = computer ? "none" : "";
+    byId("computerActions").style.display = computer ? "block" : "none";
+    if (!computer) return;
+    byId("computerActionsText").innerHTML = kind === "windows"
+        ? "<b>Running on this Windows computer.</b><br>To stop PortableTAK and get the drive back, double-click " +
+          "<b>Stop PortableTAK</b> on the desktop and wait for \"You can remove the drive now\".<br>" +
+          "To start it again, double-click <b>Start PortableTAK (Windows)</b> on the drive."
+        : "<b>Running on this Mac.</b><br>To stop PortableTAK, press Return in the PortableTAK window " +
+          "(or double-click <b>Stop PortableTAK</b> on the Desktop), then eject the drive.<br>" +
+          "To start it again, double-click <b>Start PortableTAK (Mac)</b> on the drive.";
+}
+
+async function refreshStatus() {
+    if (busy) return;
+
+    try {
+        const statusResponse = await fetchJson("/api/status");
+        const healthResponse = await fetchJson("/api/health");
+
+        let networkResponse = { network: {} };
+
+        try {
+            networkResponse = await fetchJson("/api/network");
+        } catch (err) {
+            networkResponse = {
+                network: {
+                    PORTABLETAK_SERVICE_IP_STATE: "UNAVAILABLE"
+                }
+            };
+        }
+
+        const s = statusResponse.status || {};
+        const h = healthResponse.health || {};
+        const n = networkResponse.network || {};
+
+        lastStatus = s;
+        showHostActions(statusResponse.host_kind);
+
+        const runtime = value(s.PORTABLETAK_RUNTIME, "UNAVAILABLE");
+
+        setText(
+            "serverName",
+            value(s.PORTABLETAK_INSTANCE_NAME, "PortableTAK Server")
+        );
+
+        setText("runtime", runtime, stateClass(runtime));
+        setText("runtimeBadge", runtime, "badge " + stateClass(runtime));
+
+        setText("cartridge", value(s.PORTABLETAK_CARTRIDGE));
+        setText("storage", value(s.PORTABLETAK_STORAGE));
+        setText("device", value(s.PORTABLETAK_DEVICE));
+
+        setText("prepared", yesNo(s.PORTABLETAK_RUNTIME_PREPARED));
+        setText("foundation", yesNo(s.PORTABLETAK_FOUNDATION_RUNNING));
+        setText("application", yesNo(s.PORTABLETAK_APPLICATION_RUNNING));
+        setText("provisioning", value(s.PORTABLETAK_PROVISIONING_STATE));
+
+        setText(
+            "postgresql",
+            value(h.PORTABLETAK_POSTGRESQL),
+            stateClass(h.PORTABLETAK_POSTGRESQL)
+        );
+
+        setText(
+            "rabbitmq",
+            value(h.PORTABLETAK_RABBITMQ),
+            stateClass(h.PORTABLETAK_RABBITMQ)
+        );
+
+        setText(
+            "mediamtx",
+            value(h.PORTABLETAK_MEDIAMTX),
+            stateClass(h.PORTABLETAK_MEDIAMTX)
+        );
+
+        setText(
+            "ots",
+            value(h.PORTABLETAK_OTS),
+            stateClass(h.PORTABLETAK_OTS)
+        );
+
+        setText(
+            "cot",
+            value(h.PORTABLETAK_COT),
+            stateClass(h.PORTABLETAK_COT)
+        );
+
+        setText(
+            "eud",
+            value(h.PORTABLETAK_EUD),
+            stateClass(h.PORTABLETAK_EUD)
+        );
+
+        setText(
+            "nginx",
+            value(h.PORTABLETAK_NGINX),
+            stateClass(h.PORTABLETAK_NGINX)
+        );
+
+        setText(
+            "clients",
+            value(h.PORTABLETAK_COT_CLIENTS, "0")
+        );
+
+        setText("instanceType", value(s.PORTABLETAK_INSTANCE_TYPE));
+        setText("architecture", value(s.PORTABLETAK_ARCH));
+        setText("format", value(s.PORTABLETAK_FORMAT));
+
+        setText("serviceIp", value(n.PORTABLETAK_SERVICE_IP));
+        setText("serviceDev", value(n.PORTABLETAK_SERVICE_DEV));
+
+        const networkState = value(
+            n.PORTABLETAK_SERVICE_IP_STATE,
+            "UNAVAILABLE"
+        );
+
+        setText(
+            "serviceState",
+            networkState,
+            stateClass(networkState)
+        );
+
+        updateButtons(s);
+    } catch (err) {
+        setText("runtimeBadge", "API ERROR", "badge bad");
+        logActivity("Status refresh failed: " + err.message);
+    }
+}
+
+function updateButtons(s) {
+    const storage = s.PORTABLETAK_STORAGE;
+    const runtime = s.PORTABLETAK_RUNTIME;
+    const valid = s.PORTABLETAK_CARTRIDGE === "VALID";
+
+    byId("mountButton").disabled =
+        busy || storage === "MOUNTED";
+
+    byId("startButton").disabled =
+        busy ||
+        storage !== "MOUNTED" ||
+        !valid ||
+        runtime === "RUNNING";
+
+    byId("stopButton").disabled =
+        busy ||
+        (runtime !== "RUNNING" && runtime !== "PARTIAL");
+
+    byId("safeButton").disabled =
+        busy ||
+        storage !== "MOUNTED";
+}
+
+function logActivity(text) {
+    const now = new Date().toLocaleTimeString();
+    const box = byId("activity");
+
+    box.textContent =
+        "[" + now + "] " + text + "\n" + box.textContent;
+}
+
+async function runAction(action) {
+    if (busy) return;
+
+    busy = true;
+    updateButtons(lastStatus);
+
+    logActivity("Running " + action + "...");
+
+    try {
+        const response = await fetchJson(
+            "/api/" + action.replace("_", "-"),
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                }
+            }
+        );
+
+        const output = response.output || [];
+
+        logActivity(
+            action + " completed successfully." +
+            (output.length ? "\n" + output.join("\n") : "")
+        );
+    } catch (err) {
+        logActivity(action + " failed: " + err.message);
+    } finally {
+        busy = false;
+        await refreshStatus();
+    }
+}
+
+async function safeRemove() {
+    const confirmed = window.confirm(
+        "Stop PortableTAK if necessary and safely unmount the cartridge?"
+    );
+
+    if (!confirmed) return;
+
+    await runAction("safe_remove");
+}
+
+
+function downloadTruststore() {
+    window.location.href = "/api/client/truststore";
+}
+
+function formatBackupSize(bytes) {
+    if (bytes < 1024) {
+        return bytes + " B";
+    }
+
+    if (bytes < 1024 * 1024) {
+        return (bytes / 1024).toFixed(1) + " KB";
+    }
+
+    return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+async function refreshBackups() {
+    const list = document.getElementById("backupList");
+
+    try {
+        const response = await fetchJson("/api/backups");
+        const backups = response.backups || [];
+
+        list.innerHTML = "";
+
+        if (!backups.length) {
+            list.textContent = "No backups found.";
+            return;
+        }
+
+        for (const backup of backups) {
+            const row = document.createElement("div");
+
+            row.style.marginTop = "12px";
+            row.style.paddingBottom = "10px";
+
+            const info = document.createElement("div");
+
+            info.textContent =
+                backup.name +
+                " (" +
+                formatBackupSize(backup.size) +
+                ")";
+
+            info.style.marginBottom = "8px";
+
+            const buttonRow = document.createElement("div");
+
+            buttonRow.style.display = "flex";
+            buttonRow.style.gap = "8px";
+            buttonRow.style.flexWrap = "wrap";
+
+            const downloadButton =
+                document.createElement("button");
+
+            downloadButton.textContent = "Download";
+            downloadButton.onclick = function() {
+                window.location.href =
+                    "/api/backup/download/" +
+                    encodeURIComponent(backup.name);
+            };
+
+            const verifyButton =
+                document.createElement("button");
+
+            verifyButton.textContent = "Verify";
+            verifyButton.onclick = function() {
+                verifyPortableTakBackup(backup.name);
+            };
+
+            const restoreButton =
+                document.createElement("button");
+
+            restoreButton.textContent = "Restore";
+            restoreButton.className = "primary";
+            restoreButton.onclick = function() {
+                restorePortableTakBackup(backup.name);
+            };
+
+            const deleteButton =
+                document.createElement("button");
+
+            deleteButton.textContent = "Delete";
+            deleteButton.className = "danger";
+            deleteButton.onclick = function() {
+                deletePortableTakBackup(backup.name);
+            };
+
+            buttonRow.appendChild(downloadButton);
+            buttonRow.appendChild(verifyButton);
+            buttonRow.appendChild(restoreButton);
+            buttonRow.appendChild(deleteButton);
+
+            row.appendChild(info);
+            row.appendChild(buttonRow);
+            list.appendChild(row);
+        }
+    } catch (err) {
+        list.textContent =
+            "Backup list failed: " + err.message;
+    }
+}
+
+async function deletePortableTakBackup(name) {
+    const status = document.getElementById("backupStatus");
+
+    const confirmed = window.confirm(
+        "Delete backup " + name + "?\n\n" +
+        "This cannot be undone."
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    status.textContent = "Deleting " + name + "...";
+
+    try {
+        await fetchJson(
+            "/api/backup/" +
+            encodeURIComponent(name),
+            {
+                method: "DELETE"
+            }
+        );
+
+        status.textContent =
+            "Backup deleted: " + name;
+
+        await refreshBackups();
+    } catch (err) {
+        status.textContent =
+            "Delete failed: " + err.message;
+    }
+}
+
+async function verifyPortableTakBackup(name) {
+    const status = document.getElementById("backupStatus");
+
+    status.textContent = "Verifying " + name + "...";
+
+    try {
+        const response = await fetchJson(
+            "/api/backup/verify/" +
+            encodeURIComponent(name),
+            {
+                method: "POST"
+            }
+        );
+
+        status.textContent =
+            "Backup verified successfully: " + name;
+    } catch (err) {
+        status.textContent =
+            "Backup verification failed: " + err.message;
+    }
+}
+
+async function restorePortableTakBackup(name) {
+    const status = document.getElementById("backupStatus");
+
+    const confirmed = window.confirm(
+        "Restore " + name + "?\n\n" +
+        "PortableTAK will create a safety backup, stop services, " +
+        "restore the selected backup, and restart the server."
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    const confirmedAgain = window.confirm(
+        "This will replace the current PortableTAK configuration, " +
+        "certificates, users, and database with the selected backup.\n\n" +
+        "Continue?"
+    );
+
+    if (!confirmedAgain) {
+        return;
+    }
+
+    status.textContent =
+        "Restoring " + name + "... This may take a few minutes.";
+
+    try {
+        const response = await fetchJson(
+            "/api/backup/restore/" +
+            encodeURIComponent(name),
+            {
+                method: "POST"
+            }
+        );
+
+        status.textContent =
+            "Restore complete: " + name;
+
+        await refreshStatus();
+        await refreshUsers();
+        await refreshClientInfo();
+        await refreshBackups();
+    } catch (err) {
+        status.textContent =
+            "Restore failed: " + err.message;
+    }
+}
+
+async function createPortableTakBackup() {
+    const status = document.getElementById("backupStatus");
+
+    status.textContent = "Creating backup...";
+
+    try {
+        const response = await fetchJson(
+            "/api/backup",
+            {
+                method: "POST"
+            }
+        );
+
+        const backup = response.backup || {};
+
+        status.textContent =
+            "Backup complete: " +
+            (backup.BACKUP_SIZE || "unknown size");
+
+        await refreshBackups();
+    } catch (err) {
+        status.textContent =
+            "Backup failed: " + err.message;
+    }
+}
+
+async function refreshClientInfo() {
+    const status = byId("clientSetupStatus");
+
+    status.textContent = "Loading client setup...";
+
+    try {
+        const response = await fetchJson("/api/client-info");
+        const c = response.client_info || {};
+
+        const server =
+            value(c.PORTABLETAK_CLIENT_SERVER);
+
+        const cot =
+            server + ":" +
+            value(c.PORTABLETAK_CLIENT_COT_SSL_PORT);
+
+        const enroll =
+            server + ":" +
+            value(c.PORTABLETAK_CLIENT_ENROLL_PORT);
+
+        const https =
+            server + ":" +
+            value(c.PORTABLETAK_CLIENT_HTTPS_PORT);
+
+        setText("atakServer", server);
+        setText("atakCot", cot);
+        setText("atakEnroll", enroll);
+        setText(
+            "atakTrust",
+            value(c.PORTABLETAK_CLIENT_TRUSTSTORE)
+        );
+
+        setText("itakServer", server);
+        setText("itakCot", cot);
+        setText("itakEnroll", enroll);
+
+        setText("wintakServer", server);
+        setText("wintakCot", cot);
+        setText("wintakHttps", https);
+
+        status.textContent =
+            value(
+                c.PORTABLETAK_CLIENT_INSTANCE,
+                "PortableTAK Server"
+            ) + " client settings loaded.";
+    } catch (err) {
+        status.textContent =
+            "Client setup failed: " + err.message;
+    }
+}
+
+
+let userFormMode = "create";
+let selectedUsername = "";
+
+async function showItakQr(username, remote) {
+    const overlay = document.getElementById("itakQrOverlay");
+    const image = document.getElementById("itakQrImage");
+    const user = document.getElementById("itakQrUser");
+
+    user.textContent = username;
+    image.removeAttribute("src");
+
+    document.getElementById("itakQrTitle").textContent =
+        remote ? "iTAK Remote QR (Tailscale)" : "iTAK QR Setup";
+    document.getElementById("itakQrRemoteNote").style.display = remote ? "block" : "none";
+
+    overlay.style.display = "flex";
+
+    try {
+        const response = await fetch(
+            "/api/client/itak-qr/" +
+            encodeURIComponent(username) +
+            (remote ? "?address=remote" : ""),
+            {
+                method: "POST"
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(
+                data.detail ||
+                data.error ||
+                "QR generation failed"
+            );
+        }
+
+        image.src =
+            "data:image/png;base64," +
+            data.qr_png_base64;
+    } catch (err) {
+        closeItakQr();
+        alert(err.message === "remote_access_not_set_up"
+            ? "Remote access is not set up yet. See the Remote Access section first."
+            : "iTAK QR setup failed: " + err.message);
+    }
+}
+
+function closeItakQr() {
+    document.getElementById("itakQrOverlay").style.display = "none";
+}
+
+async function showAtakQr(username, remote) {
+    const overlay = document.getElementById("atakQrOverlay");
+    const image = document.getElementById("atakQrImage");
+    const user = document.getElementById("atakQrUser");
+    const link = document.getElementById("atakQrOpenLink");
+
+    user.textContent = username;
+    image.removeAttribute("src");
+    link.href = "#";
+
+    document.getElementById("atakQrTitle").textContent =
+        remote ? "ATAK Remote QR (Tailscale)" : "ATAK QR Setup";
+    document.getElementById("atakQrRemoteNote").style.display = remote ? "block" : "none";
+
+    overlay.style.display = "flex";
+
+    try {
+        const response = await fetch(
+            "/api/client/atak-qr/" +
+            encodeURIComponent(username) +
+            (remote ? "?address=remote" : ""),
+            {
+                method: "POST"
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+            throw new Error(
+                data.detail ||
+                data.error ||
+                "QR generation failed"
+            );
+        }
+
+        image.src =
+            "data:image/png;base64," +
+            data.qr_png_base64;
+
+        link.href = data.qr_string;
+    } catch (err) {
+        closeAtakQr();
+        alert(err.message === "remote_access_not_set_up"
+            ? "Remote access is not set up yet. See the Remote Access section first."
+            : "ATAK QR setup failed: " + err.message);
+    }
+}
+
+function closeAtakQr() {
+    document.getElementById("atakQrOverlay").style.display = "none";
+}
+
+async function downloadTrustPackage() {
+    try {
+        const response = await fetch("/api/client/trust-package");
+        if (!response.ok) {
+            throw new Error("Trust package not available");
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get("content-disposition") || "";
+        const match = disposition.match(/filename="?([^";]+)"?/i);
+        const link = document.createElement("a");
+        link.href = window.URL.createObjectURL(blob);
+        link.download = match ? match[1] : "PortableTAK_TRUST.zip";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    } catch (err) {
+        alert("Trust package download failed: " + err.message);
+    }
+}
+
+async function downloadClientPackage(username, clientType, address) {
+    const status = byId("usersStatus");
+
+    status.textContent =
+        "Preparing " +
+        clientType.toUpperCase() +
+        " package for " +
+        username +
+        "...";
+
+    try {
+        const response = await fetch(
+            "/api/client/package/" +
+            encodeURIComponent(username) +
+            "/" +
+            encodeURIComponent(clientType) +
+            (address ? "?address=" + encodeURIComponent(address) : "")
+        );
+
+        if (!response.ok) {
+            let message = "Package not available";
+
+            try {
+                const body = await response.json();
+
+                if (body.detail) {
+                    message = body.detail;
+                }
+            } catch (err) {
+            }
+
+            throw new Error(message);
+        }
+
+        const blob = await response.blob();
+
+        const disposition =
+            response.headers.get("content-disposition") || "";
+
+        let filename =
+            username + "_" +
+            clientType.toUpperCase() +
+            "_CONFIG.zip";
+
+        const match =
+            disposition.match(/filename="?([^";]+)"?/i);
+
+        if (match) {
+            filename = match[1];
+        }
+
+        const url =
+            window.URL.createObjectURL(blob);
+
+        const link =
+            document.createElement("a");
+
+        link.href = url;
+        link.download = filename;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        window.URL.revokeObjectURL(url);
+
+        status.textContent =
+            "Downloaded " +
+            clientType.toUpperCase() +
+            " package for " +
+            username +
+            ".";
+    } catch (err) {
+        status.textContent =
+            clientType.toUpperCase() +
+            " package for " +
+            username +
+            ": " +
+            err.message;
+    }
+}
+
+async function refreshUsers() {
+    const status = byId("usersStatus");
+    const list = byId("usersList");
+
+    status.textContent =
+        "Loading users. OpenTAKServer initialization takes about 20–25 seconds...";
+
+    list.innerHTML = "";
+
+    try {
+        const response = await fetchJson("/api/users");
+        // Administrator always first, then everyone else alphabetically.
+        const users = (response.users || []).slice().sort((a, b) =>
+            (b.username === "administrator") - (a.username === "administrator") ||
+            String(a.username).localeCompare(String(b.username), undefined, {sensitivity: "base"}));
+
+        status.textContent =
+            users.length + " user account(s) loaded.";
+
+        for (const user of users) {
+            const item = document.createElement("div");
+            item.className = "user-item";
+
+            const roles = (user.roles || []).join(", ") || "none";
+            const state = user.active ? "Active" : "Disabled";
+
+            item.innerHTML =
+                '<div class="user-head">' +
+                    '<div>' +
+                        '<div class="user-name"></div>' +
+                        '<div class="user-meta"></div>' +
+                    '</div>' +
+                '</div>' +
+                '<details class="user-manage" style="margin-top:10px">' +
+                    '<summary style="cursor:pointer;font-size:0.9em;font-weight:400;color:white">Manage User / Download Setup Package</summary>' +
+                    '<div class="user-actions" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"></div>' +
+                    '<div class="user-package-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"></div>' +
+                '</details>';
+
+            item.querySelector(".user-name").textContent =
+                user.username;
+
+            item.querySelector(".user-meta").textContent =
+                state +
+                " · Roles: " + roles +
+                " · EUDs: " + (user.eud_count || 0) +
+                " · Logins: " + (user.login_count || 0);
+
+            const actions =
+                item.querySelector(".user-actions");
+
+            const packageActions =
+                item.querySelector(".user-package-actions");
+
+            const resetButton =
+                document.createElement("button");
+
+            resetButton.textContent = "Reset Password";
+            resetButton.onclick = function() {
+                showResetPassword(user.username);
+            };
+
+            actions.appendChild(resetButton);
+
+            if (!user.roles.includes("administrator")) {
+                const atakButton =
+                    document.createElement("button");
+
+                atakButton.textContent = "ATAK Package";
+                atakButton.style.order = "2";
+                atakButton.onclick = function() {
+                    downloadClientPackage(
+                        user.username,
+                        "atak"
+                    );
+                };
+
+                packageActions.appendChild(atakButton);
+
+                const qrButton =
+                    document.createElement("button");
+
+                qrButton.textContent = "ATAK QR Setup";
+                qrButton.style.order = "1";
+                qrButton.onclick = function() {
+                    showAtakQr(user.username);
+                };
+
+                packageActions.appendChild(qrButton);
+
+                const itakButton =
+                    document.createElement("button");
+
+                itakButton.textContent = "iTAK Package";
+                itakButton.style.order = "3";
+                itakButton.onclick = function() {
+                    downloadClientPackage(
+                        user.username,
+                        "itak"
+                    );
+                };
+
+                const itakQrButton =
+                    document.createElement("button");
+
+                itakQrButton.textContent = "iTAK QR Setup";
+                itakQrButton.style.order = "4";
+                itakQrButton.onclick = function() {
+                    showItakQr(user.username);
+                };
+
+                packageActions.appendChild(itakQrButton);
+
+                const itakRemoteQrButton =
+                    document.createElement("button");
+
+                itakRemoteQrButton.textContent = "iTAK Remote QR";
+                itakRemoteQrButton.title = "iTAK server entry that also works over cellular (Tailscale)";
+                itakRemoteQrButton.style.order = "4";
+                itakRemoteQrButton.onclick = function() {
+                    showItakQr(user.username, true);
+                };
+
+                packageActions.appendChild(itakRemoteQrButton);
+
+                itakButton.style.order = "5";
+                packageActions.appendChild(itakButton);
+
+                // iTAK uses only the first connection in a package, so give it
+                // a second package for the Tailscale (cellular) connection.
+                const itakRemoteButton =
+                    document.createElement("button");
+
+                itakRemoteButton.textContent = "iTAK Remote Package";
+                itakRemoteButton.title = "Second iTAK server entry for use over cellular (Tailscale)";
+                itakRemoteButton.style.order = "6";
+                itakRemoteButton.onclick = function() {
+                    downloadClientPackage(
+                        user.username,
+                        "itak",
+                        "remote"
+                    );
+                };
+
+                packageActions.appendChild(itakRemoteButton);
+
+                const wintakButton =
+                    document.createElement("button");
+
+                wintakButton.textContent = "WinTAK Setup";
+                wintakButton.style.order = "2";
+                wintakButton.onclick = function() {
+                    downloadClientPackage(
+                        user.username,
+                        "wintak"
+                    );
+                };
+
+                packageActions.appendChild(wintakButton);
+
+                // Drones and radios (e.g. Skydio X10D): trust store, client
+                // certificate and secure.pref in one flat package.
+                const tlsButton =
+                    document.createElement("button");
+
+                tlsButton.textContent = "Device TLS Package";
+                tlsButton.title = "For drones and radios such as the Skydio X10D (trust store, client certificate, secure.pref)";
+                tlsButton.style.order = "7";
+                tlsButton.onclick = function() {
+                    downloadClientPackage(
+                        user.username,
+                        "tls"
+                    );
+                };
+
+                packageActions.appendChild(tlsButton);
+
+
+                const stateButton =
+                    document.createElement("button");
+
+                stateButton.textContent =
+                    user.active ? "Disable" : "Enable";
+
+                stateButton.style.marginLeft = "8px";
+
+                stateButton.onclick = function() {
+                    setUserActive(
+                        user.username,
+                        !user.active
+                    );
+                };
+
+                actions.appendChild(stateButton);
+
+                const deleteButton =
+                    document.createElement("button");
+
+                deleteButton.textContent = "Delete";
+                deleteButton.className = "danger";
+                deleteButton.style.marginLeft = "8px";
+
+                deleteButton.onclick = function() {
+                    deleteUser(user.username);
+                };
+
+                actions.appendChild(deleteButton);
+            }
+
+            list.appendChild(item);
+        }
+    } catch (err) {
+        status.textContent =
+            "Failed to load users: " + err.message;
+    }
+}
+
+async function setUserActive(username, enabled) {
+    const action = enabled ? "activate" : "deactivate";
+
+    if (!window.confirm(
+        (enabled ? "Enable " : "Disable ") +
+        username + "?"
+    )) {
+        return;
+    }
+
+    byId("usersStatus").textContent =
+        enabled
+            ? "Enabling " + username + "..."
+            : "Disabling " + username + "...";
+
+    try {
+        await fetchJson(
+            "/api/users/" + action,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    username: username
+                })
+            }
+        );
+
+        logActivity(
+            (enabled ? "Enabled user: " : "Disabled user: ") +
+            username
+        );
+
+        await refreshUsers();
+    } catch (err) {
+        byId("usersStatus").textContent =
+            "User operation failed: " + err.message;
+    }
+}
+
+async function deleteUser(username) {
+    if (!window.confirm(
+        "Delete TAK user " + username +
+        "? This removes the account."
+    )) {
+        return;
+    }
+
+    byId("usersStatus").textContent =
+        "Deleting " + username + "...";
+
+    try {
+        await fetchJson(
+            "/api/users/delete",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    username: username
+                })
+            }
+        );
+
+        logActivity(
+            "Deleted TAK user: " + username
+        );
+
+        await refreshUsers();
+    } catch (err) {
+        byId("usersStatus").textContent =
+            "Delete failed: " + err.message;
+    }
+}
+
+function showCreateUser() {
+    userFormMode = "create";
+    selectedUsername = "";
+
+    byId("userFormTitle").textContent =
+        "Create User";
+
+    byId("userSubmitButton").textContent =
+        "Create User";
+
+    byId("userUsername").disabled = false;
+    byId("userUsername").value = "";
+    byId("userPassword").value = "";
+    byId("userPasswordConfirm").value = "";
+
+    byId("userForm").style.display = "block";
+}
+
+function showResetPassword(username) {
+    userFormMode = "reset";
+    selectedUsername = username;
+
+    byId("userFormTitle").textContent =
+        "Reset Password: " + username;
+
+    byId("userSubmitButton").textContent =
+        "Reset Password";
+
+    byId("userUsername").value = username;
+    byId("userUsername").disabled = true;
+    byId("userPassword").value = "";
+    byId("userPasswordConfirm").value = "";
+
+    byId("userForm").style.display = "block";
+}
+
+function cancelUserForm() {
+    byId("userForm").style.display = "none";
+    byId("userPassword").value = "";
+    byId("userPasswordConfirm").value = "";
+}
+
+async function submitUserForm() {
+    const username =
+        userFormMode === "reset"
+            ? selectedUsername
+            : byId("userUsername").value.trim();
+
+    const password =
+        byId("userPassword").value;
+
+    const confirm =
+        byId("userPasswordConfirm").value;
+
+    if (!username) {
+        window.alert("Enter a username.");
+        return;
+    }
+
+    if (!password) {
+        window.alert("Enter a password.");
+        return;
+    }
+
+    if (password !== confirm) {
+        window.alert("Passwords do not match.");
+        return;
+    }
+
+    if (/[:&<>]/.test(password)) {
+        window.alert(
+            "Passwords can use letters, numbers and symbols, except : & < > (TAK enrollment cannot handle those four)."
+        );
+        return;
+    }
+
+    const button = byId("userSubmitButton");
+    button.disabled = true;
+
+    byId("usersStatus").textContent =
+        userFormMode === "create"
+            ? "Creating user..."
+            : "Resetting password...";
+
+    const url =
+        userFormMode === "create"
+            ? "/api/users/create"
+            : "/api/users/reset-password";
+
+    try {
+        const response = await fetchJson(
+            url,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    username: username,
+                    password: password
+                })
+            }
+        );
+
+        logActivity(
+            userFormMode === "create"
+                ? "Created TAK user: " + username
+                : "Reset password for TAK user: " + username
+        );
+
+        cancelUserForm();
+
+        byId("usersStatus").textContent =
+            response.result || "User operation completed.";
+
+        await refreshUsers();
+    } catch (err) {
+        byId("usersStatus").textContent =
+            "User operation failed: " + err.message;
+    } finally {
+        button.disabled = false;
+    }
+}
+
+
+refreshStatus();
+refreshClientInfo();
+refreshUsers();
+refreshBackups();
+
+setInterval(refreshStatus, 3000);
+</script>
+
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const collapsibleTitles = ["Client Setup", "Users"];
+
+    for (const title of collapsibleTitles) {
+        const headings = Array.from(document.querySelectorAll("section > h2"));
+        const heading = headings.find(
+            h => h.textContent.trim() === title
+        );
+
+        if (!heading) {
+            continue;
+        }
+
+        const section = heading.parentElement;
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        const content = document.createElement("div");
+
+        summary.textContent = title;
+        summary.style.cursor = "pointer";
+        summary.style.color = "white";
+        summary.style.fontSize = "1.35rem";
+        summary.style.fontWeight = "600";
+        summary.style.marginBottom = "10px";
+
+        details.appendChild(summary);
+        details.appendChild(content);
+
+        heading.replaceWith(details);
+
+        while (details.nextSibling) {
+            content.appendChild(details.nextSibling);
+        }
+    }
+});
+</script>
+
+
+<div id="atakQrOverlay"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);
+            z-index:9999;align-items:center;justify-content:center;padding:20px">
+
+    <div style="background:#151922;border:1px solid #333;border-radius:12px;
+                padding:22px;max-width:420px;width:100%;text-align:center">
+
+        <h2 id="atakQrTitle" style="color:white;margin-top:0">ATAK QR Setup</h2>
+
+        <div id="atakQrUser" style="color:white;margin-bottom:12px"></div>
+
+        <div id="atakQrRemoteNote" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;
+                    background:#1f2a3d;color:#dde;font-size:.88em;text-align:left;line-height:1.45">
+            <b>Remote QR:</b> this server entry uses the Tailscale address, so it works on Wi-Fi
+            <b>and</b> on cellular. The phone needs the <b>Tailscale app</b> installed, signed in to the
+            same account, and switched <b>on</b>. Use either this QR or the normal one on a phone, not both.
+        </div>
+
+        <img id="atakQrImage"
+             alt="ATAK enrollment QR"
+             style="width:280px;max-width:100%;background:white;padding:10px;
+                    border-radius:8px">
+
+        <div style="margin-top:12px;font-size:.88em;color:#ccc;text-align:left;line-height:1.45">
+            <b>Scan this from inside ATAK</b> (a phone's camera app cannot use it):
+            ATAK &rarr; Settings &rarr; Network Preferences &rarr; Manage Server Connections &rarr;
+            add a server &rarr; tap the QR icon. Then sign in with this user's name and password.<br>
+            <b>First time on this phone?</b> Import the <b>ATAK Trust Package (for QR)</b> from Client Setup first.<br>
+            <b>Is this page open on the phone itself?</b> Tap <b>Open in ATAK</b> instead of scanning.<br>
+            <b>Remote access set up?</b> The phone gets two servers: this one and "<i>server name</i> (Tailscale)",
+            which keeps working over cellular while the phone's Tailscale app is on.
+        </div>
+
+        <div style="margin-top:16px;display:flex;gap:8px;
+                    justify-content:center;flex-wrap:wrap">
+
+            <a id="atakQrOpenLink"
+               href="#"
+               style="display:inline-block;padding:9px 14px;border-radius:6px;
+                      background:#2d6cdf;color:white;text-decoration:none">
+                Open in ATAK
+            </a>
+
+            <button onclick="closeAtakQr()">
+                Close
+            </button>
+        </div>
+
+        <div style="margin-top:12px;font-size:.85em;color:#aaa">
+            This QR contains a single-use enrollment credential.<br>
+            Expires in 15 minutes.<br>
+            Do not share or reuse it.
+        </div>
+    </div>
+</div>
+
+
+<div id="itakQrOverlay"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);
+            z-index:9999;align-items:center;justify-content:center;padding:20px">
+
+    <div style="background:#151922;border:1px solid #333;border-radius:12px;
+                padding:22px;max-width:420px;width:100%;text-align:center">
+
+        <h2 id="itakQrTitle" style="color:white;margin-top:0">iTAK QR Setup</h2>
+
+        <div id="itakQrUser" style="color:white;margin-bottom:12px"></div>
+
+        <div id="itakQrRemoteNote" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;
+                    background:#1f2a3d;color:#dde;font-size:.88em;text-align:left;line-height:1.45">
+            <b>Remote QR:</b> this server entry uses the Tailscale address, so it works on Wi-Fi
+            <b>and</b> on cellular. The phone needs the <b>Tailscale app</b> installed, signed in to the
+            same account, and switched <b>on</b>. Use either this QR or the normal one on a phone, not both.
+        </div>
+
+        <img id="itakQrImage"
+             alt="iTAK setup QR"
+             style="width:280px;max-width:100%;background:white;padding:10px;
+                    border-radius:8px">
+
+        <div style="margin-top:12px;font-size:.85em;color:#aaa">
+            <b>Scan this from inside iTAK</b> (a phone's camera app cannot use it):
+            iTAK &rarr; Settings &rarr; Network &rarr; Servers &rarr; + &rarr; Scan QR, then sign in
+            with this user's name and password.<br>
+            This QR has the server settings only (no user credential or certificate).
+            The <b>iTAK Package</b> is the alternative that needs no sign-in.
+        </div>
+
+        <div style="margin-top:16px">
+            <button onclick="closeItakQr()">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Re-evaluate internet sharing when the uplink (wan) comes up or goes down.
+case "$INTERFACE" in wan|phonewan) ;; *) exit 0 ;; esac
+case "$ACTION" in
+    ifup|ifdown|ifupdate)
+        # Give DHCP/routing a moment to settle, then decide (in the background).
+        ( sleep 5; /usr/local/portabletak/bin/portabletak-gateway auto >/dev/null 2>&1 ) &
+        ;;
+esac

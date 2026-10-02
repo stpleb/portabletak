@@ -1,0 +1,217 @@
+#!/bin/bash
+# PortableTAK first setup on a Mac (Apple Silicon).
+#
+# Builds a ready-to-run PortableTAK cartridge on a USB drive:
+#   1. asks for the server name and the two passwords (retry on typos),
+#   2. lets you pick the USB drive (external drives only; asks you to confirm),
+#   3. sets up the server inside a Linux container on this Mac (uses the
+#      Mac's internet for anything that needs it),
+#   4. writes it to the drive and verifies it.
+# Plug the drive into an OpenMANET node afterwards: the node finishes the
+# host-specific part by itself on first start, with or without internet.
+#
+# Needs: colima + docker (brew install colima docker), admin password for the
+# final write (macOS asks via sudo).
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PAYLOAD="${PT_PAYLOAD:-$HERE/payload}"
+CLEAN_BASE="${PT_CLEAN_BASE:-$HERE/clean-base}"
+WORK="${PT_WORK:-$HOME/.portabletak-setup}"
+IMAGE_TAG="portabletak-setup:2"
+ASGARD_UUID="1f501ae2-54f0-460d-a000-bce2fcc78c20"
+MIN_BYTES=$((16 * 1000 * 1000 * 1000))
+MAX_BYTES=$((2 * 1000 * 1000 * 1000 * 1000))
+
+say() { printf '\n== %s\n' "$*"; }
+die() { printf '\nSetup stopped: %s\n' "$*" >&2; cleanup_secrets; exit 1; }
+cleanup_secrets() { rm -rf "$WORK/secrets" "$WORK/out" 2>/dev/null; }
+trap 'cleanup_secrets' EXIT
+trap 'echo; die "cancelled"' INT
+
+# ---------------------------------------------------------------- preflight
+say "Checking this Mac"
+[ "$(uname -m)" = arm64 ] || die "this setup needs an Apple Silicon Mac"
+command -v colima >/dev/null && command -v docker >/dev/null ||
+    die "install the container tools first:  brew install colima docker"
+[ -d "$PAYLOAD/usr/local/portabletak" ] || die "setup files missing: $PAYLOAD"
+ls "$CLEAN_BASE"/portabletak-clean-*.tar.gz >/dev/null 2>&1 || die "clean base missing: $CLEAN_BASE"
+if ! colima status >/dev/null 2>&1; then
+    echo "Starting the Linux container runtime (first time can take a few minutes)..."
+    colima start --arch aarch64 --cpu 4 --memory 4 --disk 30 >/dev/null 2>&1 || die "could not start colima"
+fi
+if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+    echo "Preparing setup tools (one time)..."
+    docker build -q --platform linux/arm64 --pull -t "$IMAGE_TAG" "$HERE" >/dev/null || die "could not build the setup container"
+fi
+echo "Ready."
+
+# ---------------------------------------------------------------- questions
+ask_name() {
+    while :; do
+        read -r -p "Server name (letters, numbers, space . _ -; e.g. Team Alpha TAK): " NAME
+        NAME="$(printf '%s' "$NAME" | sed 's/^ *//; s/ *$//')"
+        if printf '%s' "$NAME" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9 ._-]{0,62}[A-Za-z0-9])?$'; then
+            return
+        fi
+        echo "  That name can't be used. Try again."
+    done
+}
+
+ask_password() {  # $1 = label, result in PASSWORD
+    local first second
+    while :; do
+        read -r -s -p "$1 (8+ characters; 12+ recommended): " first; echo
+        if [ "${#first}" -lt 8 ] || [ "${#first}" -gt 128 ] ||
+            printf '%s' "$first" | LC_ALL=C grep -q '[^ -~]'; then
+            echo "  Use 8 to 128 ordinary characters. Try again."
+            continue
+        fi
+        read -r -s -p "Type it again: " second; echo
+        if [ "$first" != "$second" ]; then
+            echo "  They didn't match. Try again."
+            continue
+        fi
+        [ "${#first}" -lt 12 ] && echo "  Note: under 12 characters is easier to guess. OK for testing; use 12+ for real use."
+        PASSWORD="$first"
+        return
+    done
+}
+
+say "What do you want to make?"
+echo "  1) A ready-to-use drive (set it up now: name and passwords)   [recommended]"
+echo "  2) A blank drive (it asks for name and passwords the first time it starts on Windows)"
+while :; do
+    read -r -p "Choose 1 or 2 [1]: " MODE
+    MODE="${MODE:-1}"
+    case "$MODE" in 1|2) break ;; esac
+    echo "  Type 1 or 2."
+done
+BLANK=0; [ "$MODE" = 2 ] && BLANK=1
+
+if [ "$BLANK" = 0 ]; then
+    say "Server details"
+    ask_name
+    while :; do
+        ask_password "Administrator password (dashboard login)"; ADMIN_PW="$PASSWORD"
+        ask_password "Client password (used when phones enroll)"; CLIENT_PW="$PASSWORD"
+        [ "$ADMIN_PW" != "$CLIENT_PW" ] && break
+        echo "  The two passwords must be different. Try again."
+    done
+    unset PASSWORD
+else
+    NAME="(blank)"
+fi
+
+# ---------------------------------------------------------------- drive
+plist_value() { plutil -extract "$2" raw -o - - <<<"$1" 2>/dev/null; }
+
+say "Choose the USB drive"
+DISKS_PLIST="$(diskutil list -plist external physical)"
+COUNT="$(plutil -extract WholeDisks raw -o - - <<<"$DISKS_PLIST" 2>/dev/null || echo 0)"
+[ "${COUNT:-0}" -gt 0 ] || die "no external drive found; plug in the USB drive and run setup again"
+CHOICES=()
+for i in $(seq 0 $((COUNT - 1))); do
+    ID="$(plutil -extract "WholeDisks.$i" raw -o - - <<<"$DISKS_PLIST")"
+    INFO="$(diskutil info -plist "$ID")"
+    [ "$(plist_value "$INFO" Internal)" = false ] || continue
+    SIZE="$(plist_value "$INFO" TotalSize)"
+    CHOICES+=("$ID")
+    printf '  %d) %s  %s  %s GB  (%s)\n' "${#CHOICES[@]}" "$ID" "$(plist_value "$INFO" MediaName)" \
+        "$((SIZE / 1000000000))" "$(plist_value "$INFO" BusProtocol)"
+done
+[ "${#CHOICES[@]}" -gt 0 ] || die "no external drive found"
+while :; do
+    read -r -p "Number of the drive to ERASE and use for PortableTAK: " PICK
+    [[ "$PICK" =~ ^[0-9]+$ ]] && [ "$PICK" -ge 1 ] && [ "$PICK" -le "${#CHOICES[@]}" ] && break
+    echo "  Pick a number from the list."
+done
+DISK="${CHOICES[$((PICK - 1))]}"
+INFO="$(diskutil info -plist "$DISK")"
+SIZE="$(plist_value "$INFO" TotalSize)"
+[ "$(plist_value "$INFO" Internal)" = false ] || die "$DISK is an internal disk"
+[ "$SIZE" -ge "$MIN_BYTES" ] || die "$DISK is smaller than 16 GB"
+[ "$SIZE" -le "$MAX_BYTES" ] || die "$DISK is larger than 2 TB; refusing"
+
+echo
+echo "macOS will ask for your Mac password to check and write the drive."
+sudo -v || die "administrator rights are needed to write the drive"
+# Never touch the protected ASGARD cartridge; warn about existing PortableTAK drives.
+for N in 1 2 3 4; do
+    [ -e "/dev/r${DISK}s$N" ] || continue
+    SUPER="$(sudo dd if="/dev/r${DISK}s$N" bs=4096 count=1 2>/dev/null | xxd -p -s 1024 -l 256 | tr -d '\n')"
+    [ "${SUPER:112:4}" = 53ef ] || continue
+    U="${SUPER:208:32}"
+    FS_UUID="${U:0:8}-${U:8:4}-${U:12:4}-${U:16:4}-${U:20:12}"
+    [ "$FS_UUID" = "$ASGARD_UUID" ] && die "$DISK is the protected ASGARD cartridge; it will not be touched"
+    LABEL="$(printf '%s' "${SUPER:240:32}" | xxd -r -p | tr -d '\0')"
+    if [ "$LABEL" = PORTABLETAK ]; then
+        echo "WARNING: $DISK already holds a PortableTAK server. Erasing it deletes that server,"
+        echo "its users, certificates and data. Make a backup first if you need it."
+    fi
+done
+for TRY in 1 2 3; do
+    read -r -p "Type  ERASE $DISK  (exactly, or 'cancel') to continue: " CONFIRM
+    [ "$CONFIRM" = "ERASE $DISK" ] && break
+    [ "$CONFIRM" = cancel ] && die "cancelled; nothing was changed"
+    echo "  Type the whole phrase:  ERASE $DISK"
+done
+[ "$CONFIRM" = "ERASE $DISK" ] || die "not confirmed; nothing was changed"
+
+# ---------------------------------------------------------------- build
+say "Building the drive (about 6-10 minutes)"
+mkdir -p "$WORK" && chmod 700 "$WORK"
+cleanup_secrets
+mkdir -p "$WORK/secrets" "$WORK/out" && chmod 700 "$WORK/secrets" "$WORK/out"
+json_escape() { printf '%s' "$1" | sed 's/[\\"]/\\&/g'; }
+if [ "$BLANK" = 0 ]; then
+( umask 077
+  printf '{"instance_name":"%s","administrator_password":"%s","client_password":"%s"}' \
+      "$NAME" "$(json_escape "$ADMIN_PW")" "$(json_escape "$CLIENT_PW")" > "$WORK/secrets/request.json" )
+fi
+unset ADMIN_PW CLIENT_PW
+docker run --rm --privileged -v /dev:/dev -e PT_BLANK="$BLANK" \
+    -v "$PAYLOAD:/payload:ro" -v "$CLEAN_BASE:/art:ro" \
+    -v "$WORK/secrets:/secrets:ro" -v "$WORK/out:/out" \
+    -v "$HERE/start-here:/starthere:ro" \
+    -v "$HERE/container-setup.sh:/setup.sh:ro" --platform linux/arm64 "$IMAGE_TAG" /setup.sh 2>&1 |
+    tee "$WORK/setup.log" | grep --line-buffered -E '^PORTABLETAK_SETUP' |
+    sed -u 's/^PORTABLETAK_SETUP_STEP=/  step: /; s/^PORTABLETAK_SETUP_/  /'
+rm -rf "$WORK/secrets"
+grep -q '^PORTABLETAK_SETUP=COMPLETE$' "$WORK/setup.log" || die "server setup failed (details: $WORK/setup.log)"
+IMAGE="$WORK/out/cartridge.img"
+BYTES="$(stat -f %z "$IMAGE")"
+[ "$BYTES" -le "$SIZE" ] || die "drive too small for the image"
+
+# ---------------------------------------------------------------- write
+say "Writing to $DISK"
+sudo diskutil unmountDisk force "$DISK" >/dev/null || die "could not unmount $DISK"
+sudo dd if="$IMAGE" of="/dev/r$DISK" bs=4m status=progress || die "write failed"
+sync
+# macOS mounts the new PORTABLETAK (FAT32) volume as soon as it appears and
+# writes its own housekeeping there, so verify the partition table and the
+# whole PortableTAK partition (which macOS cannot read or change), unmounted.
+sleep 2; sudo diskutil unmountDisk force "$DISK" >/dev/null 2>&1
+echo "Verifying..."
+[ "$(head -c 512 "$IMAGE" | shasum -a 256)" = "$(sudo dd if="/dev/r$DISK" bs=512 count=1 2>/dev/null | shasum -a 256)" ] ||
+    die "verification failed (partition table); run setup again"
+P2_LBA="$(dd if="$IMAGE" bs=1 skip=470 count=4 2>/dev/null | od -An -tu4 | tr -d ' ')"
+OFF_MIB=$(( P2_LBA * 512 / 1048576 )); COUNT_MIB=$(( BYTES / 1048576 - OFF_MIB ))
+WANT="$(dd if="$IMAGE" bs=1m skip="$OFF_MIB" count="$COUNT_MIB" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
+GOT="$(sudo dd if="/dev/r$DISK" bs=1m skip="$OFF_MIB" count="$COUNT_MIB" 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
+[ "$WANT" = "$GOT" ] || die "verification failed; run setup again"
+echo "Verified."
+diskutil eject "$DISK" >/dev/null 2>&1 || sudo diskutil eject "$DISK" >/dev/null 2>&1
+rm -f "$IMAGE"
+
+say "Done"
+if [ "$BLANK" = 1 ]; then
+    echo "The blank PortableTAK drive is ready and ejected."
+    echo "The first time it starts on Windows (Start PortableTAK), it asks for the name and passwords."
+else
+    echo "The PortableTAK drive for \"$NAME\" is ready and ejected."
+fi
+echo "If macOS says the disk is not readable, click Ignore (it is a Linux drive)."
+echo "Use it in an OpenMANET node, or on a Windows or Mac computer running PortableTAK."
+echo "Wherever it is first started, it sets itself up for that device automatically."
+echo "Dashboard login: user 'administrator' with the administrator password you chose."

@@ -1,0 +1,19 @@
+#!/bin/sh
+# Start/stop the PortableTAK dashboard API inside WSL (loopback only; the
+# cartridge's nginx serves it on 8444 with sign-in enforced).
+PID=/run/portabletak/api.pid
+LOG=/tmp/portabletak/api.log
+case "${1:-status}" in
+    start)
+        mkdir -p /run/portabletak /tmp/portabletak
+        if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then echo "PORTABLETAK_API=RUNNING"; exit 0; fi
+        PYTHONPATH=/usr/local/portabletak/python PYTHONUNBUFFERED=1 PORTABLETAK_MANAGEMENT_AUTH=enforce \
+            setsid /usr/bin/python3 -m uvicorn --app-dir /usr/local/portabletak/api app:app \
+            --host "${PT_API_HOST:-127.0.0.1}" --port 8090 --proxy-headers --forwarded-allow-ips 127.0.0.1 \
+            >> "$LOG" 2>&1 < /dev/null &
+        echo $! > "$PID"; echo "PORTABLETAK_API=STARTED" ;;
+    stop)
+        [ -f "$PID" ] && kill "$(cat "$PID")" 2>/dev/null; rm -f "$PID"; echo "PORTABLETAK_API=STOPPED" ;;
+    status)
+        if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then echo "PORTABLETAK_API=RUNNING"; else echo "PORTABLETAK_API=STOPPED"; fi ;;
+esac

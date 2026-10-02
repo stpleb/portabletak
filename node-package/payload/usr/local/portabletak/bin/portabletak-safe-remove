@@ -1,0 +1,158 @@
+#!/bin/sh
+
+MOUNT="/mnt/asgard"
+RUNTIME="/tmp/portabletak"
+SAFE_FILE="$RUNTIME/safe-to-remove"
+LOCK="$RUNTIME/mount.lock"
+
+DETECT="/usr/local/portabletak/bin/portabletak-detect"
+DEVICE_TOOL="/usr/local/portabletak/bin/portabletak-device"
+STOP="/usr/local/portabletak/bin/portabletak-stop"
+UNPREPARE="/usr/local/portabletak/bin/portabletak-unprepare"
+
+mkdir -p "$RUNTIME"
+
+if [ "$1" = "status" ]; then
+    MOUNT_LINE="$(mount | grep -F " on $MOUNT " | head -n 1)"
+
+    if [ -n "$MOUNT_LINE" ]; then
+        DEVICE="${MOUNT_LINE%% *}"
+        echo "PORTABLETAK_STORAGE=MOUNTED"
+        echo "PORTABLETAK_DEVICE=$DEVICE"
+        echo "PORTABLETAK_SAFE_TO_REMOVE=0"
+        return 0 2>/dev/null
+    fi
+
+    echo "PORTABLETAK_STORAGE=UNMOUNTED"
+    echo "PORTABLETAK_SAFE_TO_REMOVE=1"
+    return 0 2>/dev/null
+fi
+
+if [ -n "$1" ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=invalid_argument"
+    echo "PORTABLETAK_USAGE=portabletak-safe-remove [status]"
+    return 2 2>/dev/null
+fi
+
+exec 9>"$LOCK"
+
+if ! flock -n 9; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=busy"
+    return 10 2>/dev/null
+fi
+
+rm -f "$SAFE_FILE"
+
+MOUNT_LINE="$(mount | grep -F " on $MOUNT " | head -n 1)"
+
+if [ -z "$MOUNT_LINE" ]; then
+    touch "$SAFE_FILE"
+    echo "PORTABLETAK_STORAGE=UNMOUNTED"
+    echo "PORTABLETAK_SAFE_TO_REMOVE=1"
+    return 0 2>/dev/null
+fi
+
+if [ ! -x "$DEVICE_TOOL" ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=device_tool_missing"
+    return 11 2>/dev/null
+fi
+
+DEVICE_INFO="$("$DEVICE_TOOL")"
+DEVICE_RC=$?
+
+if [ "$DEVICE_RC" -ne 0 ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=device_identification_failed"
+    return 12 2>/dev/null
+fi
+
+DEVICE="$(printf '%s\n' "$DEVICE_INFO" |
+    sed -n 's/^PORTABLETAK_DEVICE=//p' |
+    head -n 1)"
+
+if [ -z "$DEVICE" ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=device_missing"
+    return 13 2>/dev/null
+fi
+
+MOUNT_DEVICE="${MOUNT_LINE%% *}"
+
+if [ "$MOUNT_DEVICE" != "$DEVICE" ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=wrong_device_mounted"
+    echo "PORTABLETAK_EXPECTED=$DEVICE"
+    echo "PORTABLETAK_FOUND=$MOUNT_DEVICE"
+    return 14 2>/dev/null
+fi
+
+if [ ! -x "$DETECT" ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=detector_missing"
+    return 15 2>/dev/null
+fi
+
+if ! "$DETECT" >/dev/null 2>&1; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=cartridge_invalid"
+    return 16 2>/dev/null
+fi
+
+if [ ! -x "$STOP" ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=stop_controller_missing"
+    return 17 2>/dev/null
+fi
+
+echo "PORTABLETAK_ACTION=stopping_server"
+
+if ! "$STOP"; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=server_stop_failed"
+    return 18 2>/dev/null
+fi
+
+if [ ! -x "$UNPREPARE" ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=unprepare_controller_missing"
+    return 19 2>/dev/null
+fi
+
+echo "PORTABLETAK_ACTION=removing_runtime_mounts"
+
+if ! "$UNPREPARE"; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=runtime_unprepare_failed"
+    return 20 2>/dev/null
+fi
+
+NESTED_FOUND=0
+
+for LINE in $(mount | awk '{print $3}'); do
+    case "$LINE" in
+        "$MOUNT"/*)
+            echo "PORTABLETAK_NESTED_MOUNT=$LINE"
+            NESTED_FOUND=1
+            ;;
+    esac
+done
+
+if [ "$NESTED_FOUND" -ne 0 ]; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=nested_mounts_remaining"
+    return 21 2>/dev/null
+fi
+
+echo "PORTABLETAK_ACTION=syncing"
+sync
+
+echo "PORTABLETAK_ACTION=unmounting"
+
+if ! umount "$MOUNT"; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=unmount_failed"
+    return 22 2>/dev/null
+fi
+
+if mount | grep -F " on $MOUNT " >/dev/null 2>&1; then
+    echo "PORTABLETAK_SAFE_REMOVE_ERROR=still_mounted"
+    return 23 2>/dev/null
+fi
+
+sync
+touch "$SAFE_FILE"
+
+echo "PORTABLETAK_STORAGE=UNMOUNTED"
+echo "PORTABLETAK_DEVICE=$DEVICE"
+echo "PORTABLETAK_SAFE_TO_REMOVE=1"
+
+return 0 2>/dev/null

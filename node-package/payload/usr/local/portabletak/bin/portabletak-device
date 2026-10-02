@@ -1,0 +1,46 @@
+#!/bin/sh
+
+MOUNT="/mnt/asgard"
+
+LINE="$(mount | grep -F " on $MOUNT " | head -n 1)"
+
+if [ -z "$LINE" ]; then
+    echo "PORTABLETAK_DEVICE_STATE=UNMOUNTED"
+    return 20 2>/dev/null
+fi
+
+DEVICE="${LINE%% *}"
+
+case "$DEVICE" in
+    /dev/*)
+        ;;
+    *)
+        echo "PORTABLETAK_ERROR=invalid_device"
+        return 21 2>/dev/null
+        ;;
+esac
+
+BASENAME="${DEVICE#/dev/}"
+
+SYS_PATH="$(readlink -f "/sys/class/block/$BASENAME" 2>/dev/null)"
+
+if [ -z "$SYS_PATH" ] || [ ! -e "$SYS_PATH" ]; then
+    echo "PORTABLETAK_ERROR=sysfs_device_missing"
+    return 22 2>/dev/null
+fi
+
+PARENT_PATH="$(dirname "$SYS_PATH")"
+PARENT_NAME="$(basename "$PARENT_PATH")"
+
+if [ -e "/sys/class/block/$PARENT_NAME" ]; then
+    DISK="/dev/$PARENT_NAME"
+else
+    DISK="$DEVICE"
+fi
+
+echo "PORTABLETAK_DEVICE_STATE=MOUNTED"
+echo "PORTABLETAK_DEVICE=$DEVICE"
+echo "PORTABLETAK_DISK=$DISK"
+echo "PORTABLETAK_MOUNT=$MOUNT"
+
+return 0 2>/dev/null

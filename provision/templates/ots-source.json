@@ -1,0 +1,8 @@
+{
+  "app_sha256": "9d5d76c6db2376eb8e62e1b29a4055d05166f62b3b4c0831627e931f6498c81f",
+  "ca_sha256": "f407352f3bb16037d01e188ae83ac3a17023566561fc83c4c87c01ab57d26112",
+  "cot_parser_sha256": "68ee493246626c2ae31f875570f54c3c000028d5e69e304598e2e8e7002d8cc5",
+  "origin": "PyPI opentakserver 1.7.13 wheel",
+  "version": "1.7.13",
+  "wheel_sha256": "adddc24241a392664322e5d00c7a9d5a2c8b8b82d434bf7c42da515278ea5ee9"
+}

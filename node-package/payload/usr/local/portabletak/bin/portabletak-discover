@@ -1,0 +1,97 @@
+#!/bin/sh
+
+PROBE="/tmp/portabletak-probe"
+META_REL="portabletak/cartridge.conf"
+METADATA_LIB="/usr/local/portabletak/lib/metadata.sh"
+
+if [ ! -r "$METADATA_LIB" ]; then
+    echo "PORTABLETAK_ERROR=metadata_library_missing"
+    return 10 2>/dev/null
+fi
+
+. "$METADATA_LIB"
+
+mkdir -p "$PROBE"
+
+for SYSDEV in /sys/class/block/*; do
+    [ -e "$SYSDEV/partition" ] || continue
+
+    NAME="$(basename "$SYSDEV")"
+    DEVICE="/dev/$NAME"
+
+    [ -b "$DEVICE" ] || continue
+
+    if mount | grep -F "$DEVICE on " >/dev/null 2>&1; then
+        continue
+    fi
+
+    if ! mount -t ext4 -o ro,noload "$DEVICE" "$PROBE" >/dev/null 2>&1; then
+        continue
+    fi
+
+    META="$PROBE/$META_REL"
+
+    if [ -r "$META" ]; then
+        FORMAT="$(portabletak_metadata_get "$META" PORTABLETAK_FORMAT)"
+        CARTRIDGE_ID="$(portabletak_metadata_get "$META" PORTABLETAK_CARTRIDGE_ID)"
+        INSTANCE_NAME="$(portabletak_metadata_get "$META" PORTABLETAK_INSTANCE_NAME)"
+        ARCH="$(portabletak_metadata_get "$META" PORTABLETAK_ARCH)"
+
+        if [ "$FORMAT" = "1" ] && \
+           [ -n "$CARTRIDGE_ID" ] && \
+           [ -n "$INSTANCE_NAME" ] && \
+           [ -n "$ARCH" ]; then
+
+            SYS_PATH="$(readlink -f "$SYSDEV" 2>/dev/null)"
+            PARENT_PATH="$(dirname "$SYS_PATH")"
+            PARENT_NAME="$(basename "$PARENT_PATH")"
+
+            if [ -e "/sys/class/block/$PARENT_NAME" ]; then
+                DISK="/dev/$PARENT_NAME"
+            else
+                DISK="$DEVICE"
+            fi
+
+            umount "$PROBE" >/dev/null 2>&1 || {
+                echo "PORTABLETAK_ERROR=probe_unmount_failed"
+                return 30 2>/dev/null
+            }
+
+            # Keep scanning: with two PortableTAK drives attached we must not
+            # silently pick one (which server runs would depend on USB order).
+            FOUND_COUNT=$(( ${FOUND_COUNT:-0} + 1 ))
+            FOUND_DEVICES="${FOUND_DEVICES:+$FOUND_DEVICES,}$DEVICE"
+            if [ "$FOUND_COUNT" = 1 ]; then
+                F_DEVICE="$DEVICE"; F_DISK="$DISK"; F_FORMAT="$FORMAT"; F_ARCH="$ARCH"
+                F_ID="$CARTRIDGE_ID"; F_NAME="$INSTANCE_NAME"
+            fi
+            continue
+        fi
+    fi
+
+    umount "$PROBE" >/dev/null 2>&1 || {
+        echo "PORTABLETAK_ERROR=probe_unmount_failed"
+        return 31 2>/dev/null
+    }
+done
+
+if [ "${FOUND_COUNT:-0}" -gt 1 ]; then
+    echo "PORTABLETAK_STATE=MULTIPLE"
+    echo "PORTABLETAK_ERROR=multiple_cartridges"
+    echo "PORTABLETAK_DEVICES=$FOUND_DEVICES"
+    return 41 2>/dev/null
+fi
+
+if [ "${FOUND_COUNT:-0}" = 1 ]; then
+    echo "PORTABLETAK_STATE=DISCOVERED"
+    echo "PORTABLETAK_DEVICE=$F_DEVICE"
+    echo "PORTABLETAK_DISK=$F_DISK"
+    echo "PORTABLETAK_FORMAT=$F_FORMAT"
+    echo "PORTABLETAK_ARCH=$F_ARCH"
+    echo "PORTABLETAK_CARTRIDGE_ID=$F_ID"
+    echo "PORTABLETAK_INSTANCE_NAME=$F_NAME"
+    return 0 2>/dev/null
+fi
+
+echo "PORTABLETAK_STATE=NOT_FOUND"
+return 40 2>/dev/null

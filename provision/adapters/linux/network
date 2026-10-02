@@ -1,0 +1,37 @@
+#!/bin/sh
+# Generic Linux / WSL2 service-address tool. The address belongs to the host,
+# so "claim" only confirms it is present and "release" leaves it alone.
+
+. /usr/local/portabletak/lib/host-profile.sh
+IP="$PT_SERVICE_IP"
+DEV="$(sed -n 's/^PORTABLETAK_SERVICE_DEV=//p' /mnt/asgard/config/tak-network.conf 2>/dev/null | tr -d '"' | head -n 1)"
+[ -n "$DEV" ] || DEV="$PT_SERVICE_DEV"
+
+is_local()
+{
+    ip -4 addr show dev "$DEV" 2>/dev/null | grep -q "inet $IP/"
+}
+
+echo "PORTABLETAK_SERVICE_IP=$IP"
+echo "PORTABLETAK_SERVICE_DEV=$DEV"
+
+case "$1" in
+    status|check|claim)
+        if is_local; then
+            echo "PORTABLETAK_SERVICE_IP_STATE=CLAIMED_LOCAL"
+            exit 0
+        fi
+        echo "PORTABLETAK_SERVICE_IP_STATE=NOT_ON_HOST"
+        [ "$1" = status ] && exit 0
+        echo "PORTABLETAK_NETWORK_ERROR=address_not_on_host"
+        exit 23
+        ;;
+    release)
+        echo "PORTABLETAK_SERVICE_IP=HOST_MANAGED"
+        exit 0
+        ;;
+    *)
+        echo "PORTABLETAK_NETWORK_ERROR=invalid_action"
+        exit 2
+        ;;
+esac

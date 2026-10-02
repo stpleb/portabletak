@@ -1,0 +1,94 @@
+#!/bin/sh
+
+MOUNT="/mnt/asgard"
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT")"
+DETECT="/usr/local/portabletak/bin/portabletak-detect"
+
+is_mounted()
+{
+    mount | grep -F " on $1 " >/dev/null 2>&1
+}
+
+if ! "$DETECT" >/dev/null 2>&1; then
+    echo "PORTABLETAK_PREPARE_ERROR=cartridge_not_valid"
+    return 10 2>/dev/null
+fi
+
+ARCH="$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT" --arch)"
+if [ "$ARCH" = x86_64 ]; then
+    # Dual-chip cartridge: the x86_64 software lives under arch/amd64/.
+    if [ ! -x "$ROOT/bin/sh" ] || [ ! -x "$MOUNT/arch/amd64/venv/bin/python" ]; then
+        echo "PORTABLETAK_PREPARE_ERROR=cartridge_has_no_x86_64_software"
+        return 15 2>/dev/null
+    fi
+    if ! /usr/bin/python3 /usr/local/portabletak/lib/arch_sync.py "$MOUNT" >/dev/null; then
+        echo "PORTABLETAK_PREPARE_ERROR=arch_config_sync_failed"
+        return 16 2>/dev/null
+    fi
+fi
+
+if [ ! -x "$ROOT/bin/sh" ]; then
+    echo "PORTABLETAK_PREPARE_ERROR=rootfs_missing"
+    return 11 2>/dev/null
+fi
+
+if [ ! -d "$MOUNT/postgres" ]; then
+    echo "PORTABLETAK_PREPARE_ERROR=postgres_storage_missing"
+    return 12 2>/dev/null
+fi
+
+if [ ! -d "$MOUNT/rabbitmq" ]; then
+    echo "PORTABLETAK_PREPARE_ERROR=rabbitmq_storage_missing"
+    return 13 2>/dev/null
+fi
+
+if [ ! -d "$MOUNT/opentak" ]; then
+    echo "PORTABLETAK_PREPARE_ERROR=opentak_storage_missing"
+    return 14 2>/dev/null
+fi
+
+mkdir -p \
+    "$ROOT/dev" \
+    "$ROOT/dev/pts" \
+    "$ROOT/proc" \
+    "$ROOT/sys" \
+    "$ROOT/asgard/postgres" \
+    "$ROOT/asgard/opentak" \
+    "$ROOT/var/lib/rabbitmq"
+
+if ! is_mounted "$ROOT/dev"; then
+    mount -o bind /dev "$ROOT/dev" || return 20 2>/dev/null
+fi
+
+if ! is_mounted "$ROOT/dev/pts"; then
+    mount -o bind /dev/pts "$ROOT/dev/pts" || return 21 2>/dev/null
+fi
+
+if ! is_mounted "$ROOT/proc"; then
+    mount -o bind /proc "$ROOT/proc" || return 22 2>/dev/null
+fi
+
+if ! is_mounted "$ROOT/sys"; then
+    mount -o bind /sys "$ROOT/sys" || return 23 2>/dev/null
+fi
+
+if ! is_mounted "$ROOT/asgard/postgres"; then
+    mount -o bind "$MOUNT/postgres" "$ROOT/asgard/postgres" || return 24 2>/dev/null
+fi
+
+if ! is_mounted "$ROOT/var/lib/rabbitmq"; then
+    mount -o bind "$MOUNT/rabbitmq" "$ROOT/var/lib/rabbitmq" || return 25 2>/dev/null
+fi
+
+if ! is_mounted "$ROOT/asgard/opentak"; then
+    mount -o bind "$MOUNT/opentak" "$ROOT/asgard/opentak" || return 26 2>/dev/null
+fi
+
+if [ "$ARCH" = x86_64 ] && ! is_mounted "$ROOT/asgard/opentak/venv"; then
+    mount -o bind "$MOUNT/arch/amd64/venv" "$ROOT/asgard/opentak/venv" || return 27 2>/dev/null
+fi
+
+echo "PORTABLETAK_RUNTIME_PREPARED=1"
+echo "PORTABLETAK_CHROOT_MOUNTS=READY"
+
+return 0 2>/dev/null

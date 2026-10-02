@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+"""Bind a provisioned cartridge to this host before its services start.
+
+  portabletak-adopt check   exit 0 = already bound here, 3 = adoption needed
+  portabletak-adopt apply   rewrite service address and server certificate
+
+Called by portabletak-start (which holds the lifecycle lock) for cartridges set
+up on another host, for example on a Mac or Windows computer. Offline-safe.
+"""
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from host_adoption import adopt, binding, needs_adoption
+from host_profile import read_profile, select_adapter
+from portabletak_provision import ProvisionError
+
+ROOT = Path('/mnt/asgard')
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] not in ('check', 'apply'):
+        print('usage: portabletak-adopt check|apply', file=sys.stderr)
+        return 2
+    try:
+        adapter = select_adapter(read_profile())
+        if not needs_adoption(ROOT, adapter):
+            print('PORTABLETAK_ADOPTION=CURRENT')
+            return 0
+        if argv[1] == 'check':
+            print('PORTABLETAK_ADOPTION=NEEDED')
+            print('PORTABLETAK_ADOPTION_FROM=' + str(binding(ROOT)['profile']))
+            return 3
+        summary = adopt(ROOT, adapter)
+    except ProvisionError as error:
+        print('PORTABLETAK_ADOPTION=FAILED')
+        print('PORTABLETAK_ADOPTION_ERROR=' + str(error))
+        return 1
+    print('PORTABLETAK_ADOPTION=APPLIED')
+    print('PORTABLETAK_ADOPTION_FROM=' + str(summary['from_profile']))
+    print('PORTABLETAK_ADOPTION_TO=' + summary['to_profile'])
+    print('PORTABLETAK_ADOPTION_ADDRESSES=' + json.dumps(summary['addresses']))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

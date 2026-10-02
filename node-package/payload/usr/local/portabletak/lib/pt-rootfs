@@ -1,0 +1,12 @@
+#!/bin/sh
+# Print the cartridge rootfs that matches this host's processor.
+# A dual-chip cartridge keeps the arm64 software in rootfs/ (and opentak/venv)
+# and the x86_64 software in arch/amd64/ (rootfs, venv, mediamtx). Data is shared.
+#   pt-rootfs [MOUNT]          -> rootfs path
+#   pt-rootfs [MOUNT] --arch   -> arm64 | x86_64
+MOUNT="${1:-/mnt/asgard}"
+case "$(uname -m)" in
+    x86_64|amd64) ARCH=x86_64; PATH_OUT="$MOUNT/arch/amd64/rootfs" ;;
+    *) ARCH=arm64; PATH_OUT="$MOUNT/rootfs" ;;
+esac
+if [ "${2:-}" = "--arch" ]; then echo "$ARCH"; else echo "$PATH_OUT"; fi

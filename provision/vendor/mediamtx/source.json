@@ -1,0 +1,10 @@
+{
+  "architecture": "arm64",
+  "archive": "mediamtx_v1.13.0_linux_arm64.tar.gz",
+  "archive_sha256": "c8d62a28bb0a9a94b41e1e6df930c02b24c57f0f0c0005ef841e84071058cf22",
+  "binary_sha256": "07bb8abf4d12cd5c0370c04a72d4b474a9d5f80a13950e83ac12907075b358ef",
+  "checksums_sha256": "fa80b3df25c863589e41ac17fb93645488206b0ec631fcc0fa29428a8ef6a3cd",
+  "project": "bluenviron/mediamtx",
+  "release_url": "https://github.com/bluenviron/mediamtx/releases/tag/v1.13.0",
+  "version": "1.13.0"
+}

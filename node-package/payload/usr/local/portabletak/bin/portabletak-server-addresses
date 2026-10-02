@@ -1,0 +1,57 @@
+#!/usr/bin/python3
+"""Show or set the addresses the cartridge's TAK server can be reached at.
+
+  portabletak-server-addresses show
+  portabletak-server-addresses set --advertise ADDR [--also ADDR ...]
+
+`set` re-signs the server certificate (same key) for all listed addresses,
+makes new client packages and QR codes use the advertised one, and lets nginx
+listen on every address. Restart the server afterwards (stop, then start).
+"""
+import argparse
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+from lifecycle_lock import LifecycleLock
+from portabletak_provision import ProvisionError, metadata
+import server_addresses
+
+ROOT = Path('/mnt/asgard')
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='portabletak-server-addresses')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('show')
+    change = commands.add_parser('set')
+    change.add_argument('--advertise', required=True)
+    change.add_argument('--also', action='append', default=[])
+    args = parser.parse_args()
+    try:
+        values = metadata(ROOT / 'portabletak/cartridge.conf')
+        if values['PORTABLETAK_PROVISIONING_STATE'] != 'provisioned':
+            raise ProvisionError('provisioned_generic_cartridge_required')
+        if args.command == 'show':
+            print(json.dumps(server_addresses.current(ROOT), indent=2, sort_keys=True))
+            return 0
+        guard = LifecycleLock()
+        guard.acquire('provision', values['PORTABLETAK_CARTRIDGE_ID'])
+        try:
+            record = server_addresses.reissue(ROOT, [args.advertise, *args.also], args.advertise)
+            changed = server_addresses.listen_everywhere(ROOT)
+        finally:
+            guard.release()
+        print(json.dumps(record, indent=2, sort_keys=True))
+        print('PORTABLETAK_SERVER_ADDRESSES=UPDATED')
+        print('PORTABLETAK_NGINX_LISTEN=' + ('ALL_ADDRESSES' if changed else 'UNCHANGED'))
+        print('PORTABLETAK_NEXT=restart the server (portabletak-stop, then portabletak-start)')
+        return 0
+    except ProvisionError as error:
+        print('PORTABLETAK_SERVER_ADDRESSES_ERROR=' + error.code, file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

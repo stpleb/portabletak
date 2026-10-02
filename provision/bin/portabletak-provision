@@ -1,0 +1,40 @@
+#!/usr/bin/python3
+"""Development controller: status, validate, and private staging only."""
+import argparse
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+from portabletak_provision import Controller, MAX_INPUT, ProvisionError, validate_input
+from release import expected_base_seal
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('action', choices=['status', 'validate', 'stage'])
+parser.add_argument('--root', default='/mnt/asgard', help='Mounted cartridge root')
+args = parser.parse_args()
+try:
+    controller = Controller(args.root, expected_base_seal=expected_base_seal())
+    if args.action == 'status':
+        result = controller.status()
+    else:
+        raw = sys.stdin.buffer.read(MAX_INPUT + 1)
+        if len(raw) > MAX_INPUT:
+            raise ProvisionError('input_too_large')
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise ProvisionError('invalid_json') from None
+        if args.action == 'validate':
+            validate_input(payload, controller.timezone_root())
+            result = {'ok': True, 'validated': True, 'activated': False}
+        else:
+            result = controller.stage(payload)
+    print(json.dumps(result))
+    raise SystemExit(0 if result.get('ok') else 1)
+except ProvisionError as error:
+    print(json.dumps({'ok': False, 'error': error.code}))
+    raise SystemExit(1)
+except Exception:
+    print(json.dumps({'ok': False, 'error': 'controller_failed'}))
+    raise SystemExit(1)

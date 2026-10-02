@@ -1,0 +1,167 @@
+#!/bin/sh
+
+. /usr/local/portabletak/lib/host-profile.sh
+
+MOUNT="/mnt/asgard"
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT")"
+
+pid_file_alive()
+{
+    FILE="$1"
+    MATCH="$2"
+
+    [ -r "$FILE" ] || return 1
+
+    PID="$(cat "$FILE" 2>/dev/null)"
+
+    case "$PID" in
+        ''|*[!0-9]*)
+            return 1
+            ;;
+    esac
+
+    [ -r "/proc/$PID/stat" ] || return 1
+
+    STATE="$(awk '{print $3}' "/proc/$PID/stat" 2>/dev/null)"
+    [ "$STATE" != "Z" ] || return 1
+
+    CMD="$(tr '\000' ' ' < "/proc/$PID/cmdline" 2>/dev/null)"
+
+    echo "$CMD" | grep -F "$MATCH" >/dev/null 2>&1 && return 0
+    # Under binary translation (Rosetta) nginx cannot retitle itself.
+    [ "$MATCH" = "nginx: master process" ] && case "$CMD" in "/usr/sbin/nginx"*) return 0 ;; esac
+    return 1
+}
+
+port_listening()
+{
+    PORT="$1"
+    HEX="$(printf '%04X' "$PORT")"
+
+    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+        awk -v p=":$HEX" '
+            NR > 1 && $4 == "0A" && index($2, p) > 0 {
+                found=1
+            }
+            END {
+                if (found) print "yes"
+            }
+        ' |
+        grep -q yes
+}
+
+established_count()
+{
+    PORT="$1"
+    HEX="$(printf '%04X' "$PORT")"
+
+    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+        awk -v p=":$HEX" '
+            NR > 1 && $4 == "01" && index($2, p) > 0 {
+                count++
+            }
+            END {
+                print count + 0
+            }
+        '
+}
+
+echo "PORTABLETAK_HEALTH=AVAILABLE"
+
+if ! mount | grep -F " on $MOUNT " >/dev/null 2>&1; then
+    echo "PORTABLETAK_POSTGRESQL=UNAVAILABLE"
+    echo "PORTABLETAK_RABBITMQ=UNAVAILABLE"
+    echo "PORTABLETAK_MEDIAMTX=UNAVAILABLE"
+    echo "PORTABLETAK_OTS=UNAVAILABLE"
+    echo "PORTABLETAK_COT=UNAVAILABLE"
+    echo "PORTABLETAK_EUD=UNAVAILABLE"
+    echo "PORTABLETAK_NGINX=UNAVAILABLE"
+    echo "PORTABLETAK_COT_CLIENTS=0"
+    return 0 2>/dev/null
+fi
+
+POSTGRESQL=STOPPED
+RABBITMQ=STOPPED
+MEDIAMTX=STOPPED
+OTS=STOPPED
+COT=STOPPED
+EUD=STOPPED
+NGINX=STOPPED
+
+if pt_ps | grep -E "[p]ostgres -D|[p]ostgres: " >/dev/null 2>&1; then
+    POSTGRESQL=RUNNING
+fi
+
+if pt_ps | grep -E "[b]eam.smp" >/dev/null 2>&1; then
+    RABBITMQ=RUNNING
+fi
+
+MEDIAMTX_BIN="$MOUNT/mediamtx/mediamtx"
+if [ "$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT" --arch)" = x86_64 ]; then
+    MEDIAMTX_BIN="$MOUNT/arch/amd64/mediamtx/mediamtx"
+fi
+
+if pid_file_alive \
+    "$MOUNT/mediamtx/mediamtx.pid" \
+    "$MEDIAMTX_BIN" &&
+   port_listening 9997; then
+    MEDIAMTX=RUNNING
+fi
+
+if pid_file_alive \
+    "$MOUNT/opentak/run/opentakserver.pid" \
+    "/asgard/opentak/venv/bin/opentakserver" &&
+   port_listening 8081; then
+    OTS=RUNNING
+fi
+
+if pid_file_alive \
+    "$MOUNT/opentak/run/cot-parser.pid" \
+    "/asgard/opentak/venv/bin/cot_parser"; then
+    COT=RUNNING
+fi
+
+if pid_file_alive \
+    "$MOUNT/opentak/run/eud-ssl.pid" \
+    "/asgard/opentak/venv/bin/eud_handler" &&
+   port_listening 8089; then
+    EUD=RUNNING
+fi
+
+NGINX_PIDFILE="$ROOT/run/nginx.pid"
+
+if pid_file_alive \
+    "$NGINX_PIDFILE" \
+    "nginx: master process" &&
+   { port_listening 443 || port_listening 8443; }; then
+    NGINX=RUNNING
+fi
+
+# Connected devices: the EUD launcher records each live connection as
+# <device uid>.<pid>; one phone with both a Wi-Fi and a Tailscale connection
+# counts once. Without the launcher (sealed cartridges), count connections.
+connected_devices()
+{
+    REG="$ROOT/tmp/portabletak-eud-connections"
+    [ -d "$REG" ] || return 1
+    for F in "$REG"/*.*; do
+        [ -e "$F" ] || continue
+        NAME="${F##*/}"
+        PID="${NAME##*.}"
+        case "$PID" in ''|*[!0-9]*) continue ;; esac
+        [ -d "/proc/$PID" ] && echo "${NAME%.*}"
+    done | sort -u | wc -l | tr -d ' '
+}
+
+CLIENTS="$(connected_devices)" || CLIENTS="$(established_count 8089)"
+
+echo "PORTABLETAK_POSTGRESQL=$POSTGRESQL"
+echo "PORTABLETAK_RABBITMQ=$RABBITMQ"
+echo "PORTABLETAK_MEDIAMTX=$MEDIAMTX"
+echo "PORTABLETAK_OTS=$OTS"
+echo "PORTABLETAK_COT=$COT"
+echo "PORTABLETAK_EUD=$EUD"
+echo "PORTABLETAK_NGINX=$NGINX"
+echo "PORTABLETAK_COT_CLIENTS=$CLIENTS"
+
+return 0 2>/dev/null

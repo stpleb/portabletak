@@ -1,0 +1,4 @@
+usbipd-win 5.3.0 (MIT license), https://github.com/dorssel/usbipd-win/releases/tag/v5.3.0
+usbipd-win_5.3.0_x64.msi   sha256 1c984914aec944de19b64eff232421439629699f8138e3ddc29301175bc6d938 (matches the GitHub release digest)
+usbipd-win_5.3.0_arm64.msi sha256 efd7c4eb99b144c1623e616064a7b262f83d0994b0d7fde16c95d4b07528b24d (matches the GitHub release digest)
+Shipped on the Start-here partition (.portabletak/windows) so a computer without internet can attach the drive.

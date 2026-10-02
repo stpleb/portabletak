@@ -1,0 +1,84 @@
+<!doctype html><html><head><meta charset="utf-8"><title>PortableTAK Quick Start</title><link rel="stylesheet" href="style.css"></head><body>
+<h1>PortableTAK Quick Start</h1>
+<p class="subtitle">Your TAK server on a USB drive. Plug it into an OpenMANET node, a Windows computer or a Mac.</p>
+
+<div class="box"><b>Before you start:</b> this drive has already been set up with a server name, an
+<b>administrator password</b> (dashboard sign-in) and a <b>client password</b> (phones use it to enroll).
+You need those two passwords. <b>Blank drive?</b> The first time it starts on Windows, it asks you
+for the server name and both passwords.</div>
+
+<h2>A. On an OpenMANET node (no screen)</h2>
+<div class="qr"><img src="qr-node.png"><br>Scan to open the dashboard</div>
+<ol>
+  <li>With the node powered on, plug the drive into a <b>blue USB&nbsp;3 port</b>.</li>
+  <li>Wait <b>3–5 minutes</b>. The first start on a new node takes longer while it sets itself up for that node.</li>
+  <li>Connect your phone or laptop to the node's Wi-Fi.</li>
+  <li>Scan the QR code (or open <code>https://10.41.254.1:8444</code>). Your browser warns about the
+      certificate the first time: choose <b>Advanced → Continue</b>.</li>
+  <li>Sign in as <code>administrator</code> with the administrator password.</li>
+</ol>
+
+<h2>B. On a Windows computer</h2>
+<ol>
+  <li>Plug in the drive. Open it in File Explorer and double-click <b>Start PortableTAK (Windows)</b>.</li>
+  <li>Click <b>Yes</b> when Windows asks for permission. The first time on a computer, it installs what it
+      needs (and may ask to restart once; then double-click it again).</li>
+  <li>The dashboard opens in your browser. The window shows <b>this computer's address</b> for phones and WinTAK.</li>
+  <li>The drive disappears from File Explorer while the server runs. That is normal.</li>
+  <li>To finish, double-click <b>Stop PortableTAK</b> on the desktop, wait for "You can remove the drive now",
+      then unplug.</li>
+</ol>
+<p class="small">Needs Windows 11 (22H2 or newer). Phones and WinTAK must be on the same network as the computer.</p>
+
+<h2>C. On a Mac (Apple Silicon)</h2>
+<ol>
+  <li>One time: install QEMU (in Terminal: <code>brew install qemu</code>).</li>
+  <li>Plug in the drive and double-click <b>Start PortableTAK (Mac)</b> on the PORTABLETAK volume. Enter your Mac password when asked.</li>
+  <li>The dashboard opens. The window shows <b>this Mac's address</b> for phones and WinTAK. If macOS asks whether qemu may accept incoming connections, click <b>Allow</b>.</li>
+  <li>To finish, press <b>Return</b> in that window (or double-click <b>Stop PortableTAK</b> on the Desktop), then eject and unplug.</li>
+</ol>
+
+<h2>D. Add a phone (ATAK, iTAK) or WinTAK</h2>
+<ol>
+  <li>In the dashboard open <b>Users</b> → <b>Create User</b>, one user per person. (In the TAK app, give every device its own <b>callsign</b>.)</li>
+  <li>Under <b>Manage User / Download Setup Package</b>, choose how to connect the device:
+    <ul>
+      <li><b>ATAK:</b> <b>ATAK Package</b>, then import it in ATAK (Import → Local SD). <b>WinTAK:</b> <b>WinTAK Setup</b>.</li>
+      <li><b>iTAK:</b> <b>iTAK Package</b>, opened in iTAK. For use over cellular, also import the
+          <b>iTAK Remote Package</b> (iTAK uses one server per package).</li>
+      <li><b>QR:</b> <b>ATAK QR Setup</b> / <b>iTAK QR Setup</b>, scanned in the TAK app. ATAK must trust the server first: import the <b>ATAK Trust Package (for QR)</b> from Client Setup once per phone. With remote access set up, ATAK QR Setup also adds the "(Tailscale)" server for cellular.</li>
+    </ul></li>
+  <li>The connection turns <b>green</b> in the TAK app when connected.</li>
+</ol>
+
+<h2>E. Before unplugging the drive</h2>
+<p><b>Node:</b> press <b>Safe Remove</b> in the dashboard (Server section) and wait for "safe to remove".
+<b>Windows / Mac:</b> double-click <b>Stop PortableTAK</b> on the desktop (the dashboard's <i>Stop Server</i>
+only pauses the TAK services; it does not release the drive). If power is lost, PortableTAK
+checks and repairs the drive by itself on the next start.</p>
+
+<h2 class="pb">F. Use it over cellular (remote access)</h2>
+<p>Lets phones reach the server from anywhere with internet. It uses <b>Tailscale</b>, a free private network.
+Do this once per server; it needs an internet connection on the server side.</p>
+<p><b>1. Make a Tailscale account</b> at <code>tailscale.com</code> (free). Use the same account everywhere below.</p>
+<p><b>2. Connect the drive to Tailscale</b> (the same on a node, Windows or Mac; the server needs internet):
+Dashboard → <b>Remote Access</b> → <b>Enable remote access</b> → open the link shown → sign in → <b>Connect</b>.
+Back in the dashboard press <b>Finish setup</b> and wait about 2 minutes. The drive keeps this Tailscale address
+wherever it runs, so you only do this once. The computer does not need the Tailscale app.</p>
+<p><b>3. On each phone:</b> install the <b>Tailscale</b> app from the App Store / Play Store, sign in with the
+<b>same account</b>, and switch it <b>on</b> (allow the VPN when asked).</p>
+<p><b>4. Set up each phone after step 2</b> (Users → your user): <b>ATAK QR Setup</b> or the <b>ATAK Package</b> on
+Android: either one gives the phone two servers, "<i>server name</i> (Wi-Fi)" or the address, and
+"<i>server name</i> (Tailscale)". On iPhone import the <b>iTAK Remote Package</b> (or scan the <b>iTAK Remote QR</b>)
+as well as the normal one. Phones set up before step 2 need setting up again.</p>
+<p><b>5. Test:</b> turn the phone's Wi-Fi off. With Tailscale on, the server connection turns green over cellular.</p>
+<p><b>6. Open the dashboard from anywhere:</b> on any phone or laptop with the Tailscale app <b>on</b> (same account),
+open <code>https://&lt;Tailscale address&gt;:8444</code>, for example <code>https://100.102.110.115:8444</code>.
+The address is shown under <b>Remote Access</b> and is the same wherever the drive runs: write it down.
+Accept the browser warning (<b>Advanced</b> → <b>Proceed</b>), then sign in as on Wi-Fi.</p>
+<div class="box warn">Not working? The Tailscale app must be <b>on</b> and signed in to the same account on the phone,
+the server side must have internet, and the phone must have the new package.</div>
+
+<div class="box ok">More help: <b>PortableTAK Quick Reference</b> (addresses, ports, common tasks) and
+<b>PortableTAK Setup and Troubleshooting Guide</b> (everything in detail).</div>
+</body></html>

@@ -1,0 +1,104 @@
+#!/bin/sh
+
+MOUNT="/mnt/asgard"
+DISCOVER="/usr/local/portabletak/bin/portabletak-discover"
+DETECT="/usr/local/portabletak/bin/portabletak-detect"
+
+mkdir -p "$MOUNT"
+
+LINE="$(mount | grep -F " on $MOUNT " | head -n 1)"
+
+if [ -n "$LINE" ]; then
+    if "$DETECT" >/dev/null 2>&1; then
+        "$DETECT"
+        return 0 2>/dev/null
+    fi
+
+    echo "PORTABLETAK_ERROR=mountpoint_in_use"
+    return 10 2>/dev/null
+fi
+
+DISCOVERY="$("$DISCOVER")"
+RC=$?
+
+if [ "$RC" -ne 0 ]; then
+    printf '%s\n' "$DISCOVERY"
+    echo "PORTABLETAK_ERROR=discovery_failed"
+    return 20 2>/dev/null
+fi
+
+DEVICE="$(printf '%s\n' "$DISCOVERY" | awk -F= '$1=="PORTABLETAK_DEVICE" {print substr($0,index($0,"=")+1)}')"
+
+if [ -z "$DEVICE" ] || [ ! -b "$DEVICE" ]; then
+    echo "PORTABLETAK_ERROR=invalid_discovered_device"
+    return 21 2>/dev/null
+fi
+
+echo "PORTABLETAK_ACTION=checking_filesystem"
+echo "PORTABLETAK_DEVICE=$DEVICE"
+
+e2fsck -fn "$DEVICE"
+FSCK_RC=$?
+
+if [ "$FSCK_RC" -ne 0 ]; then
+    # An interrupted shutdown (power cut, reboot without stop) leaves routine
+    # bookkeeping for journal replay: free counts, orphan list. Preen fixes
+    # only what is safe without judgement, as Linux does at boot. Refuse when
+    # the drive has logged I/O errors (ASGARD's failure mode) or when preen
+    # asks for a manual check.
+    DISK_NAME="$(basename "$DEVICE" | sed 's/[0-9]*$//')"
+    # Only errors logged since this disk was last attached count: a drive pulled out
+    # earlier under the same name (sde...) leaves stale I/O errors in the kernel log.
+    if dmesg | awk -v d="[$DISK_NAME]" 'index($0, d) && index($0, "Attached SCSI") { n = 0; next } { buf[++n] = $0 }
+            END { for (i = 1; i <= n; i++) print buf[i] }' |
+        grep -E "I/O error.*dev ${DISK_NAME}|${DISK_NAME}.*(I/O error|EXT4-fs error)" >/dev/null 2>&1; then
+        echo "PORTABLETAK_ERROR=filesystem_check_failed"
+        echo "PORTABLETAK_FSCK_RC=$FSCK_RC"
+        echo "PORTABLETAK_REPAIR=REFUSED_DEVICE_IO_ERRORS"
+        return 30 2>/dev/null
+    fi
+
+    echo "PORTABLETAK_ACTION=preening_filesystem"
+    e2fsck -p "$DEVICE"
+    PREEN_RC=$?
+    echo "PORTABLETAK_PREEN_RC=$PREEN_RC"
+
+    case "$PREEN_RC" in
+        0|1) ;;
+        *)
+            echo "PORTABLETAK_ERROR=filesystem_needs_manual_repair"
+            echo "PORTABLETAK_FSCK_RC=$FSCK_RC"
+            return 30 2>/dev/null
+            ;;
+    esac
+
+    e2fsck -fn "$DEVICE"
+    FSCK_RC=$?
+
+    if [ "$FSCK_RC" -ne 0 ]; then
+        echo "PORTABLETAK_ERROR=filesystem_check_failed_after_preen"
+        echo "PORTABLETAK_FSCK_RC=$FSCK_RC"
+        return 30 2>/dev/null
+    fi
+
+    echo "PORTABLETAK_FILESYSTEM=RECOVERED"
+fi
+
+echo "PORTABLETAK_ACTION=mounting"
+
+if ! mount -t ext4 "$DEVICE" "$MOUNT"; then
+    echo "PORTABLETAK_ERROR=mount_failed"
+    return 31 2>/dev/null
+fi
+
+if ! "$DETECT" >/dev/null 2>&1; then
+    umount "$MOUNT" >/dev/null 2>&1
+    echo "PORTABLETAK_ERROR=validation_failed_after_mount"
+    return 32 2>/dev/null
+fi
+
+echo "PORTABLETAK_STATE=VERIFIED"
+echo "PORTABLETAK_DEVICE=$DEVICE"
+echo "PORTABLETAK_MOUNT=$MOUNT"
+
+return 0 2>/dev/null

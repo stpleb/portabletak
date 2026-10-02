@@ -1,0 +1,63 @@
+#!/bin/bash
+# Make a PortableTAK drive from Windows (called by PortableTAK Setup for Windows).
+#   portabletak-wsl-make-drive SIZE_BYTES [blank]
+# The Windows side has attached the chosen USB disk with `wsl --mount --bare` and
+# copied the setup files to /var/tmp/pt-setup (clean-base/, start-here/,
+# container-setup.sh, secrets/request.json unless blank). This finds that disk
+# by its exact size (only an unmounted whole disk qualifies), refuses the
+# protected ASGARD cartridge, builds the drive image with the same script the
+# Mac setup uses, writes it, verifies it, and removes the image and answers.
+set -u
+SIZE="$1"; MODE="${2:-}"
+S=/var/tmp/pt-setup
+say() { echo "PORTABLETAK_MAKE_STEP=$*"; }
+fail() { echo "PORTABLETAK_MAKE_DRIVE=FAILED"; echo "PORTABLETAK_MAKE_DRIVE_ERROR=$*"; rm -rf "$S/secrets" "$S/out"; exit 1; }
+case "$SIZE" in ''|*[!0-9]*) fail size_required ;; esac
+
+say find_disk
+TARGET=""; COUNT=0
+for B in /sys/block/${PT_DISK_GLOB:-sd*}; do   # PT_DISK_GLOB: tests only
+    [ -e "$B" ] || continue
+    N="$(basename "$B")"
+    [ "$(( $(cat "$B/size") * 512 ))" = "$SIZE" ] || continue
+    grep -q "^/dev/$N" /proc/mounts && continue      # never a disk in use (WSL's own disks are)
+    TARGET="/dev/$N"; COUNT=$((COUNT + 1))
+done
+[ "$COUNT" = 1 ] || fail "target_disk_not_identified:$COUNT"
+echo "PORTABLETAK_MAKE_TARGET=$TARGET"
+
+say safety_check
+python3 - "$TARGET" <<'PY' || fail protected_cartridge
+import sys, glob
+sys.path.insert(0, '/usr/local/portabletak/lib')
+from media_layout import protected_filesystems, read_ext_superblock
+for part in sorted(glob.glob(sys.argv[1] + '[0-9]*') + glob.glob(sys.argv[1] + 'p[0-9]*')):
+    found = read_ext_superblock(part)
+    if found and found[0] in protected_filesystems():
+        print('PORTABLETAK_MAKE_DRIVE_REFUSED=' + part)
+        sys.exit(1)
+PY
+
+say build
+mkdir -p "$S/payload/usr/local" "$S/out" "$S/secrets"
+ln -sfn /usr/local/portabletak "$S/payload/usr/local/portabletak"
+BLANK=0; [ "$MODE" = blank ] && BLANK=1
+PT_BLANK="$BLANK" PT_PAYLOAD_DIR="$S/payload" PT_ART_DIR="$S/clean-base" PT_SECRETS_DIR="$S/secrets" \
+    PT_OUT_DIR="$S/out" PT_STARTHERE_DIR="$S/start-here" \
+    bash "$S/container-setup.sh" 2>&1 | grep --line-buffered -E '^PORTABLETAK_SETUP'
+rm -rf "$S/secrets"
+IMAGE="$S/out/cartridge.img"
+[ -f "$IMAGE" ] || fail build
+BYTES="$(stat -c %s "$IMAGE")"
+[ "$BYTES" -le "$SIZE" ] || fail drive_too_small
+
+say write
+for P in "$TARGET"[0-9]* "$TARGET"p[0-9]*; do [ -e "$P" ] && umount "$P" 2>/dev/null; done
+dd if="$IMAGE" of="$TARGET" bs=4M conv=fsync status=none || fail write
+blockdev --flushbufs "$TARGET" 2>/dev/null; sync
+say verify
+WANT="$(sha256sum "$IMAGE" | cut -d' ' -f1)"
+GOT="$(dd if="$TARGET" bs=4M count=$((BYTES / 4194304)) iflag=direct status=none | sha256sum | cut -d' ' -f1)"
+rm -rf "$S/out"
+[ "$WANT" = "$GOT" ] || fail verify
+echo "PORTABLETAK_MAKE_DRIVE=COMPLETE"

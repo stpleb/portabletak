@@ -1,0 +1,42 @@
+logLevel: info
+logDestinations: [stdout]
+
+runOnConnect: /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py connect
+runOnConnectRestart: no
+runOnDisconnect: /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py disconnect
+
+authMethod: http
+authHTTPAddress: http://127.0.0.1:8081/api/external_auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+
+api: yes
+apiAddress: 127.0.0.1:9997
+metrics: no
+pprof: no
+playback: no
+
+rtsp: yes
+rtspAddress: :8554
+rtmp: yes
+rtmpAddress: :1935
+hls: yes
+hlsAddress: :8888
+webrtc: yes
+webrtcAddress: :8889
+srt: yes
+srtAddress: :8890
+
+pathDefaults:
+  record: no
+  runOnReady: /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py ready
+  runOnReadyRestart: no
+  runOnNotReady: /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py notready
+  runOnRead: /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py read
+  runOnReadRestart: no
+  runOnUnread: /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py unread
+
+paths:
+  all_others:

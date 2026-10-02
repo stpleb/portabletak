@@ -1,0 +1,41 @@
+#!/bin/sh
+
+WORKER="/usr/local/portabletak/bin/portabletak-users-worker"
+CLIENT="/usr/local/portabletak/bin/portabletak-users-client"
+ONESHOT="/usr/local/portabletak/bin/portabletak-users-oneshot"
+PORT="18090"
+
+port_ready()
+{
+    HEX="$(printf '%04X' "$PORT")"
+
+    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+        awk -v p=":$HEX" '
+            NR > 1 &&
+            $4 == "0A" &&
+            index($2, p) > 0 {
+                found=1
+            }
+            END {
+                if (found) print "yes"
+            }
+        ' |
+        grep -q yes
+}
+
+if port_ready
+then
+    "$CLIENT"
+    return $? 2>/dev/null
+fi
+
+"$WORKER" start >/dev/null 2>&1
+
+if port_ready
+then
+    "$CLIENT"
+    return $? 2>/dev/null
+fi
+
+"$ONESHOT"
+return $? 2>/dev/null

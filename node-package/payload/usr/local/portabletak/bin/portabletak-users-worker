@@ -1,0 +1,176 @@
+#!/bin/sh
+
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
+PIDFILE="/tmp/portabletak/users-worker.pid"
+LOGFILE="/tmp/portabletak/users-worker.log"
+PORT="18090"
+
+# Generic cartridges are built from the sealed clean base, which carries no
+# PortableTAK runtime helpers; the host package supplies them. ASGARD
+# ("existing") keeps the copies in its own rootfs untouched.
+install_users_helpers()
+{
+    TYPE="$(sed -n 's/^PORTABLETAK_INSTANCE_TYPE=//p' /mnt/asgard/portabletak/cartridge.conf 2>/dev/null | head -n 1)"
+    [ "$TYPE" = "generic" ] || return 0
+    mkdir -p "$ROOT/usr/local/portabletak" || return 1
+    for NAME in users.py users_worker.py; do
+        SRC="/usr/local/portabletak/chroot/$NAME"
+        DST="$ROOT/usr/local/portabletak/$NAME"
+        [ -r "$SRC" ] || return 1
+        if ! cmp -s "$SRC" "$DST"; then
+            cp "$SRC" "$DST.new" && chmod 644 "$DST.new" && mv "$DST.new" "$DST" || return 1
+        fi
+    done
+    return 0
+}
+
+mkdir -p /tmp/portabletak
+
+port_ready()
+{
+    HEX="$(printf '%04X' "$PORT")"
+
+    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+        awk -v p=":$HEX" '
+            NR > 1 &&
+            $4 == "0A" &&
+            index($2, p) > 0 {
+                found=1
+            }
+            END {
+                if (found) print "yes"
+            }
+        ' |
+        grep -q yes
+}
+
+worker_pids()
+{
+    for P in /proc/[0-9]*
+    do
+        [ -r "$P/cmdline" ] || continue
+
+        CMD="$(tr '\000' ' ' < "$P/cmdline" 2>/dev/null)"
+
+        case "$CMD" in
+            *"/usr/local/portabletak/users_worker.py"*)
+                printf '%s\n' "${P#/proc/}"
+                ;;
+        esac
+    done
+}
+
+ACTION="${1:-status}"
+
+case "$ACTION" in
+    start)
+        if port_ready
+        then
+            echo "PORTABLETAK_USERS_WORKER=RUNNING"
+            return 0 2>/dev/null
+        fi
+
+        rm -f "$PIDFILE"
+
+        install_users_helpers || {
+            echo "PORTABLETAK_USERS_WORKER=FAILED"
+            echo "PORTABLETAK_USERS_ERROR=helpers_unavailable"
+            return 30 2>/dev/null
+        }
+
+        chroot "$ROOT" /bin/sh -c '
+            export OTS_DATA_FOLDER=/asgard/opentak/data
+            cd /asgard/opentak
+            /asgard/opentak/venv/bin/python3 \
+                /usr/local/portabletak/users_worker.py
+        ' >"$LOGFILE" 2>&1 &
+
+        LAUNCH_PID=$!
+        echo "$LAUNCH_PID" > "$PIDFILE"
+
+        COUNT=0
+
+        while [ "$COUNT" -lt 35 ]
+        do
+            if port_ready
+            then
+                REAL_PID="$(worker_pids | head -n 1)"
+
+                if [ -n "$REAL_PID" ]
+                then
+                    echo "$REAL_PID" > "$PIDFILE"
+                fi
+
+                echo "PORTABLETAK_USERS_WORKER=RUNNING"
+                echo "PORTABLETAK_USERS_WORKER_PID=${REAL_PID:-$LAUNCH_PID}"
+                return 0 2>/dev/null
+            fi
+
+            sleep 1
+            COUNT=$((COUNT + 1))
+        done
+
+        echo "PORTABLETAK_USERS_WORKER=FAILED"
+        return 1 2>/dev/null
+        ;;
+
+    stop)
+        FOUND=0
+
+        for PID in $(worker_pids)
+        do
+            FOUND=1
+            kill -TERM "$PID" 2>/dev/null
+        done
+
+        if [ "$FOUND" -eq 1 ]
+        then
+            COUNT=0
+
+            while [ "$COUNT" -lt 10 ]
+            do
+                REMAINING="$(worker_pids)"
+
+                if [ -z "$REMAINING" ]
+                then
+                    break
+                fi
+
+                sleep 1
+                COUNT=$((COUNT + 1))
+            done
+        fi
+
+        REMAINING="$(worker_pids)"
+
+        if [ -n "$REMAINING" ]
+        then
+            echo "PORTABLETAK_USERS_WORKER=STOP_FAILED"
+            return 1 2>/dev/null
+        fi
+
+        rm -f "$PIDFILE"
+
+        echo "PORTABLETAK_USERS_WORKER=STOPPED"
+        return 0 2>/dev/null
+        ;;
+
+    status)
+        PIDS="$(worker_pids)"
+
+        if [ -n "$PIDS" ] && port_ready
+        then
+            echo "PORTABLETAK_USERS_WORKER=RUNNING"
+            echo "PORTABLETAK_USERS_WORKER_PID=$(printf '%s\n' "$PIDS" | head -n 1)"
+            return 0 2>/dev/null
+        fi
+
+        echo "PORTABLETAK_USERS_WORKER=STOPPED"
+        return 1 2>/dev/null
+        ;;
+
+    *)
+        echo "PORTABLETAK_USERS_WORKER=INVALID_ACTION"
+        return 2 2>/dev/null
+        ;;
+esac

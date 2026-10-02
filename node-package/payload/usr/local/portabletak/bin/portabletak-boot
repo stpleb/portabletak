@@ -1,0 +1,33 @@
+#!/bin/sh
+# Boot-time cartridge start, run in the background by /etc/init.d/portabletak-autoload.
+# Waits for the mesh bridge to carry an IPv4 address (the service address is
+# claimed on it), then runs the normal state-gated autoload.
+
+# OpenWrt procd sets LD_PRELOAD=/lib/libsetlbf.so; the cartridge rootfs has
+# no such library, so every chroot command would print a warning.
+unset LD_PRELOAD
+
+. /usr/local/portabletak/lib/host-profile.sh
+DEV="$PT_BOOT_DEV"
+WAIT=180
+
+i=0
+while [ "$i" -lt "$WAIT" ]; do
+    ip -4 addr show dev "$DEV" 2>/dev/null | grep -q "inet " && break
+    sleep 2
+    i=$((i + 2))
+done
+
+if [ "$i" -ge "$WAIT" ]; then
+    logger -t portabletak "boot: $DEV has no IPv4 address after ${WAIT}s; trying autoload anyway"
+else
+    logger -t portabletak "boot: $DEV ready after ${i}s"
+fi
+
+OUTPUT="$(/usr/local/portabletak/bin/portabletak-autoload 2>&1)"
+RC=$?
+printf '%s\n' "$OUTPUT" | logger -t portabletak
+logger -t portabletak "boot autoload completed rc=$RC"
+mkdir -p /tmp/portabletak
+{ date -u "+%Y-%m-%dT%H:%M:%SZ"; printf '%s\n' "$OUTPUT"; echo "RC=$RC"; } > /tmp/portabletak/boot-autoload.log
+exit "$RC"

@@ -1,0 +1,141 @@
+#!/bin/sh
+# Back up the mounted cartridge: metadata, config, OTS data, and a logical
+# PostgreSQL dump. Output lines are KEY=VALUE for the API.
+#
+#   portabletak-backup [--note TEXT] [--keep N]
+#
+# --note  up to 120 characters of letters, digits, space and . _ , : ( ) -
+# --keep  after success, remove the oldest backups beyond N (default: keep all)
+
+MOUNT="${PORTABLETAK_MOUNT:-/mnt/asgard}"
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT")"
+BACKUP_ROOT="$MOUNT/portabletak/backups/recovery"
+CHROOT="${PORTABLETAK_CHROOT:-/usr/sbin/chroot}"
+RUNTIME="${PORTABLETAK_RUNTIME:-/tmp/portabletak}"
+MARGIN_KB=65536
+
+fail()
+{
+    [ -n "$WORK" ] && rm -rf "$WORK"
+    [ -n "$PARTIAL" ] && rm -f "$PARTIAL"
+    echo "PORTABLETAK_BACKUP=FAILED"
+    echo "ERROR=$1"
+    exit "$2"
+}
+
+NOTE=""
+KEEP=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --note) NOTE="$2"; shift 2 ;;
+        --keep) KEEP="$2"; shift 2 ;;
+        *) fail invalid_argument 2 ;;
+    esac
+done
+if [ -n "$NOTE" ]; then
+    [ "${#NOTE}" -le 120 ] || fail note_too_long 3
+    case "$NOTE" in *[!A-Za-z0-9\ ._,:\(\)-]*) fail note_invalid_characters 3 ;; esac
+fi
+case "$KEEP" in ''|*[!0-9]*) fail invalid_keep 4 ;; esac
+
+# Check the cartridge before creating anything: an unmounted /mnt/asgard is
+# the host's own filesystem.
+mount | grep -F " on $MOUNT " >/dev/null 2>&1 || fail cartridge_not_mounted 10
+[ -r "$MOUNT/portabletak/cartridge.conf" ] || fail metadata_missing 11
+
+mkdir -p "$RUNTIME"
+exec 9>"$RUNTIME/lifecycle.lock"
+flock -n 9 || fail lifecycle_busy 12
+
+mkdir -p "$BACKUP_ROOT" || fail backup_directory_failed 13
+
+STAMP="$(date +%Y%m%d_%H%M%S)"
+FINAL="$BACKUP_ROOT/portabletak-$STAMP.tar.gz"
+[ -e "$FINAL" ] && fail backup_exists_retry_later 14
+WORK="$BACKUP_ROOT/.build-$STAMP"
+PARTIAL="$BACKUP_ROOT/.portabletak-$STAMP.tar.gz.partial"
+
+# Space: the uncompressed sources bound both the staging copy and the archive,
+# and the database directory bounds its dump.
+SOURCE_KB="$(du -sk "$MOUNT/config" "$MOUNT/opentak/data" 2>/dev/null | awk '{s+=$1} END {print s+0}')"
+DB_KB="$(du -sk "$MOUNT/postgres" 2>/dev/null | awk '{print $1+0}')"
+NEED_KB=$(( SOURCE_KB * 2 + DB_KB + MARGIN_KB ))
+FREE_KB="$(df -Pk "$BACKUP_ROOT" | awk 'END {print $4}')"
+echo "BACKUP_FREE_KB=$FREE_KB"
+echo "BACKUP_NEEDED_KB=$NEED_KB"
+[ "$FREE_KB" -ge "$NEED_KB" ] 2>/dev/null || fail insufficient_space 15
+
+echo "PORTABLETAK_BACKUP=STARTING"
+echo "BACKUP_ID=$STAMP"
+
+mkdir -p "$WORK/files" || fail work_directory_failed 16
+cp "$MOUNT/portabletak/cartridge.conf" "$WORK/files/cartridge.conf" ||
+    fail metadata_copy_failed 17
+tar -C "$MOUNT" -czf "$WORK/files/config.tar.gz" config || fail config_archive_failed 18
+tar -C "$MOUNT" -czf "$WORK/files/opentak-data.tar.gz" opentak/data ||
+    fail data_archive_failed 19
+
+echo "PORTABLETAK_BACKUP=DATABASE"
+"$CHROOT" "$ROOT" /usr/sbin/runuser -u postgres -- /usr/bin/pg_dump -Fc -d ots \
+    > "$WORK/files/ots.dump"
+RC=$?
+[ "$RC" -eq 0 ] && [ -s "$WORK/files/ots.dump" ] || fail database_dump_failed 20
+
+meta()
+{
+    sed -n "s/^$1=//p" "$MOUNT/portabletak/cartridge.conf" | head -n 1
+}
+
+(cd "$WORK" && sha256sum files/cartridge.conf files/config.tar.gz \
+    files/opentak-data.tar.gz files/ots.dump > files.sha256) ||
+    fail checksum_failed 21
+
+cat > "$WORK/manifest.txt" <<EOF2
+PORTABLETAK_BACKUP_FORMAT=1
+BACKUP_ID=$STAMP
+CREATED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+CREATED_LOCAL=$(date +%Y-%m-%dT%H:%M:%S%z)
+CARTRIDGE_ID=$(meta PORTABLETAK_CARTRIDGE_ID)
+INSTANCE_NAME=$(meta PORTABLETAK_INSTANCE_NAME)
+NOTE=$NOTE
+DATABASE=ots
+INCLUDES_CARTRIDGE_METADATA=yes
+INCLUDES_CONFIG=yes
+INCLUDES_CERTIFICATES=yes
+INCLUDES_OPENTAK_DATA=yes
+INCLUDES_DATABASE=yes
+INCLUDES_CHECKSUMS=yes
+EOF2
+
+tar -C "$WORK" -czf "$PARTIAL" manifest.txt files.sha256 files ||
+    fail archive_failed 30
+sync
+ARCHIVE_SHA="$(sha256sum "$PARTIAL" | awk '{print $1}')"
+SIZE_BYTES="$(wc -c < "$PARTIAL" | tr -d ' ')"
+# Sidecar first, then the atomic rename that makes the backup visible.
+printf '{"format":1,"id":"%s","created_utc":"%s","created_local":"%s","note":"%s","sha256":"%s","size":%s}\n' \
+    "$STAMP" "$(sed -n 's/^CREATED_UTC=//p' "$WORK/manifest.txt")" \
+    "$(sed -n 's/^CREATED_LOCAL=//p' "$WORK/manifest.txt")" "$NOTE" "$ARCHIVE_SHA" \
+    "$SIZE_BYTES" > "$FINAL.json" || fail sidecar_failed 31
+mv "$PARTIAL" "$FINAL" || fail publish_failed 32
+PARTIAL=""
+rm -rf "$WORK"
+WORK=""
+sync
+
+if [ "$KEEP" -gt 0 ]; then
+    COUNT=0
+    for OLD in $(ls -1 "$BACKUP_ROOT"/portabletak-*.tar.gz 2>/dev/null | sort -r); do
+        COUNT=$((COUNT + 1))
+        if [ "$COUNT" -gt "$KEEP" ]; then
+            rm -f "$OLD" "$OLD.json"
+            echo "BACKUP_PRUNED=${OLD##*/}"
+        fi
+    done
+fi
+
+echo "PORTABLETAK_BACKUP=COMPLETE"
+echo "BACKUP_FILE=$FINAL"
+echo "BACKUP_SHA256=$ARCHIVE_SHA"
+echo "BACKUP_SIZE=$SIZE_BYTES"
+exit 0

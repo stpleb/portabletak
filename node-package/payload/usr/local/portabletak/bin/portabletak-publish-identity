@@ -1,0 +1,23 @@
+#!/usr/bin/python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, '/usr/local/portabletak/lib')
+from publish_identity import PublishError, publish_identity
+
+
+def main():
+    if len(sys.argv) != 3:
+        print('usage: portabletak-publish-identity MOUNT EXPECTED_BASE_SEAL', file=sys.stderr)
+        return 2
+    try:
+        cartridge_id = publish_identity(Path(sys.argv[1]), sys.argv[2])
+    except PublishError as error:
+        print('PORTABLETAK_PUBLISH_ERROR=' + str(error), file=sys.stderr)
+        return 1
+    print('PORTABLETAK_CARTRIDGE_ID=' + cartridge_id)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

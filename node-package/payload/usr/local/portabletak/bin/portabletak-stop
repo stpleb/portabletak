@@ -1,0 +1,499 @@
+#!/bin/sh
+
+. /usr/local/portabletak/lib/host-profile.sh
+
+# tailscaled keeps its state on the cartridge; stop it first so unmount works.
+/usr/local/portabletak/bin/portabletak-tailscale stop </dev/null >/dev/null 2>&1
+
+# Generic cartridges record a host-independent RabbitMQ node name; ASGARD's
+# legacy layout has none and keeps rabbit@asgard.
+RABBIT_NODE="$(cat /mnt/asgard/config/rabbitmq-nodename 2>/dev/null)"
+case "$RABBIT_NODE" in
+    rabbit@[A-Za-z0-9]*) ;;
+    *) RABBIT_NODE="rabbit@asgard" ;;
+esac
+
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
+PGDATA="/asgard/postgres"
+PGCTL="/usr/lib/postgresql/16/bin/pg_ctl"
+
+RUN="/mnt/asgard/opentak/run"
+
+OTS_PIDFILE="$RUN/opentakserver.pid"
+COT_PIDFILE="$RUN/cot-parser.pid"
+EUD_PIDFILE="$RUN/eud-ssl.pid"
+MEDIAMTX_PIDFILE="/mnt/asgard/mediamtx/mediamtx.pid"
+MEDIAMTX_BIN="/mnt/asgard/mediamtx/mediamtx"
+if [ "$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard --arch)" = x86_64 ]; then
+    MEDIAMTX_BIN="/mnt/asgard/arch/amd64/mediamtx/mediamtx"
+fi
+
+echo "ASGARD_ACTION=stopping"
+
+# A failed or missing cartridge must not leave its processes running. This
+# host-only fallback checks process roots/executables and never reads USB data.
+emergency_stop()
+{
+    HELPER="/usr/local/portabletak/bin/portabletak-emergency-stop"
+    if [ -x "$HELPER" ]; then
+        echo "ASGARD_ACTION=host_emergency_stop"
+        exec "$HELPER"
+    fi
+    echo "ASGARD_ERROR=emergency_stop_helper_missing"
+    exit 19
+}
+
+
+pid_alive()
+{
+    PID="$1"
+
+    [ -n "$PID" ] || return 1
+    [ -r "/proc/$PID/stat" ] || return 1
+
+    STATE="$(awk '{print $3}' "/proc/$PID/stat" 2>/dev/null)"
+
+    [ -n "$STATE" ] || return 1
+    [ "$STATE" != "Z" ] || return 1
+
+    return 0
+}
+
+pid_matches()
+{
+    PID="$1"
+    NEEDLE="$2"
+
+    pid_alive "$PID" || return 1
+    [ -r "/proc/$PID/cmdline" ] || return 1
+
+    CMD="$(tr '\000' ' ' < "/proc/$PID/cmdline" 2>/dev/null)"
+
+    case "$CMD" in
+        *"$NEEDLE"*) return 0 ;;
+        # Under binary translation (Rosetta) nginx cannot retitle itself; the
+        # PID always comes from nginx's own pid file, so its path is enough.
+        "/usr/sbin/nginx"*) [ "$NEEDLE" = "nginx: master process" ] && return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+wait_stopped()
+{
+    PID="$1"
+    LIMIT="$2"
+
+    i=0
+
+    while [ "$i" -lt "$LIMIT" ]; do
+        if ! pid_alive "$PID"; then
+            return 0
+        fi
+
+        sleep 1
+        i=$((i + 1))
+    done
+
+    return 1
+}
+
+# ---------------------------------------------------------
+# 1. Verify ASGARD TAK
+# ---------------------------------------------------------
+
+if ! mount | grep -F " on /mnt/asgard " >/dev/null 2>&1; then
+    echo "ASGARD_NOTICE=not_mounted"
+    emergency_stop
+fi
+
+PORTABLETAK_DETECT="/usr/local/portabletak/bin/portabletak-detect"
+
+if [ ! -x "$PORTABLETAK_DETECT" ]; then
+    echo "ASGARD_ERROR=portabletak_detector_missing"
+    return 11 2>/dev/null
+fi
+
+if ! "$PORTABLETAK_DETECT" >/dev/null 2>&1; then
+    echo "ASGARD_NOTICE=portabletak_cartridge_invalid"
+    emergency_stop
+fi
+
+if [ ! -x "$ROOT/bin/sh" ]; then
+    echo "ASGARD_NOTICE=rootfs_missing"
+    emergency_stop
+fi
+
+echo "ASGARD_CHECK=OK"
+
+USERS_WORKER="/usr/local/portabletak/bin/portabletak-users-worker"
+
+if [ -x "$USERS_WORKER" ]
+then
+    echo "ASGARD_ACTION=stopping_users_worker"
+
+    "$USERS_WORKER" stop
+
+    RC=$?
+
+    if [ "$RC" -ne 0 ]
+    then
+        echo "ASGARD_ERROR=users_worker_stop_failed"
+        return 19 2>/dev/null
+    fi
+fi
+
+# ---------------------------------------------------------
+# 2. Stop HTTPS reverse proxy
+# ---------------------------------------------------------
+
+NGINX_PID="$(cat "$ROOT/run/nginx.pid" 2>/dev/null)"
+
+if pid_matches "$NGINX_PID" "nginx: master process"; then
+    echo "ASGARD_ACTION=stopping_nginx"
+
+    /usr/sbin/chroot "$ROOT"         /usr/sbin/nginx -s quit >/dev/null 2>&1
+
+    i=0
+    while [ "$i" -lt 20 ]; do
+        if ! pid_matches "$NGINX_PID" "nginx: master process"; then
+            break
+        fi
+
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if pid_matches "$NGINX_PID" "nginx: master process"; then
+        echo "ASGARD_ERROR=nginx_stop_timeout"
+        kill -TERM "$NGINX_PID" 2>/dev/null
+        sleep 2
+    fi
+
+    if pid_matches "$NGINX_PID" "nginx: master process"; then
+        echo "ASGARD_ERROR=nginx_still_running"
+        exit 22
+    else
+        echo "NGINX=STOPPED"
+    fi
+else
+    echo "NGINX=ALREADY_STOPPED"
+fi
+
+rm -f "$ROOT/run/nginx.pid"
+
+# ---------------------------------------------------------
+# 3. Stop SSL EUD handler
+# ---------------------------------------------------------
+
+EUD_PID="$(cat "$EUD_PIDFILE" 2>/dev/null)"
+
+if pid_matches "$EUD_PID" "/asgard/opentak/venv/bin/eud_handler"; then
+    echo "ASGARD_ACTION=stopping_eud_ssl"
+
+    kill -TERM "$EUD_PID" 2>/dev/null
+
+    if ! wait_stopped "$EUD_PID" 20; then
+        echo "ASGARD_ERROR=eud_ssl_stop_timeout"
+        exit 20
+    fi
+
+    echo "EUD_SSL=STOPPED"
+else
+    echo "EUD_SSL=ALREADY_STOPPED"
+fi
+
+rm -f "$EUD_PIDFILE"
+
+# Stop any additional EUD SSL handlers not represented by the PID file.
+for P in /proc/[0-9]*; do
+    [ -r "$P/cmdline" ] || continue
+
+    EXTRA_PID="${P#/proc/}"
+
+    if pid_matches "$EXTRA_PID" "/asgard/opentak/venv/bin/eud_handler"; then
+        echo "ASGARD_ACTION=stopping_extra_eud_ssl PID=$EXTRA_PID"
+        kill -TERM "$EXTRA_PID" 2>/dev/null
+
+        if ! wait_stopped "$EXTRA_PID" 20; then
+            echo "ASGARD_ERROR=eud_ssl_extra_stop_timeout PID=$EXTRA_PID"
+            return 21 2>/dev/null
+        fi
+    fi
+done
+
+# Verify that no EUD SSL handler survived shutdown.
+for P in /proc/[0-9]*; do
+    [ -r "$P/cmdline" ] || continue
+
+    CHECK_PID="${P#/proc/}"
+
+    if pid_matches "$CHECK_PID" "/asgard/opentak/venv/bin/eud_handler"; then
+        echo "ASGARD_ERROR=eud_ssl_process_remains PID=$CHECK_PID"
+        return 21 2>/dev/null
+    fi
+done
+
+echo "EUD_SSL_ALL=STOPPED"
+# ---------------------------------------------------------
+# 3. Stop CoT parser worker(s), then supervisor
+# ---------------------------------------------------------
+
+COT_PID="$(cat "$COT_PIDFILE" 2>/dev/null)"
+
+if pid_matches "$COT_PID" "/asgard/opentak/venv/bin/cot_parser"; then
+    echo "ASGARD_ACTION=stopping_cot_parser"
+
+    for P in /proc/[0-9]*; do
+        [ -r "$P/stat" ] || continue
+
+        CHILD_PID="${P#/proc/}"
+        PPID_VALUE="$(awk '{print $4}' "$P/stat" 2>/dev/null)"
+
+        if [ "$PPID_VALUE" = "$COT_PID" ]; then
+            CHILD_STATE="$(awk '{print $3}' "$P/stat" 2>/dev/null)"
+            CHILD_CMD="$(tr '\000' ' ' < "$P/cmdline" 2>/dev/null)"
+
+            if [ "$CHILD_STATE" != "Z" ] && \
+               echo "$CHILD_CMD" | grep -F "/asgard/opentak/venv/bin/cot_parser" >/dev/null 2>&1
+            then
+                echo "ASGARD_ACTION=stopping_cot_worker PID=$CHILD_PID"
+                kill -TERM "$CHILD_PID" 2>/dev/null
+            fi
+        fi
+    done
+
+    sleep 2
+
+    kill -TERM "$COT_PID" 2>/dev/null
+
+    if ! wait_stopped "$COT_PID" 20; then
+        echo "ASGARD_ERROR=cot_parser_stop_timeout"
+        exit 30
+    fi
+
+    echo "COT_PARSER=STOPPED"
+else
+    echo "COT_PARSER=ALREADY_STOPPED"
+fi
+
+rm -f "$COT_PIDFILE"
+
+# ---------------------------------------------------------
+# 4. Stop OpenTAKServer web/app
+# ---------------------------------------------------------
+
+OTS_PID="$(cat "$OTS_PIDFILE" 2>/dev/null)"
+
+if pid_matches "$OTS_PID" "/asgard/opentak/venv/bin/opentakserver"; then
+    echo "ASGARD_ACTION=stopping_opentakserver"
+
+    kill -TERM "$OTS_PID" 2>/dev/null
+
+    if ! wait_stopped "$OTS_PID" 20; then
+        echo "ASGARD_ERROR=opentakserver_stop_timeout"
+        exit 40
+    fi
+
+    echo "OPENTAKSERVER=STOPPED"
+else
+    echo "OPENTAKSERVER=ALREADY_STOPPED"
+fi
+
+rm -f "$OTS_PIDFILE"
+
+# ---------------------------------------------------------
+# 5. Verify OTS application processes are gone
+# ---------------------------------------------------------
+
+FOUND=0
+
+for P in /proc/[0-9]*; do
+    [ -r "$P/cmdline" ] || continue
+
+    PID="${P#/proc/}"
+    CMD="$(tr '\000' ' ' < "$P/cmdline" 2>/dev/null)" || continue
+
+    case "$CMD" in
+        *"/asgard/opentak/venv/bin/opentakserver"*|\
+        *"/asgard/opentak/venv/bin/cot_parser"*|\
+        *"/asgard/opentak/venv/bin/eud_handler"*)
+            STATE="$(awk '{print $3}' "$P/stat" 2>/dev/null)"
+
+            if [ "$STATE" != "Z" ]; then
+                echo "ASGARD_ERROR=ots_process_remains PID=$PID"
+                FOUND=1
+            fi
+            ;;
+    esac
+done
+
+if [ "$FOUND" -ne 0 ]; then
+    exit 41
+fi
+
+echo "ASGARD_OTS=STOPPED"
+
+# ---------------------------------------------------------
+# 6. Stop MediaMTX
+# ---------------------------------------------------------
+
+MEDIAMTX_PID="$(cat "$MEDIAMTX_PIDFILE" 2>/dev/null)"
+
+if pid_matches "$MEDIAMTX_PID" "$MEDIAMTX_BIN"; then
+    echo "ASGARD_ACTION=stopping_mediamtx"
+
+    kill -TERM "$MEDIAMTX_PID" 2>/dev/null
+
+    if ! wait_stopped "$MEDIAMTX_PID" 20; then
+        echo "ASGARD_ERROR=mediamtx_stop_timeout"
+        exit 45
+    fi
+
+    echo "MEDIAMTX=STOPPED"
+else
+    echo "MEDIAMTX=ALREADY_STOPPED"
+fi
+
+rm -f "$MEDIAMTX_PIDFILE"
+
+# ---------------------------------------------------------
+# 7. RabbitMQ
+# ---------------------------------------------------------
+
+rabbit_running()
+{
+    pt_ps | grep -E "[b]eam.smp" >/dev/null 2>&1
+}
+
+if mount | grep -F " on $ROOT/dev " >/dev/null 2>&1; then
+    if rabbit_running
+    then
+        echo "ASGARD_ACTION=stopping_rabbitmq"
+
+        /usr/sbin/chroot "$ROOT"             /usr/sbin/runuser -u rabbitmq --             /usr/sbin/rabbitmqctl             -n "$RABBIT_NODE"             stop || {
+                # "Not running at all" (e.g. a failed start already stopped it, and
+                # the beam.smp seen was only the exiting server or the CLI itself):
+                # wait for the server to be gone instead of failing the stop.
+                i=0
+                while [ "$i" -lt 10 ] && rabbit_running; do sleep 1; i=$((i + 1)); done
+                if rabbit_running; then
+                    echo "ASGARD_ERROR=rabbitmq_stop_failed"
+                    return 50 2>/dev/null
+                fi
+                echo "RABBITMQ=ALREADY_STOPPED"
+            }
+
+        i=0
+
+        while [ "$i" -lt 15 ]
+        do
+            if ! rabbit_running
+            then
+                break
+            fi
+
+            sleep 1
+            i=$((i + 1))
+        done
+    else
+        echo "RABBITMQ=ALREADY_STOPPED"
+    fi
+
+    if [ -x "$ROOT/usr/bin/epmd" ]
+    then
+        /usr/sbin/chroot "$ROOT"             /usr/bin/epmd -kill >/dev/null 2>&1 || true
+    fi
+
+    if rabbit_running
+    then
+        echo "ASGARD_ERROR=rabbitmq_still_running"
+        return 51 2>/dev/null
+    fi
+
+    echo "RABBITMQ=STOPPED"
+
+# ---------------------------------------------------------
+# 7. PostgreSQL
+# ---------------------------------------------------------
+
+if /usr/sbin/chroot "$ROOT" \
+    /usr/bin/pg_isready \
+    -h 127.0.0.1 \
+    -p 5432 >/dev/null 2>&1
+then
+    echo "ASGARD_ACTION=stopping_postgresql"
+
+    /usr/sbin/chroot "$ROOT" \
+        /usr/sbin/runuser -u postgres -- \
+        "$PGCTL" \
+        -D "$PGDATA" \
+        stop \
+        -m fast || {
+            echo "ASGARD_ERROR=postgresql_stop_failed"
+            exit 60
+        }
+
+    i=0
+
+    while [ "$i" -lt 10 ]
+    do
+        if ! /usr/sbin/chroot "$ROOT"             /usr/bin/pg_isready             -h 127.0.0.1             -p 5432 >/dev/null 2>&1
+        then
+            break
+        fi
+
+        sleep 1
+        i=$((i + 1))
+    done
+else
+    echo "POSTGRESQL=ALREADY_STOPPED"
+fi
+
+if /usr/sbin/chroot "$ROOT" \
+    /usr/bin/pg_isready \
+    -h 127.0.0.1 \
+    -p 5432 >/dev/null 2>&1
+then
+    echo "ASGARD_ERROR=postgresql_still_running"
+    exit 61
+else
+    echo "POSTGRESQL=STOPPED"
+fi
+
+echo "ASGARD_FOUNDATION=STOPPED"
+else
+    if pt_ps | grep -E "[b]eam.smp|[e]pmd|[p]ostgres" >/dev/null 2>&1; then
+        echo "ASGARD_ERROR=foundation_process_without_runtime"
+        return 52 2>/dev/null
+    fi
+
+    echo "RABBITMQ=ALREADY_STOPPED"
+    echo "POSTGRESQL=ALREADY_STOPPED"
+    echo "ASGARD_FOUNDATION=STOPPED"
+fi
+
+# ---------------------------------------------------------
+# Release portable ASGARD TAK service identity
+# ---------------------------------------------------------
+
+NETWORK="$PT_NETWORK"
+
+if [ ! -x "$NETWORK" ]; then
+    echo "ASGARD_ERROR=network_manager_missing"
+    exit 70
+fi
+
+echo "ASGARD_ACTION=releasing_network_identity"
+
+"$NETWORK" release
+RC=$?
+
+if [ "$RC" -ne 0 ]; then
+    echo "ASGARD_ERROR=network_release_failed"
+    exit "$RC"
+fi
+
+echo "ASGARD_NETWORK=RELEASED"
+echo "ASGARD_TAK_SERVER=STOPPED"
+
+exit 0

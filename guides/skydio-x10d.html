@@ -1,0 +1,107 @@
+<!doctype html><html><head><meta charset="utf-8"><title>PortableTAK and the Skydio X10D</title><link rel="stylesheet" href="style.css"></head><body>
+<h1>PortableTAK and the Skydio X10D</h1>
+<p class="subtitle">Put the aircraft on the TAK map and share its live video with every TAK user.</p>
+
+<p>When you finish, every ATAK, iTAK and WinTAK user connected to PortableTAK sees the X10D on the map and can open
+its live video. Allow about 20 minutes the first time. Menu names on the controller can differ slightly between
+Skydio software versions.</p>
+
+<h2>Before you start</h2>
+<table>
+<tr><th style="width:34%">You need</th><th>Details</th></tr>
+<tr><td>Skydio X10D and controller</td><td>Updated, with the licensing that enables <b>ATAK Services</b>, <b>RTSP Services</b> and <b>Wi-Fi</b> (Skydio Support enables these on your Skydio cloud account).</td></tr>
+<tr><td>PortableTAK running</td><td>On an OpenMANET node, a Windows computer or a Mac, and the dashboard open as administrator.</td></tr>
+<tr><td>A USB-C flash drive</td><td>Formatted <b>exFAT</b> (the controller does not read NTFS or FAT32).</td></tr>
+<tr><td>Internet on the server (hotspot setup only)</td><td>Plus <b>Remote Access</b> set up once in the dashboard (see the Setup and Troubleshooting Guide).</td></tr>
+</table>
+
+<h2>1. Choose how the controller reaches the server</h2>
+<table>
+<tr><th style="width:24%">Setup</th><th>When</th><th style="width:30%">Server address to use below</th></tr>
+<tr><td><b>A. Same network</b></td><td>The controller joins the same Wi-Fi as the server: the node's Wi-Fi, or the Wi-Fi the Windows/Mac computer uses.</td><td>The server's address for phones (node Wi-Fi: <code>10.41.254.1</code>)</td></tr>
+<tr><td><b>B. Phone hotspot bridge</b></td><td>The drone team is on cellular and the server (e.g. a Windows laptop) is somewhere else. The controller joins the hotspot of an ATAK phone (e.g. the S22), and that phone forwards the drone's traffic to the server.</td><td>The phone's <b>hotspot address</b> shown by the bridge (e.g. <code>192.168.43.1</code>)</td></tr>
+</table>
+<h3>Setup B: start the phone bridge</h3>
+<p>Nothing is installed on the controller. The phone uses its own Tailscale to reach the server, so the server needs
+<b>Remote Access</b> set up and internet, and the phone needs the Tailscale app (signed in, switched on).</p>
+<ol>
+<li>On the phone, once: install <b>Termux</b> (free, from Google Play or F-Droid).</li>
+<li>Dashboard (open it on the phone over Tailscale) → <b>Video Feeds</b> → <b>Drone far from this server (phone hotspot bridge)</b> →
+<b>Copy command</b>.</li>
+<li>Turn on the phone's <b>hotspot</b> and <b>Tailscale</b>. Open Termux, paste the command, press Enter. It prints the
+<b>drone address</b> (the hotspot line, e.g. <code>swlan0: 192.168.43.1</code>). If none shows, use the <b>Gateway</b> in the controller's Wi-Fi details.</li>
+<li>Join the controller to the phone's hotspot. Use the drone address as the server IP in steps 3 and 5 below.</li>
+<li>Leave Termux open while flying (Android may stop it if closed). Run the same command again any time; it replaces the old bridge.</li>
+</ol>
+<div class="box">Video over cellular uses a lot of data on the phone's plan.</div>
+
+<h2>2. Make the aircraft's certificates (dashboard)</h2>
+<ol>
+<li>Dashboard → <b>Users</b> → create a user for this aircraft, for example <code>skydio1</code>. Use one user per aircraft.</li>
+<li>On that user, press <b>Device TLS Package</b>. It downloads <code>skydio1_TLS.zip</code>.</li>
+<li>Unzip it and copy its files to the USB-C drive:
+<table>
+<tr><th style="width:34%">File</th><th>What it is</th></tr>
+<tr><td><code>truststore-root.p12</code></td><td>The Trust Store: lets the controller trust this server</td></tr>
+<tr><td><code>skydio1.p12</code></td><td>The aircraft's client certificate: proves it to the server</td></tr>
+<tr><td><code>secure.pref</code></td><td>The connection settings and certificate passwords (same layout as a Sit(x) TLS package)</td></tr>
+<tr><td><code>README.txt</code></td><td>Every value to type on the controller, including both passwords</td></tr>
+</table></li>
+</ol>
+<div class="box warn">Keep the package and the USB-C drive private: they contain the certificate passwords. Delete the files from the drive when you are done.</div>
+
+<h2>3. Connect the controller to PortableTAK (aircraft on the map)</h2>
+<ol>
+<li>Turn on the X10D and the controller. Setup B: start the phone bridge first and join the controller to the phone's hotspot.</li>
+<li>Plug the USB-C drive into the controller.</li>
+<li><b>Global Settings</b> → <b>Sharing</b> → <b>TAK/CoT</b> → <b>TAK Connections</b> → <b>Add a Connection</b>.</li>
+<li>Enter the values from <code>README.txt</code>:
+<table>
+<tr><th style="width:34%">Field</th><th>Value</th></tr>
+<tr><td>Server name</td><td>One word, as in the README (e.g. <code>TestaTAK</code>)</td></tr>
+<tr><td>Server IP address</td><td>Setup A: the server's address. Setup B: the drone address from the bridge.</td></tr>
+<tr><td>Server port</td><td><b>8089</b></td></tr>
+</table></li>
+<li><b>Advanced Options</b> → <b>SSL/TLS</b> → <b>Configure Trust Store</b>: pick <code>truststore-root.p12</code> on the USB-C drive and enter the <b>Trust Store password</b> from the README. If the controller also asks for a client certificate, pick <code>skydio1.p12</code> with the <b>client certificate password</b>.</li>
+<li>Back → <b>Add Connection</b>. Remove the USB-C drive.</li>
+<li>Check: in ATAK on a phone, the aircraft appears on the map once the controller is connected.</li>
+</ol>
+
+<h2>4. Add a video feed (dashboard)</h2>
+<ol>
+<li>Dashboard → <b>Video Feeds</b> → type a feed name → <b>Add feed</b>. Use lowercase letters, numbers and dashes, for example <code>skydio1</code>.</li>
+<li>The card shows the exact settings for the controller, with this server's address. Press <b>Drone settings</b> to see them again later.</li>
+</ol>
+
+<h2>5. Stream the video (controller)</h2>
+<ol>
+<li>Menu (three lines, top left) → <b>Sharing</b> → <b>RTSP</b> → <b>External</b>.</li>
+<li>Enter:
+<table>
+<tr><th style="width:34%">Field</th><th>Value</th></tr>
+<tr><td>Stream name</td><td>The feed name, exactly (e.g. <code>skydio1</code>)</td></tr>
+<tr><td>IP address</td><td>Setup A: the server's address. Setup B: the drone address from the bridge.</td></tr>
+<tr><td>Port</td><td><b>8554</b></td></tr>
+</table></li>
+<li><b>Start Stream</b>. Video begins once the aircraft takes off. The dashboard's Video Feeds card then shows a green <b>Live</b> dot.</li>
+</ol>
+
+<h2>6. Watch the video</h2>
+<ul>
+<li><b>ATAK / WinTAK:</b> open <b>Video</b> and pick the feed by name.</li>
+<li><b>Add it by hand</b> (any RTSP player): <code>rtsp://&lt;server address&gt;:8554/skydio1</code>. No user name or password is needed for drone feeds.</li>
+<li>ATAK users on cellular (Tailscale on) watch through the server's Tailscale address, wherever the server is.</li>
+</ul>
+
+<h2>Troubleshooting</h2>
+<table>
+<tr><th style="width:34%">Problem</th><th>What to do</th></tr>
+<tr><td>Aircraft not on the map</td><td>Check the controller's TAK connection: port 8089, SSL on, both certificates and passwords from the README. Setup B: Termux still open with the bridge running, the phone's Tailscale on, and the server online.</td></tr>
+<tr><td>Video Feeds never shows Live</td><td>Same stream name on both sides, port <b>8554</b>, the right IP for your setup, and the aircraft flying. Setup B: the bridge running on the phone, the phone's Tailscale on, and internet on the server.</td></tr>
+<tr><td>Video stops after switching color/thermal</td><td>Expected on the X10D: press <b>Stop Stream</b>, then <b>Start Stream</b>. Viewers reopen the feed.</td></tr>
+<tr><td>Video choppy or delayed</td><td>Move closer to the Wi-Fi, lower the stream resolution or frame rate (30 FPS), or use a wired USB-C Ethernet adapter on the controller.</td></tr>
+<tr><td>The server moved to another node or computer</td><td>Setup B keeps working: the bridge follows the drive's Tailscale address. Setup A: use the new server's address in both controller settings.</td></tr>
+<tr><td>The phone's hotspot address changed</td><td>Run the bridge command again and use the address it prints in both controller settings.</td></tr>
+<tr><td>A second aircraft</td><td>Repeat with a new user and feed name (e.g. <code>skydio2</code>).</td></tr>
+</table>
+</body></html>

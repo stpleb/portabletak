@@ -1,0 +1,121 @@
+#!/bin/sh
+# Optional Tailscale access for the mounted cartridge (remote/cellular clients).
+# Runs only if the host has the binaries and the cartridge has joined a tailnet
+# (config/tailscale exists). State lives on the cartridge, so the server keeps
+# its tailnet address when the cartridge moves hosts. Userspace networking: no
+# TUN device, firewall or route changes; tailnet TCP is handed to local ports.
+#   portabletak-tailscale start|stop|status|enable|apply-address
+#   enable: opt this cartridge in and print a login link for the owner to approve.
+#   apply-address: after approval, add the tailnet address/name to the server
+#   certificate and restart the TAK services.
+
+. /usr/local/portabletak/lib/host-profile.sh
+unset LD_PRELOAD
+BIN=/usr/local/portabletak/share/tailscale
+STATE=/mnt/asgard/config/tailscale
+SOCK=/tmp/portabletak/tailscaled.sock
+LOG=/tmp/portabletak/tailscaled.log
+
+ts_pid()
+{
+    for P in /proc/[0-9]*; do
+        case "$({ tr '\000' ' ' < "$P/cmdline"; } 2>/dev/null)" in
+            "$BIN/tailscaled "*) echo "${P#/proc/}"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+available()
+{
+    [ -x "$BIN/tailscaled" ] && [ -x "$BIN/tailscale" ] && [ -d "$STATE" ] &&
+        mount | grep -F " on /mnt/asgard " >/dev/null 2>&1
+}
+
+case "$1" in
+    start)
+        if ! available; then echo "PORTABLETAK_TAILSCALE=NOT_CONFIGURED"; exit 0; fi
+        if ts_pid >/dev/null; then echo "PORTABLETAK_TAILSCALE=ALREADY_RUNNING"; exit 0; fi
+        mkdir -p /tmp/portabletak
+        if [ -n "$PT_TAILSCALE_PROXY" ]; then
+            export HTTPS_PROXY="$PT_TAILSCALE_PROXY" HTTP_PROXY="$PT_TAILSCALE_PROXY"
+        fi
+        setsid "$BIN/tailscaled" --tun=userspace-networking --statedir="$STATE" \
+            --socket="$SOCK" --port=0 </dev/null >"$LOG" 2>&1 &
+        i=0
+        while [ "$i" -lt 30 ]; do
+            IP="$("$BIN/tailscale" --socket="$SOCK" ip -4 2>/dev/null | head -n 1)"
+            [ -n "$IP" ] && { echo "PORTABLETAK_TAILSCALE=RUNNING"; echo "PORTABLETAK_TAILSCALE_IP=$IP"; exit 0; }
+            sleep 1; i=$((i + 1))
+        done
+        echo "PORTABLETAK_TAILSCALE=STARTED_NOT_CONNECTED"
+        exit 0
+        ;;
+    stop)
+        PID="$(ts_pid)" || { echo "PORTABLETAK_TAILSCALE=ALREADY_STOPPED"; exit 0; }
+        kill -TERM "$PID" 2>/dev/null
+        i=0
+        while [ "$i" -lt 10 ] && [ -d "/proc/$PID" ]; do sleep 1; i=$((i + 1)); done
+        [ -d "/proc/$PID" ] && kill -KILL "$PID" 2>/dev/null
+        echo "PORTABLETAK_TAILSCALE=STOPPED"
+        exit 0
+        ;;
+    status)
+        if ts_pid >/dev/null; then
+            echo "PORTABLETAK_TAILSCALE=RUNNING"
+            echo "PORTABLETAK_TAILSCALE_IP=$("$BIN/tailscale" --socket="$SOCK" ip -4 2>/dev/null | head -n 1)"
+        elif available; then echo "PORTABLETAK_TAILSCALE=STOPPED"
+        else echo "PORTABLETAK_TAILSCALE=NOT_CONFIGURED"; fi
+        exit 0
+        ;;
+    enable)
+        [ -x "$BIN/tailscaled" ] && [ -x "$BIN/tailscale" ] || { echo "PORTABLETAK_TAILSCALE=NOT_INSTALLED"; exit 20; }
+        mount | grep -F " on /mnt/asgard " >/dev/null 2>&1 || { echo "PORTABLETAK_TAILSCALE_ERROR=cartridge_not_mounted"; exit 21; }
+        mkdir -p "$STATE" && chmod 700 "$STATE"
+        "$0" start >/dev/null
+        IP="$("$BIN/tailscale" --socket="$SOCK" ip -4 2>/dev/null | head -n 1)"
+        if [ -n "$IP" ]; then echo "PORTABLETAK_TAILSCALE=LOGGED_IN"; echo "PORTABLETAK_TAILSCALE_IP=$IP"; exit 0; fi
+        ID="$(sed -n 's/^PORTABLETAK_CARTRIDGE_ID=//p' /mnt/asgard/portabletak/cartridge.conf | cut -c1-8)"
+        rm -f /tmp/portabletak/ts-up.log
+        ( setsid "$BIN/tailscale" --socket="$SOCK" up --hostname="portabletak-$ID" --timeout=600s \
+            </dev/null >/tmp/portabletak/ts-up.log 2>&1 & )
+        i=0
+        while [ "$i" -lt 20 ]; do
+            URL="$(grep -oE 'https://login\.tailscale\.com/[A-Za-z0-9/_-]+' /tmp/portabletak/ts-up.log 2>/dev/null | head -n 1)"
+            [ -n "$URL" ] && { echo "PORTABLETAK_TAILSCALE=LOGIN_REQUIRED"; echo "PORTABLETAK_TAILSCALE_LOGIN_URL=$URL"; exit 0; }
+            sleep 1; i=$((i + 1))
+        done
+        echo "PORTABLETAK_TAILSCALE_ERROR=no_login_link_check_internet"; exit 22
+        ;;
+    apply-address)
+        IP="$("$BIN/tailscale" --socket="$SOCK" ip -4 2>/dev/null | head -n 1)"
+        [ -n "$IP" ] || { echo "PORTABLETAK_TAILSCALE_ERROR=not_logged_in"; exit 23; }
+        NAME="$("$BIN/tailscale" --socket="$SOCK" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null)"
+        ARGS="$(IP="$IP" NAME="$NAME" python3 - <<'PY'
+import os, sys
+sys.path.insert(0, '/usr/local/portabletak/lib')
+import server_addresses
+cur = server_addresses.current('/mnt/asgard')
+wanted = [a for a in cur['addresses'] if a] + [os.environ['IP']] + ([os.environ['NAME']] if os.environ['NAME'] else [])
+seen, also = set(), []
+for a in wanted:
+    if a != cur['advertise'] and a not in seen:
+        seen.add(a); also += ['--also', a]
+print(' '.join(['--advertise', cur['advertise']] + also))
+PY
+)" || { echo "PORTABLETAK_TAILSCALE_ERROR=address_list_failed"; exit 24; }
+        /usr/local/portabletak/bin/portabletak-server-addresses set $ARGS </dev/null >/dev/null 2>&1 ||
+            { echo "PORTABLETAK_TAILSCALE_ERROR=certificate_update_failed"; exit 25; }
+        /usr/local/portabletak/bin/portabletak-stop </dev/null >/dev/null 2>&1
+        /usr/local/portabletak/bin/portabletak-start </dev/null >/dev/null 2>&1 ||
+            { echo "PORTABLETAK_TAILSCALE_ERROR=restart_failed"; exit 26; }
+        echo "PORTABLETAK_TAILSCALE=READY"
+        # Remember the cartridge's own Tailscale addresses: they move with the drive,
+        # unlike a Windows/Mac computer's Tailscale address.
+        printf '%s\n' "$IP" "$NAME" | grep -v '^$' > "$STATE/addresses" 2>/dev/null
+        echo "PORTABLETAK_TAILSCALE_IP=$IP"
+        [ -n "$NAME" ] && echo "PORTABLETAK_TAILSCALE_NAME=$NAME"
+        exit 0
+        ;;
+    *) echo "usage: portabletak-tailscale start|stop|status|enable|apply-address" >&2; exit 2 ;;
+esac

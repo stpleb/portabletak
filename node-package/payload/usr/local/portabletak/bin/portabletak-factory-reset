@@ -1,0 +1,62 @@
+#!/usr/bin/python3
+"""Erase this PortableTAK drive back to its first-run state.
+
+  portabletak-factory-reset --confirm ERASE
+
+Stops the server, removes the runtime mounts, then deletes every user,
+certificate, setting, remote-access link, log and on-drive backup, keeping
+only the sealed software, and proves the drive is blank again. Irreversible.
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+import factory_reset
+from lifecycle_lock import LifecycleLock
+from portabletak_provision import ProvisionError
+
+ROOT = Path('/mnt/asgard')
+BIN = Path('/usr/local/portabletak/bin')
+
+
+def step(name, command, timeout=300):
+    result = subprocess.run([str(BIN / command[0]), *command[1:]], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+    print('PORTABLETAK_RESET_STEP=' + name + ' rc=' + str(result.returncode))
+    return result.returncode
+
+
+def main(argv):
+    if argv[1:] != ['--confirm', 'ERASE']:
+        print('usage: portabletak-factory-reset --confirm ERASE', file=sys.stderr)
+        return 2
+    if not (ROOT / 'portabletak/base-seal.json').is_file():
+        print('PORTABLETAK_RESET=FAILED')
+        print('PORTABLETAK_RESET_ERROR=no_cartridge_mounted')
+        return 1
+    step('stop_remote_access', ['portabletak-tailscale', 'stop'], 60)
+    if step('stop_services', ['portabletak-stop']) != 0:
+        print('PORTABLETAK_RESET=FAILED')
+        print('PORTABLETAK_RESET_ERROR=stop_failed')
+        return 1
+    step('remove_runtime_mounts', ['portabletak-unprepare'], 60)
+    guard = LifecycleLock()
+    try:
+        guard.acquire('factory-reset')
+        try:
+            result = factory_reset.reset(ROOT)
+        finally:
+            guard.release()
+    except ProvisionError as error:
+        print('PORTABLETAK_RESET=FAILED')
+        print('PORTABLETAK_RESET_ERROR=' + str(error))
+        return 1
+    print('PORTABLETAK_RESET_REMOVED=' + str(result['removed']))
+    print('PORTABLETAK_RESET=COMPLETE')
+    print('PORTABLETAK_PROVISIONING_STATE=new')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

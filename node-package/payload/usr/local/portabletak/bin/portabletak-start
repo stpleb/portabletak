@@ -1,0 +1,1021 @@
+#!/bin/sh
+
+. /usr/local/portabletak/lib/host-profile.sh
+
+# Generic cartridges record a host-independent RabbitMQ node name; ASGARD's
+# legacy layout has none and keeps rabbit@asgard.
+RABBIT_NODE="$(cat /mnt/asgard/config/rabbitmq-nodename 2>/dev/null)"
+case "$RABBIT_NODE" in
+    rabbit@[A-Za-z0-9]*) ;;
+    *) RABBIT_NODE="rabbit@asgard" ;;
+esac
+
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
+PGDATA="/asgard/postgres"
+PGCTL="/usr/lib/postgresql/16/bin/pg_ctl"
+
+RUN="/mnt/asgard/opentak/run"
+LOGDIR="/mnt/asgard/opentak/data/logs"
+
+OTS_PIDFILE="$RUN/opentakserver.pid"
+COT_PIDFILE="$RUN/cot-parser.pid"
+EUD_PIDFILE="$RUN/eud-ssl.pid"
+
+MEDIAMTX_BIN="/mnt/asgard/mediamtx/mediamtx"
+if [ "$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard --arch)" = x86_64 ]; then
+    MEDIAMTX_BIN="/mnt/asgard/arch/amd64/mediamtx/mediamtx"
+fi
+MEDIAMTX_CONF="/mnt/asgard/opentak/data/mediamtx/mediamtx.yml"
+MEDIAMTX_LOG="/mnt/asgard/mediamtx/mediamtx.log"
+MEDIAMTX_PIDFILE="/mnt/asgard/mediamtx/mediamtx.pid"
+
+# Track only services started by THIS invocation.
+# Rollback must never stop a service that was already running.
+STARTED_POSTGRES=0
+STARTED_RABBITMQ=0
+STARTED_MEDIAMTX=0
+STARTED_OTS=0
+STARTED_COT=0
+STARTED_EUD=0
+STARTED_NGINX=0
+CLAIMED_NETWORK=0
+
+echo "ASGARD_ACTION=starting"
+
+# ---------------------------------------------------------
+# Helper: determine whether PID is a live non-zombie process
+# ---------------------------------------------------------
+
+pid_alive()
+{
+    PID="$1"
+
+    [ -n "$PID" ] || return 1
+    [ -r "/proc/$PID/stat" ] || return 1
+
+    STATE="$(awk '{print $3}' "/proc/$PID/stat" 2>/dev/null)"
+
+    [ -n "$STATE" ] || return 1
+    [ "$STATE" != "Z" ] || return 1
+
+    return 0
+}
+
+pid_matches()
+{
+    PID="$1"
+    NEEDLE="$2"
+
+    pid_alive "$PID" || return 1
+    [ -r "/proc/$PID/cmdline" ] || return 1
+
+    CMD="$(tr '\000' ' ' < "/proc/$PID/cmdline" 2>/dev/null)"
+
+    case "$CMD" in
+        *"$NEEDLE"*) return 0 ;;
+        # Under binary translation (Rosetta) nginx cannot retitle itself; the
+        # PID always comes from nginx's own pid file, so its path is enough.
+        "/usr/sbin/nginx"*) [ "$NEEDLE" = "nginx: master process" ] && return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ---------------------------------------------------------
+# Helper: rollback only services started by this invocation
+# ---------------------------------------------------------
+
+rollback_pid()
+{
+    PIDFILE="$1"
+    NEEDLE="$2"
+    LABEL="$3"
+
+    PID="$(cat "$PIDFILE" 2>/dev/null)"
+
+    if pid_matches "$PID" "$NEEDLE"; then
+        echo "ASGARD_ROLLBACK=stopping_$LABEL"
+        kill -TERM "$PID" 2>/dev/null || true
+
+        i=0
+        while [ "$i" -lt 15 ]; do
+            if ! pid_matches "$PID" "$NEEDLE"; then
+                break
+            fi
+
+            i=$((i + 1))
+            sleep 1
+        done
+
+        if pid_matches "$PID" "$NEEDLE"; then
+            echo "ASGARD_ROLLBACK=forcing_$LABEL"
+            kill -KILL "$PID" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+
+    rm -f "$PIDFILE"
+}
+
+rollback_start()
+{
+    RC="$1"
+
+    echo "ASGARD_ROLLBACK=BEGIN"
+    echo "ASGARD_ROLLBACK_RC=$RC"
+
+    # Reverse startup order.
+
+    if [ "$STARTED_NGINX" -eq 1 ]; then
+        NGINX_PID="$(cat "$ROOT/run/nginx.pid" 2>/dev/null)"
+
+        if pid_matches "$NGINX_PID" "nginx: master process"; then
+            echo "ASGARD_ROLLBACK=stopping_nginx"
+
+            /usr/sbin/chroot "$ROOT"                 /usr/sbin/nginx -s quit >/dev/null 2>&1 || true
+
+            i=0
+            while [ "$i" -lt 15 ]; do
+                if ! pid_matches "$NGINX_PID" "nginx: master process"; then
+                    break
+                fi
+
+                i=$((i + 1))
+                sleep 1
+            done
+
+            if pid_matches "$NGINX_PID" "nginx: master process"; then
+                echo "ASGARD_ROLLBACK=forcing_nginx"
+                kill -TERM "$NGINX_PID" 2>/dev/null || true
+                sleep 1
+            fi
+        fi
+    fi
+
+    if [ "$STARTED_EUD" -eq 1 ]; then
+        rollback_pid \
+            "$EUD_PIDFILE" \
+            "/asgard/opentak/venv/bin/eud_handler" \
+            "eud_ssl"
+    fi
+
+    if [ "$STARTED_COT" -eq 1 ]; then
+        COT_PID="$(cat "$COT_PIDFILE" 2>/dev/null)"
+
+        # Stop verified direct CoT workers first.
+        if pid_matches "$COT_PID" "/asgard/opentak/venv/bin/cot_parser"; then
+            for P in /proc/[0-9]*; do
+                [ -r "$P/stat" ] || continue
+                [ -r "$P/cmdline" ] || continue
+
+                CHILD_PID="${P#/proc/}"
+                PPID_VALUE="$(awk '{print $4}' "$P/stat" 2>/dev/null)"
+                CHILD_STATE="$(awk '{print $3}' "$P/stat" 2>/dev/null)"
+                CHILD_CMD="$(tr '\000' ' ' < "$P/cmdline" 2>/dev/null)"
+
+                if [ "$PPID_VALUE" = "$COT_PID" ] && \
+                   [ "$CHILD_STATE" != "Z" ]; then
+                    case "$CHILD_CMD" in
+                        *"/asgard/opentak/venv/bin/cot_parser"*)
+                            echo "ASGARD_ROLLBACK=stopping_cot_worker:$CHILD_PID"
+                            kill -TERM "$CHILD_PID" 2>/dev/null || true
+                            ;;
+                    esac
+                fi
+            done
+
+            sleep 1
+        fi
+
+        rollback_pid \
+            "$COT_PIDFILE" \
+            "/asgard/opentak/venv/bin/cot_parser" \
+            "cot_parser"
+    fi
+
+    if [ "$STARTED_OTS" -eq 1 ]; then
+        rollback_pid \
+            "$OTS_PIDFILE" \
+            "/asgard/opentak/venv/bin/opentakserver" \
+            "opentakserver"
+    fi
+
+    if [ "$STARTED_MEDIAMTX" -eq 1 ]; then
+        rollback_pid             "$MEDIAMTX_PIDFILE"             "$MEDIAMTX_BIN"             "mediamtx"
+    fi
+
+    if [ "$STARTED_RABBITMQ" -eq 1 ]; then
+        echo "ASGARD_ROLLBACK=stopping_rabbitmq"
+
+        /usr/sbin/chroot "$ROOT" \
+            /usr/sbin/runuser -u rabbitmq -- \
+            /usr/sbin/rabbitmqctl \
+            -n "$RABBIT_NODE" \
+            stop >/dev/null 2>&1 || true
+
+        if [ -x "$ROOT/usr/bin/epmd" ]; then
+            /usr/sbin/chroot "$ROOT" \
+                /usr/bin/epmd -kill >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [ "$STARTED_POSTGRES" -eq 1 ]; then
+        echo "ASGARD_ROLLBACK=stopping_postgresql"
+
+        /usr/sbin/chroot "$ROOT" \
+            /usr/sbin/runuser -u postgres -- \
+            "$PGCTL" \
+            -D "$PGDATA" \
+            -m fast \
+            stop >/dev/null 2>&1 || true
+    fi
+
+    if [ "$CLAIMED_NETWORK" -eq 1 ]; then
+        echo "ASGARD_ROLLBACK=releasing_service_ip"
+
+        "$PT_NETWORK" release             >/dev/null 2>&1 || true
+    fi
+
+    echo "ASGARD_ROLLBACK=COMPLETE"
+    return "$RC"
+}
+
+fail_start()
+{
+    RC="$1"
+    MSG="$2"
+
+    echo "ASGARD_ERROR=$MSG"
+    rollback_start "$RC"
+    exit "$RC"
+}
+
+# ---------------------------------------------------------
+# 1. Verify ASGARD TAK
+# ---------------------------------------------------------
+
+if ! mount | grep -F " on /mnt/asgard " >/dev/null 2>&1; then
+    echo "ASGARD_ERROR=not_mounted"
+    exit 10
+fi
+
+PORTABLETAK_DETECT="/usr/local/portabletak/bin/portabletak-detect"
+
+if [ ! -x "$PORTABLETAK_DETECT" ]; then
+    echo "ASGARD_ERROR=portabletak_detector_missing"
+    return 11 2>/dev/null
+fi
+
+DETECTION="$("$PORTABLETAK_DETECT")"
+
+if [ "$?" -ne 0 ]; then
+    echo "ASGARD_ERROR=portabletak_cartridge_invalid"
+    return 11 2>/dev/null
+fi
+
+PROVISIONING_STATE="$(printf '%s\n' "$DETECTION" |
+    sed -n 's/^PORTABLETAK_PROVISIONING_STATE=//p' |
+    head -n 1)"
+
+# An unfinished cartridge may start only for its own first-run health gate:
+# the caller must be the bootstrap worker the job file says is running.
+bootstrap_worker_is_parent()
+{
+    JOB="/tmp/portabletak/bootstrap-job.json"
+    [ -f "$JOB" ] &&
+        grep -q '"job": "running"' "$JOB" &&
+        grep -q "\"pid\": $PPID," "$JOB"
+}
+
+case "$PROVISIONING_STATE" in
+    existing|provisioned) ;;
+    provisioning|failed)
+        if ! bootstrap_worker_is_parent; then
+            echo "PORTABLETAK_ERROR=cartridge_not_ready"
+            echo "PORTABLETAK_PROVISIONING_STATE=$PROVISIONING_STATE"
+            return 17 2>/dev/null
+        fi
+        echo "PORTABLETAK_START_MODE=first_run_health_gate"
+        ;;
+    *)
+        echo "PORTABLETAK_ERROR=cartridge_not_ready"
+        echo "PORTABLETAK_PROVISIONING_STATE=$PROVISIONING_STATE"
+        return 17 2>/dev/null
+        ;;
+esac
+
+if [ ! -x "$ROOT/bin/sh" ]; then
+    echo "ASGARD_ERROR=rootfs_missing"
+    exit 12
+fi
+
+if [ ! -x /mnt/asgard/opentak/venv/bin/opentakserver ]; then
+    echo "ASGARD_ERROR=opentakserver_missing"
+    exit 13
+fi
+
+if [ ! -x /mnt/asgard/opentak/venv/bin/cot_parser ]; then
+    echo "ASGARD_ERROR=cot_parser_missing"
+    exit 14
+fi
+
+if [ ! -x /mnt/asgard/opentak/venv/bin/eud_handler ]; then
+    echo "ASGARD_ERROR=eud_handler_missing"
+    exit 15
+fi
+
+echo "ASGARD_CHECK=OK"
+
+# ---------------------------------------------------------
+# 1b. Adopt a cartridge set up on another host (Mac/Windows setup,
+#     another node). Offline-safe; a no-op when already bound here.
+# ---------------------------------------------------------
+
+ADOPT="/usr/local/portabletak/bin/portabletak-adopt"
+if [ -x "$ADOPT" ]; then
+    "$ADOPT" check >/dev/null 2>&1
+    ADOPT_RC=$?
+    if [ "$ADOPT_RC" -eq 3 ]; then
+        echo "ASGARD_ACTION=adopting_cartridge"
+        # The server certificate is re-signed with the cartridge's own openssl,
+        # which needs the chroot mounts (idempotent; step 3 reuses them).
+        if ! /usr/local/portabletak/bin/portabletak-prepare; then
+            echo "ASGARD_ERROR=adoption_prepare_failed"
+            exit 18
+        fi
+        if ! "$ADOPT" apply; then
+            /usr/local/portabletak/bin/portabletak-unprepare >/dev/null 2>&1
+            echo "ASGARD_ERROR=adoption_failed"
+            exit 18
+        fi
+    elif [ "$ADOPT_RC" -ne 0 ]; then
+        echo "ASGARD_ERROR=adoption_check_failed"
+        exit 18
+    fi
+fi
+
+# ---------------------------------------------------------
+# 1c. Use the whole drive: grow the cartridge partition and filesystem to the
+#     end of the disk (drives made by PortableTAK Setup start compact).
+#     Best effort; a no-op once done or when it does not apply.
+# ---------------------------------------------------------
+
+GROW_OUT="$(/usr/bin/python3 /usr/local/portabletak/lib/grow_cartridge.py /mnt/asgard 2>&1)"
+case "$GROW_OUT" in
+    *PORTABLETAK_GROW=GROWN*) echo "ASGARD_STORAGE=GROWN"; printf '%s\n' "$GROW_OUT" | grep GAIN ;;
+    *PORTABLETAK_GROW=NOT_NEEDED*|*PORTABLETAK_GROW=NOT_MOUNTED*|*PORTABLETAK_GROW=PROTECTED_OR_UNKNOWN*|*PORTABLETAK_GROW=NOT_GENERIC*) ;;
+    *) echo "ASGARD_WARNING=storage_not_grown"; printf '%s\n' "$GROW_OUT" | tail -2 ;;
+esac
+
+# ---------------------------------------------------------
+# 2. Claim portable ASGARD TAK service identity
+# ---------------------------------------------------------
+
+NETWORK="$PT_NETWORK"
+
+if [ ! -x "$NETWORK" ]; then
+    echo "ASGARD_ERROR=network_manager_missing"
+    exit 16
+fi
+
+if "$NETWORK" status 2>/dev/null |
+    grep -q '^ASGARD_SERVICE_IP_STATE=CLAIMED_LOCAL$'
+then
+    echo "ASGARD_NETWORK=ALREADY_CLAIMED"
+else
+    echo "ASGARD_ACTION=claiming_network_identity"
+
+    "$NETWORK" claim
+    RC=$?
+
+    if [ "$RC" -ne 0 ]; then
+        echo "ASGARD_ERROR=network_claim_failed"
+        exit "$RC"
+    fi
+
+    CLAIMED_NETWORK=1
+    echo "ASGARD_NETWORK=CLAIMED"
+fi
+
+# ---------------------------------------------------------
+# 3. Prepare chroot mounts
+# ---------------------------------------------------------
+
+/usr/local/portabletak/bin/portabletak-prepare || {
+    fail_start 20 chroot_mount_failed
+}
+
+mkdir -p "$RUN"
+mkdir -p "$LOGDIR"
+
+# ---------------------------------------------------------
+# 3. PostgreSQL
+# ---------------------------------------------------------
+
+mkdir -p "$ROOT/run/postgresql"
+# PostgreSQL's account differs between cartridges (ASGARD 102:104, the clean
+# base 101:103); read it from the cartridge instead of assuming.
+PG_OWNER="$(awk -F: '$1 == "postgres" {print $3 ":" $4; exit}' "$ROOT/etc/passwd" 2>/dev/null)"
+case "$PG_OWNER" in
+    [0-9]*:[0-9]*) ;;
+    *) PG_OWNER="102:104" ;;
+esac
+chown "$PG_OWNER" "$ROOT/run/postgresql"
+chmod 2775 "$ROOT/run/postgresql"
+
+if /usr/sbin/chroot "$ROOT" \
+    /usr/bin/pg_isready \
+    -h 127.0.0.1 \
+    -p 5432 >/dev/null 2>&1
+then
+    echo "POSTGRESQL=ALREADY_RUNNING"
+else
+    echo "ASGARD_ACTION=starting_postgresql"
+
+    # After a power cut postmaster.pid survives, and its PID may now belong to
+    # an unrelated host process, which makes pg_ctl refuse to start. Remove it
+    # only when no process running from this cartridge is a postgres server.
+    PG_LOCK="/mnt/asgard/postgres/postmaster.pid"
+    if [ -f "$PG_LOCK" ]; then
+        PG_LIVE=0
+        for P in /proc/[0-9]*; do
+            [ "$(readlink "$P/root" 2>/dev/null)" = "$ROOT" ] || continue
+            case "$(tr '\000' ' ' < "$P/cmdline" 2>/dev/null)" in
+                *postgresql*bin/postgres*|postgres:*) PG_LIVE=1; break ;;
+            esac
+        done
+        if [ "$PG_LIVE" -eq 0 ]; then
+            rm -f "$PG_LOCK"
+            echo "POSTGRESQL_STALE_LOCK=REMOVED"
+        fi
+    fi
+
+    /usr/sbin/chroot "$ROOT" \
+        /usr/sbin/runuser -u postgres -- \
+        "$PGCTL" \
+        -D "$PGDATA" \
+        -l "$PGDATA/postgresql.log" \
+        start || {
+            fail_start 30 postgresql_start_failed
+        }
+
+    STARTED_POSTGRES=1
+
+    i=0
+    while [ "$i" -lt 15 ]; do
+        if /usr/sbin/chroot "$ROOT" \
+            /usr/bin/pg_isready \
+            -h 127.0.0.1 \
+            -p 5432 >/dev/null 2>&1
+        then
+            echo "POSTGRESQL=READY"
+            break
+        fi
+
+        i=$((i + 1))
+        sleep 1
+    done
+
+    if [ "$i" -ge 15 ]; then
+        fail_start 31 postgresql_not_ready
+    fi
+fi
+
+# ---------------------------------------------------------
+# 4. RabbitMQ
+# ---------------------------------------------------------
+
+rabbit_ready()
+{
+    if ! pt_ps | grep -E "[b]eam.smp" >/dev/null 2>&1
+    then
+        return 1
+    fi
+
+    PORT_HEX="$(printf '%04X' 5672)"
+
+    READY="$(
+        cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+            awk -v p=":$PORT_HEX" '
+                NR > 1 &&
+                $4 == "0A" &&
+                index($2, p) > 0 {
+                    found=1
+                }
+                END {
+                    if (found) print "yes"
+                }
+            '
+    )"
+
+    [ "$READY" = "yes" ]
+}
+
+if rabbit_ready
+then
+    echo "RABBITMQ=ALREADY_RUNNING"
+else
+    echo "ASGARD_ACTION=starting_rabbitmq"
+
+    # RabbitMQ's port mapper (4369) and cluster port (25672) are for this machine only:
+    # bind them to loopback (on Windows the WSL firewall lets the network in).
+    if [ -x "$ROOT/usr/bin/epmd" ]; then
+        /usr/sbin/chroot "$ROOT" /usr/sbin/runuser -u rabbitmq -- /usr/bin/epmd -address 127.0.0.1 -daemon >/dev/null 2>&1 || true
+    fi
+    /usr/sbin/chroot "$ROOT"         /usr/sbin/runuser -u rabbitmq --         /usr/bin/env RABBITMQ_NODENAME="$RABBIT_NODE" ERL_EPMD_ADDRESS=127.0.0.1         RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-kernel inet_dist_use_interface {127,0,0,1}"         /usr/sbin/rabbitmq-server         -detached || {
+            fail_start 40 rabbitmq_start_failed
+        }
+
+    STARTED_RABBITMQ=1
+
+    i=0
+
+    while [ "$i" -lt 45 ]
+    do
+        if rabbit_ready
+        then
+            echo "RABBITMQ=READY"
+            break
+        fi
+
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if [ "$i" -ge 45 ]
+    then
+        fail_start 41 rabbitmq_not_ready
+    fi
+fi
+
+echo "ASGARD_FOUNDATION=READY"
+
+# ---------------------------------------------------------
+# 5. MediaMTX
+# ---------------------------------------------------------
+
+MEDIAMTX_PID="$(cat "$MEDIAMTX_PIDFILE" 2>/dev/null)"
+
+if pid_matches "$MEDIAMTX_PID" "$MEDIAMTX_BIN"; then
+    echo "MEDIAMTX=ALREADY_RUNNING"
+else
+    rm -f "$MEDIAMTX_PIDFILE"
+
+    echo "ASGARD_ACTION=starting_mediamtx"
+
+    (
+        trap '' HUP
+        exec "$MEDIAMTX_BIN" "$MEDIAMTX_CONF"             >> "$MEDIAMTX_LOG" 2>&1 </dev/null
+    ) &
+
+    MEDIAMTX_PID=$!
+    echo "$MEDIAMTX_PID" > "$MEDIAMTX_PIDFILE"
+    STARTED_MEDIAMTX=1
+
+    i=0
+    while [ "$i" -lt 15 ]; do
+        MEDIAMTX_PID="$(cat "$MEDIAMTX_PIDFILE" 2>/dev/null)"
+
+        if pid_matches "$MEDIAMTX_PID" "$MEDIAMTX_BIN" &&            grep -E "\[API\] (started with listener|listener opened) on 127\.0\.0\.1:9997"                "$MEDIAMTX_LOG" >/dev/null 2>&1
+        then
+            echo "MEDIAMTX=READY"
+            break
+        fi
+
+        i=$((i + 1))
+        sleep 1
+    done
+
+    if [ "$i" -ge 15 ]; then
+        fail_start 45 mediamtx_not_ready
+    fi
+fi
+
+# ---------------------------------------------------------
+# 6. OpenTAKServer web/app
+# ---------------------------------------------------------
+
+OTS_PID="$(cat "$OTS_PIDFILE" 2>/dev/null)"
+
+if pid_matches "$OTS_PID" "/asgard/opentak/venv/bin/opentakserver"; then
+    echo "OPENTAKSERVER=ALREADY_RUNNING"
+else
+    rm -f "$OTS_PIDFILE"
+
+    echo "ASGARD_ACTION=starting_opentakserver"
+
+    # Case-insensitive usernames (phone keyboards capitalize): start OTS through
+    # a small launcher on generic cartridges (see opentakserver_launch.py).
+    OTS_COMMAND="/asgard/opentak/venv/bin/opentakserver"
+    OTS_LAUNCHER_SRC="/usr/local/portabletak/chroot/opentakserver_launch.py"
+    OTS_LAUNCHER_DST="$ROOT/usr/local/portabletak/opentakserver_launch.py"
+    if [ "$(sed -n 's/^PORTABLETAK_INSTANCE_TYPE=//p' /mnt/asgard/portabletak/cartridge.conf 2>/dev/null | tr -d '"')" = generic ] &&
+        [ -r "$OTS_LAUNCHER_SRC" ]; then
+        mkdir -p "$ROOT/usr/local/portabletak"
+        if ! cmp -s "$OTS_LAUNCHER_SRC" "$OTS_LAUNCHER_DST"; then
+            cp "$OTS_LAUNCHER_SRC" "$OTS_LAUNCHER_DST.new" && chmod 644 "$OTS_LAUNCHER_DST.new" &&
+                mv "$OTS_LAUNCHER_DST.new" "$OTS_LAUNCHER_DST"
+        fi
+        [ -r "$OTS_LAUNCHER_DST" ] &&
+            OTS_COMMAND="/asgard/opentak/venv/bin/python /usr/local/portabletak/opentakserver_launch.py /asgard/opentak/venv/bin/opentakserver"
+    fi
+
+    OTS_COMMAND="$OTS_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+        export OTS_DATA_FOLDER=/asgard/opentak/data
+        cd /asgard/opentak
+
+        /usr/bin/nohup \
+            $OTS_COMMAND \
+            >> /asgard/opentak/data/logs/opentakserver-runtime.log \
+            2>&1 </dev/null &
+
+        echo $! > /asgard/opentak/run/opentakserver.pid
+    '
+
+    STARTED_OTS=1
+
+    # On a cartridge's first start with internet, OpenTAKServer downloads and
+    # imports its icon sets (once; skipped when the icons table is filled),
+    # which takes minutes on a Pi. Keep waiting while that is under way.
+    # A computer reading the drive through USB passthrough (Windows/usbipd) loads
+    # OpenTAKServer much more slowly on its first start: keep waiting while the
+    # process is alive (up to 5 minutes) and give up early only if it has exited.
+    OTS_LOG="$ROOT/asgard/opentak/data/logs/opentakserver.log"
+    OTS_LIMIT=300
+    OTS_GONE=0
+    i=0
+    while [ "$i" -lt "$OTS_LIMIT" ]; do
+        OTS_PID="$(cat "$OTS_PIDFILE" 2>/dev/null)"
+
+        if ! pid_matches "$OTS_PID" "/asgard/opentak/venv/bin/opentakserver"; then
+            # The chroot launcher can briefly race with /proc immediately
+            # after writing the PID file. Give it a short grace period
+            # instead of declaring a healthy startup failed.
+            OTS_GONE=$((OTS_GONE + 1))
+            [ "$OTS_GONE" -ge 15 ] && break
+            i=$((i + 1))
+            sleep 1
+            continue
+        fi
+        OTS_GONE=0
+
+        if /usr/sbin/chroot "$ROOT" \
+            /asgard/opentak/venv/bin/python3 -c \
+            'import socket; s=socket.socket(); s.settimeout(1); rc=s.connect_ex(("127.0.0.1",8081)); s.close(); raise SystemExit(0 if rc == 0 else 1)' \
+            >/dev/null 2>&1
+        then
+            echo "OPENTAKSERVER=READY"
+            break
+        fi
+
+        if [ "$OTS_LIMIT" -eq 300 ] && [ "$i" -ge 30 ] &&
+            tail -n 1 "$OTS_LOG" 2>/dev/null | grep -q "Downloading icons"
+        then
+            echo "OPENTAKSERVER=DOWNLOADING_ICONS"
+            OTS_LIMIT=600
+        fi
+
+        i=$((i + 1))
+        sleep 1
+    done
+
+    if [ "$i" -ge "$OTS_LIMIT" ] || [ "$OTS_GONE" -ge 15 ]; then
+        # Show why in the start output (and so in the Windows/Mac log).
+        tail -n 12 "$ROOT/asgard/opentak/data/logs/opentakserver-runtime.log" 2>/dev/null |
+            sed 's/^/OPENTAKSERVER_LOG: /'
+        fail_start 51 opentakserver_not_ready
+    fi
+fi
+
+# ---------------------------------------------------------
+# 5b. OpenTAKServer <-> MediaMTX initial synchronization
+# ---------------------------------------------------------
+
+echo "ASGARD_ACTION=syncing_mediamtx"
+
+if MTX_PATH="startup" RTSP_PORT="8554" /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py init
+then
+    echo "MEDIAMTX_SYNC=READY"
+else
+    fail_start 55 mediamtx_init_sync_failed
+fi
+
+# Drone video feeds (dashboard: Video Feeds) may publish and be watched without a
+# sign-in; MediaMTX keeps that in its running configuration, so apply it each start.
+/usr/bin/python3 /usr/local/portabletak/lib/video_feeds.py apply /mnt/asgard 2>/dev/null ||
+    echo "ASGARD_WARNING=video_feeds_not_applied"
+
+# ---------------------------------------------------------
+# 6/7. CoT parser + SSL EUD handler
+# ---------------------------------------------------------
+
+COT_PID="$(cat "$COT_PIDFILE" 2>/dev/null)"
+EUD_PID="$(cat "$EUD_PIDFILE" 2>/dev/null)"
+
+COT_NEEDS_WAIT=0
+EUD_NEEDS_WAIT=0
+
+if pid_matches "$COT_PID" "/asgard/opentak/venv/bin/cot_parser"
+then
+    echo "COT_PARSER=ALREADY_RUNNING"
+else
+    rm -f "$COT_PIDFILE"
+
+    echo "ASGARD_ACTION=starting_cot_parser"
+
+    # Generic cartridges start the parser through a host-supplied launcher that
+    # adds RabbitMQ credentials to its Socket.IO queue (missing upstream).
+    # ASGARD ("existing") keeps its original launch.
+    COT_COMMAND="/asgard/opentak/venv/bin/cot_parser"
+    CARTRIDGE_TYPE="$(sed -n 's/^PORTABLETAK_INSTANCE_TYPE=//p' /mnt/asgard/portabletak/cartridge.conf 2>/dev/null | head -n 1)"
+    LAUNCHER_SRC="/usr/local/portabletak/chroot/cot_parser_launch.py"
+    LAUNCHER_DST="$ROOT/usr/local/portabletak/cot_parser_launch.py"
+    if [ "$CARTRIDGE_TYPE" = "generic" ] && [ -r "$LAUNCHER_SRC" ]; then
+        mkdir -p "$ROOT/usr/local/portabletak"
+        if ! cmp -s "$LAUNCHER_SRC" "$LAUNCHER_DST"; then
+            cp "$LAUNCHER_SRC" "$LAUNCHER_DST.new" && chmod 644 "$LAUNCHER_DST.new" &&
+                mv "$LAUNCHER_DST.new" "$LAUNCHER_DST"
+        fi
+        if [ -r "$LAUNCHER_DST" ]; then
+            COT_COMMAND="/asgard/opentak/venv/bin/python /usr/local/portabletak/cot_parser_launch.py /asgard/opentak/venv/bin/cot_parser"
+            echo "COT_PARSER_LAUNCHER=credentials"
+        fi
+    fi
+
+    COT_COMMAND="$COT_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+        export OTS_DATA_FOLDER=/asgard/opentak/data
+        cd /asgard/opentak
+
+        /usr/bin/nohup             $COT_COMMAND             >> /asgard/opentak/data/logs/cot-parser-runtime.log             2>&1 </dev/null &
+
+        echo $! > /asgard/opentak/run/cot-parser.pid
+    '
+
+    STARTED_COT=1
+    COT_NEEDS_WAIT=1
+fi
+
+if pid_matches "$EUD_PID" "/asgard/opentak/venv/bin/eud_handler"
+then
+    echo "EUD_SSL=ALREADY_RUNNING"
+else
+    rm -f "$EUD_PIDFILE"
+
+    echo "ASGARD_ACTION=starting_eud_ssl"
+
+    # Generic cartridges start the EUD handler through a host-supplied launcher
+    # that fixes an upstream device-registration race (see eud_handler_launch.py).
+    # ASGARD ("existing") keeps its original launch.
+    EUD_COMMAND="/asgard/opentak/venv/bin/eud_handler"
+    EUD_CARTRIDGE_TYPE="$(sed -n 's/^PORTABLETAK_INSTANCE_TYPE=//p' /mnt/asgard/portabletak/cartridge.conf 2>/dev/null | head -n 1)"
+    EUD_LAUNCHER_SRC="/usr/local/portabletak/chroot/eud_handler_launch.py"
+    EUD_LAUNCHER_DST="$ROOT/usr/local/portabletak/eud_handler_launch.py"
+    if [ "$EUD_CARTRIDGE_TYPE" = "generic" ] && [ -r "$EUD_LAUNCHER_SRC" ]; then
+        mkdir -p "$ROOT/usr/local/portabletak"
+        if ! cmp -s "$EUD_LAUNCHER_SRC" "$EUD_LAUNCHER_DST"; then
+            cp "$EUD_LAUNCHER_SRC" "$EUD_LAUNCHER_DST.new" && chmod 644 "$EUD_LAUNCHER_DST.new" &&
+                mv "$EUD_LAUNCHER_DST.new" "$EUD_LAUNCHER_DST"
+        fi
+        if [ -r "$EUD_LAUNCHER_DST" ]; then
+            EUD_COMMAND="/asgard/opentak/venv/bin/python /usr/local/portabletak/eud_handler_launch.py /asgard/opentak/venv/bin/eud_handler"
+            echo "EUD_LAUNCHER=registration_race_fix"
+        fi
+    fi
+
+    EUD_COMMAND="$EUD_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+        export OTS_DATA_FOLDER=/asgard/opentak/data
+        cd /asgard/opentak
+
+        /usr/bin/nohup             $EUD_COMMAND --ssl             >> /asgard/opentak/data/logs/eud-ssl-runtime.log             2>&1 </dev/null &
+
+        echo $! > /asgard/opentak/run/eud-ssl.pid
+    '
+
+    STARTED_EUD=1
+    EUD_NEEDS_WAIT=1
+fi
+
+if [ "$COT_NEEDS_WAIT" -eq 1 ]
+then
+    sleep 3
+
+    COT_PID="$(cat "$COT_PIDFILE" 2>/dev/null)"
+
+    if ! pid_matches "$COT_PID" "/asgard/opentak/venv/bin/cot_parser"
+    then
+        fail_start 60 cot_parser_process_failed
+    fi
+
+    COT_CHILD=""
+    i=0
+
+    # Slow first starts (USB passthrough on Windows): see the OpenTAKServer wait.
+    while [ "$i" -lt 120 ]
+    do
+        for P in /proc/[0-9]*
+        do
+            [ -r "$P/stat" ] || continue
+            [ -r "$P/cmdline" ] || continue
+
+            CHILD_PID="${P#/proc/}"
+            PPID_VALUE="$(awk '{print $4}' "$P/stat" 2>/dev/null)"
+
+            if [ "$PPID_VALUE" = "$COT_PID" ]
+            then
+                CHILD_STATE="$(awk '{print $3}' "$P/stat" 2>/dev/null)"
+                CHILD_CMD="$(tr '\000' ' ' < "$P/cmdline" 2>/dev/null)"
+
+                if [ "$CHILD_STATE" != "Z" ] &&
+                   echo "$CHILD_CMD" |
+                       grep -F "/asgard/opentak/venv/bin/cot_parser"                        >/dev/null 2>&1
+                then
+                    COT_CHILD="$CHILD_PID"
+                    break
+                fi
+            fi
+        done
+
+        [ -n "$COT_CHILD" ] && break
+
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if [ -z "$COT_CHILD" ]
+    then
+        fail_start 61 cot_parser_worker_not_ready
+    fi
+
+    echo "COT_PARSER=READY"
+    echo "COT_WORKER_PID=$COT_CHILD"
+fi
+
+if [ "$EUD_NEEDS_WAIT" -eq 1 ]
+then
+    EUD_PORT_HEX="$(printf '%04X' 8089)"
+    i=0
+
+    while [ "$i" -lt 180 ]
+    do
+        EUD_PID="$(cat "$EUD_PIDFILE" 2>/dev/null)"
+
+        if ! pid_matches "$EUD_PID" "/asgard/opentak/venv/bin/eud_handler"
+        then
+            fail_start 70 eud_ssl_process_failed
+        fi
+
+        READY="$(
+            cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+                awk -v p=":$EUD_PORT_HEX" '
+                    NR > 1 &&
+                    $4 == "0A" &&
+                    index($2, p) > 0 {
+                        found=1
+                    }
+                    END {
+                        if (found) print "yes"
+                    }
+                '
+        )"
+
+        if [ "$READY" = "yes" ]
+        then
+            echo "EUD_SSL=READY"
+            break
+        fi
+
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if [ "$i" -ge 180 ]
+    then
+        fail_start 71 eud_ssl_not_ready
+    fi
+fi
+
+# ---------------------------------------------------------
+# 8. HTTPS reverse proxy
+# ---------------------------------------------------------
+
+NGINX_PID="$(cat "$ROOT/run/nginx.pid" 2>/dev/null)"
+
+if pid_matches "$NGINX_PID" "nginx: master process"; then
+    echo "NGINX=ALREADY_RUNNING"
+else
+    echo "ASGARD_ACTION=starting_nginx"
+
+    # HTTPS dashboard on the TAK network (8444, sign-in enforced by the API).
+    /usr/bin/python3 /usr/local/portabletak/lib/dashboard_site.py /mnt/asgard >/dev/null 2>&1 ||
+        echo "ASGARD_WARNING=dashboard_site_not_written"
+
+    /usr/sbin/chroot "$ROOT"         /usr/sbin/nginx || {
+            fail_start 75 nginx_start_failed
+        }
+
+    STARTED_NGINX=1
+
+    i=0
+    while [ "$i" -lt 15 ]; do
+        NGINX_PID="$(cat "$ROOT/run/nginx.pid" 2>/dev/null)"
+
+        if pid_matches "$NGINX_PID" "nginx: master process" &&            awk -v h="$PT_SERVICE_HEX" '
+               NR > 1 &&
+               ($2 == h ":01BB" || $2 == h ":20FB" || $2 == "00000000:20FB") &&
+               $4 == "0A" {
+                   found=1
+               }
+               END {
+                   exit(found ? 0 : 1)
+               }
+           ' /proc/net/tcp 2>/dev/null
+        then
+            echo "NGINX_HTTPS=READY"
+            break
+        fi
+
+        i=$((i + 1))
+        sleep 1
+    done
+
+    if [ "$i" -ge 15 ]; then
+        fail_start 76 nginx_https_not_ready
+    fi
+fi
+
+# ---------------------------------------------------------
+# 9. Final process verification
+# ---------------------------------------------------------
+
+MEDIAMTX_PID="$(cat "$MEDIAMTX_PIDFILE" 2>/dev/null)"
+OTS_PID="$(cat "$OTS_PIDFILE" 2>/dev/null)"
+COT_PID="$(cat "$COT_PIDFILE" 2>/dev/null)"
+EUD_PID="$(cat "$EUD_PIDFILE" 2>/dev/null)"
+
+if ! pid_matches "$MEDIAMTX_PID" "$MEDIAMTX_BIN"; then
+    fail_start 79 mediamtx_final_check_failed
+fi
+
+if ! pid_matches "$OTS_PID" "/asgard/opentak/venv/bin/opentakserver"; then
+    fail_start 80 opentakserver_final_check_failed
+fi
+
+if ! pid_matches "$COT_PID" "/asgard/opentak/venv/bin/cot_parser"; then
+    fail_start 81 cot_parser_final_check_failed
+fi
+
+if ! pid_matches "$EUD_PID" "/asgard/opentak/venv/bin/eud_handler"; then
+    fail_start 82 eud_ssl_final_check_failed
+fi
+
+NGINX_PID="$(cat "$ROOT/run/nginx.pid" 2>/dev/null)"
+
+if ! pid_matches "$NGINX_PID" "nginx: master process"; then
+    fail_start 83 nginx_final_process_check_failed
+fi
+
+if ! awk -v h="$PT_SERVICE_HEX" '
+    NR > 1 &&
+    ($2 == h ":01BB" || $2 == h ":20FB" || $2 == "00000000:20FB") &&
+    $4 == "0A" {
+        found=1
+    }
+    END {
+        exit(found ? 0 : 1)
+    }
+' /proc/net/tcp 2>/dev/null
+then
+    fail_start 84 nginx_final_listener_check_failed
+fi
+
+echo "MEDIAMTX_PID=$MEDIAMTX_PID"
+echo "OPENTAKSERVER_PID=$OTS_PID"
+echo "COT_PARSER_PID=$COT_PID"
+echo "EUD_SSL_PID=$EUD_PID"
+echo "NGINX_PID=$NGINX_PID"
+# ASGARD serves HTTPS on 443; generic cartridges use the OTS default 8443.
+if grep -qE " (${PT_SERVICE_HEX}|00000000):20FB .* 0A " /proc/net/tcp 2>/dev/null; then
+    echo "HTTPS_ENDPOINT=$PT_SERVICE_IP:8443"
+else
+    echo "HTTPS_ENDPOINT=$PT_SERVICE_IP:443"
+fi
+
+USERS_WORKER="/usr/local/portabletak/bin/portabletak-users-worker"
+
+if [ -x "$USERS_WORKER" ]
+then
+    echo "ASGARD_ACTION=starting_users_worker_background"
+
+    (
+        "$USERS_WORKER" start             >/tmp/portabletak/users-worker-start.log 2>&1
+    ) &
+
+    echo "PORTABLETAK_USERS_WORKER=WARMING"
+fi
+
+echo "ASGARD_OTS=READY"
+echo "ASGARD_TAK_SERVER=READY"
+
+# Optional remote access; never fails the TAK start.
+/usr/local/portabletak/bin/portabletak-tailscale start </dev/null 2>/dev/null || true
+
+exit 0

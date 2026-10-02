@@ -1,0 +1,10 @@
+#!/bin/sh
+# A phone with USB tethering was plugged in: use it as the internet uplink.
+[ "$ACTION" = add ] || exit 0
+DRIVER="$(basename "$(readlink -f "/sys/class/net/$INTERFACE/device/driver" 2>/dev/null)")"
+case "$DRIVER" in
+    rndis_host|cdc_ncm|cdc_ether)
+        logger -t portabletak "phone tethering detected on $INTERFACE ($DRIVER); using it as uplink"
+        /usr/local/portabletak/bin/portabletak-phone-uplink attach "$INTERFACE" >/dev/null 2>&1 &
+        ;;
+esac

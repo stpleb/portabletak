@@ -1,0 +1,23 @@
+#!/usr/bin/python3
+import sys
+sys.path.insert(0, '/usr/local/portabletak/lib')
+from emergency_stop import stop
+try:
+    import subprocess
+    subprocess.run(['/usr/local/portabletak/bin/portabletak-tailscale', 'stop'],
+                   capture_output=True, timeout=30)
+    result = stop()
+    print('PORTABLETAK_EMERGENCY_STOP_TARGETED=' + str(result['targeted']))
+    print('PORTABLETAK_EMERGENCY_STOP_REMAINING=' + str(result['remaining']))
+    if not result['remaining']:
+        # Nothing serves the address any more; release it so another node can
+        # claim it (ASGARD's stop once left it on Node01).
+        import subprocess
+        release = subprocess.run(['/bin/sh', '-c', '. /usr/local/portabletak/lib/host-profile.sh && "$PT_NETWORK" release'],
+                                 capture_output=True, text=True, timeout=20)
+        print('PORTABLETAK_EMERGENCY_STOP_ADDRESS=' +
+              ('RELEASED' if release.returncode == 0 else 'RELEASE_FAILED'))
+    sys.exit(1 if result['remaining'] else 0)
+except (OSError, AttributeError):
+    print('PORTABLETAK_EMERGENCY_STOP_ERROR=host_process_control_unavailable')
+    sys.exit(1)

@@ -1,0 +1,52 @@
+#!/bin/sh
+# Use a phone's USB tethering as this node's internet uplink (like Ethernet).
+#   portabletak-phone-uplink setup     create the "phonewan" interface (idempotent)
+#   portabletak-phone-uplink attach IF use network device IF (called on plug-in)
+#   portabletak-phone-uplink status
+# The phone appears as a USB network device (rndis_host / cdc_ncm / cdc_ether).
+# phonewan is in the firewall's wan zone (NAT), with a higher route metric than
+# Ethernet, so Ethernet wins when both are present. Gateway mode then shares the
+# uplink with Wi-Fi clients.
+case "${1:-status}" in
+    setup)
+        changed=0
+        if [ "$(uci -q get network.phonewan)" != interface ]; then
+            uci set network.phonewan=interface
+            uci set network.phonewan.proto=dhcp
+            uci set network.phonewan.metric=20
+            uci set network.phonewan.device=usb0
+            changed=1
+        fi
+        ZONE="$(uci show firewall | sed -n "s/^firewall\.\([^.]*\)\.name='wan'$/\1/p" | head -n 1)"
+        # The zone's networks may be one space-separated value ('wan eth_direct') or a
+        # list; rebuild them as a list with one network per entry (never merge names).
+        CUR="$(uci -q get "firewall.$ZONE.network")"
+        ENTRIES="$(uci -q show "firewall.$ZONE.network" | grep -o "'[^']*'" | wc -l)"
+        WORDS="$(echo $CUR | wc -w)"
+        if [ -n "$ZONE" ] && { [ "$WORDS" -gt "$ENTRIES" ] || ! echo " $CUR " | grep -q " phonewan "; }; then
+            uci -q delete "firewall.$ZONE.network"
+            SEEN=" "
+            for n in $CUR phonewan; do
+                case "$SEEN" in *" $n "*) continue ;; esac
+                uci add_list "firewall.$ZONE.network=$n"; SEEN="$SEEN$n "
+            done
+            changed=1
+        fi
+        if [ "$changed" = 1 ]; then
+            uci commit network; uci commit firewall
+            /etc/init.d/network reload >/dev/null 2>&1; /etc/init.d/firewall reload >/dev/null 2>&1
+        fi
+        echo "PORTABLETAK_PHONE_UPLINK=READY" ;;
+    attach)
+        IF="$2"; [ -n "$IF" ] || exit 2
+        uci set network.phonewan.device="$IF"; uci commit network
+        ifup phonewan
+        echo "PORTABLETAK_PHONE_UPLINK=ATTACHED:$IF" ;;
+    status)
+        DEV="$(uci -q get network.phonewan.device)"
+        if [ -n "$DEV" ] && [ -e "/sys/class/net/$DEV" ]; then
+            echo "PORTABLETAK_PHONE_UPLINK=CONNECTED:$DEV $(ip -4 -o addr show dev "$DEV" | awk '{print $4}')"
+        else
+            echo "PORTABLETAK_PHONE_UPLINK=NOT_CONNECTED"
+        fi ;;
+esac

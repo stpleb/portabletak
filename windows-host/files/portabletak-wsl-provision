@@ -1,0 +1,81 @@
+#!/usr/bin/python3
+"""First setup of a blank PortableTAK drive from the Windows launcher.
+
+Reads {"instance_name", "administrator_password", "client_password"} as JSON on
+stdin (never on the command line), sends it to the local setup API (loopback
+only, with the setup header), and waits for the first-run job to finish.
+Prints PORTABLETAK_SETUP=COMPLETE or PORTABLETAK_SETUP=FAILED + error.
+"""
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API = 'http://127.0.0.1:8090/api/provision'
+
+
+def call(url, data=None):
+    request = urllib.request.Request(url, data=data, method='POST' if data is not None else 'GET',
+                                     headers={'Content-Type': 'application/json', 'X-PortableTAK-Setup': '1'})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, json.loads(response.read() or b'{}')
+    except urllib.error.HTTPError as error:
+        try:
+            return error.code, json.loads(error.read() or b'{}')
+        except ValueError:
+            return error.code, {}
+
+
+def local_status():
+    job = phase = error = None
+    try:
+        job = json.load(open('/tmp/portabletak/bootstrap-job.json')).get('job')
+    except (OSError, ValueError):
+        pass
+    try:
+        status = json.load(open('/mnt/asgard/portabletak/provision/status.json'))
+        phase, error = status.get('phase'), status.get('error')
+    except (OSError, ValueError):
+        pass
+    return job, phase, error
+
+
+def main():
+    try:
+        answers = json.loads(sys.stdin.read())
+    except ValueError:
+        print('PORTABLETAK_SETUP=FAILED\nPORTABLETAK_SETUP_ERROR=invalid_input')
+        return 1
+    status, body = call(API + '/validate', json.dumps(answers).encode())
+    if status != 200:
+        print('PORTABLETAK_SETUP=INVALID\nPORTABLETAK_SETUP_ERROR=' + str(body.get('detail', status)))
+        return 2
+    status, body = call(API, json.dumps(answers).encode())
+    answers = None
+    if status != 200:
+        print('PORTABLETAK_SETUP=FAILED\nPORTABLETAK_SETUP_ERROR=' + str(body.get('detail', status)))
+        return 1
+    deadline = time.time() + 1800
+    last = None
+    while time.time() < deadline:
+        time.sleep(5)
+        # Read progress locally: once setup creates the administrator account the
+        # API (correctly) requires sign-in, so its status route is no longer open.
+        job, phase, error = local_status()
+        if phase != last:
+            print('PORTABLETAK_SETUP_PHASE=' + str(phase), flush=True)
+            last = phase
+        if job == 'complete':
+            print('PORTABLETAK_SETUP=COMPLETE')
+            return 0
+        if job in ('failed', 'error') or phase == 'failed':
+            print('PORTABLETAK_SETUP=FAILED\nPORTABLETAK_SETUP_ERROR=' + str(error))
+            return 1
+    print('PORTABLETAK_SETUP=FAILED\nPORTABLETAK_SETUP_ERROR=timeout')
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

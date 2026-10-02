@@ -1,0 +1,3 @@
+#!/bin/sh
+# Called by the Windows launcher before it detaches the USB drive: stop and unmount safely.
+exec /usr/local/portabletak/bin/portabletak-safe-remove

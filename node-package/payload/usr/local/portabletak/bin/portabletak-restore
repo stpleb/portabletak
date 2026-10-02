@@ -1,0 +1,305 @@
+#!/bin/sh
+
+MOUNT="${PORTABLETAK_MOUNT:-/mnt/asgard}"
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs "$MOUNT")"
+BACKUP_ROOT="$MOUNT/portabletak/backups/recovery"
+PGDATA="/asgard/postgres"
+PGCTL="/usr/lib/postgresql/16/bin/pg_ctl"
+
+ACTION="$1"
+NAME="$2"
+
+case "$NAME" in
+    portabletak-*.tar.gz)
+        ;;
+    *)
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=invalid_backup_name"
+        return 10 2>/dev/null
+        ;;
+esac
+
+BACKUP="$BACKUP_ROOT/$NAME"
+
+if [ ! -f "$BACKUP" ]
+then
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=backup_not_found"
+    return 11 2>/dev/null
+fi
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+WORK="/tmp/portabletak-restore-$STAMP"
+
+# Backups made since 2026-09-29 have a sidecar with the archive checksum and
+# per-file checksums inside. Older backups have neither and are checked as before.
+if [ -f "$BACKUP.json" ]
+then
+    EXPECTED_SHA="$(sed -n 's/.*"sha256":"\([0-9a-f]\{64\}\)".*/\1/p' "$BACKUP.json")"
+    ACTUAL_SHA="$(sha256sum "$BACKUP" | awk '{print $1}')"
+    if [ -z "$EXPECTED_SHA" ] || [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]
+    then
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=backup_archive_checksum_mismatch"
+        return 17 2>/dev/null
+    fi
+fi
+
+rm -rf "$WORK"
+mkdir -p "$WORK"
+
+tar -xzf "$BACKUP" -C "$WORK" || {
+    rm -rf "$WORK"
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=archive_invalid"
+    return 12 2>/dev/null
+}
+
+for FILE in \
+    "$WORK/manifest.txt" \
+    "$WORK/files/cartridge.conf" \
+    "$WORK/files/config.tar.gz" \
+    "$WORK/files/opentak-data.tar.gz" \
+    "$WORK/files/ots.dump"
+do
+    if [ ! -s "$FILE" ]
+    then
+        rm -rf "$WORK"
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=backup_incomplete"
+        return 13 2>/dev/null
+    fi
+done
+
+if ! grep -q '^PORTABLETAK_BACKUP_FORMAT=1$' \
+    "$WORK/manifest.txt"
+then
+    rm -rf "$WORK"
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=unsupported_backup_format"
+    return 14 2>/dev/null
+fi
+
+if [ -f "$WORK/files.sha256" ]
+then
+    if ! (cd "$WORK" && sha256sum -c files.sha256 >/dev/null 2>&1)
+    then
+        rm -rf "$WORK"
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=backup_file_checksum_mismatch"
+        return 18 2>/dev/null
+    fi
+elif grep -q '^INCLUDES_CHECKSUMS=yes$' "$WORK/manifest.txt"
+then
+    rm -rf "$WORK"
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=backup_checksums_missing"
+    return 19 2>/dev/null
+fi
+
+/usr/local/portabletak/bin/portabletak-prepare \
+    >/dev/null 2>&1 || {
+        rm -rf "$WORK"
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=prepare_failed"
+        return 15 2>/dev/null
+    }
+
+cp "$WORK/files/ots.dump" \
+   "$MOUNT/opentak/.portabletak-restore-check.dump"
+
+/usr/sbin/chroot "$ROOT" \
+    /usr/bin/pg_restore \
+    -l \
+    /asgard/opentak/.portabletak-restore-check.dump \
+    >/dev/null 2>&1
+
+RC=$?
+
+rm -f "$MOUNT/opentak/.portabletak-restore-check.dump"
+
+if [ "$RC" -ne 0 ]
+then
+    rm -rf "$WORK"
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=database_dump_invalid"
+    return 16 2>/dev/null
+fi
+
+if [ "$ACTION" = "verify" ]
+then
+    echo "PORTABLETAK_RESTORE=VERIFIED"
+    echo "BACKUP_FILE=$NAME"
+    grep -E \
+        '^(BACKUP_ID|CREATED_UTC|CREATED_LOCAL|INSTANCE_NAME|NOTE|DATABASE)=' \
+        "$WORK/manifest.txt"
+
+    rm -rf "$WORK"
+    return 0 2>/dev/null
+fi
+
+if [ "$ACTION" != "restore" ]
+then
+    rm -rf "$WORK"
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=invalid_action"
+    return 17 2>/dev/null
+fi
+
+echo "PORTABLETAK_RESTORE=PREBACKUP"
+
+/usr/local/portabletak/bin/portabletak-backup || {
+    rm -rf "$WORK"
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=pre_restore_backup_failed"
+    return 20 2>/dev/null
+}
+
+echo "PORTABLETAK_RESTORE=STOPPING"
+
+/usr/local/portabletak/bin/portabletak-stop || {
+    rm -rf "$WORK"
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=stop_failed"
+    return 21 2>/dev/null
+}
+
+ROLLBACK="$MOUNT/portabletak/backups/restore-rollback-$STAMP"
+
+mkdir -p "$ROLLBACK"
+
+cp -a "$MOUNT/config" \
+   "$ROLLBACK/config"
+
+cp -a "$MOUNT/opentak/data" \
+   "$ROLLBACK/opentak-data"
+
+cp "$MOUNT/portabletak/cartridge.conf" \
+   "$ROLLBACK/cartridge.conf"
+
+echo "PORTABLETAK_RESTORE=FILES"
+
+rm -rf "$MOUNT/config"
+rm -rf "$MOUNT/opentak/data"
+
+tar -xzf "$WORK/files/config.tar.gz" \
+    -C "$MOUNT" || {
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=config_restore_failed"
+        return 30 2>/dev/null
+    }
+
+tar -xzf "$WORK/files/opentak-data.tar.gz" \
+    -C "$MOUNT" || {
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=opentak_data_restore_failed"
+        return 31 2>/dev/null
+    }
+
+cp "$WORK/files/cartridge.conf" \
+   "$MOUNT/portabletak/cartridge.conf"
+
+cp "$WORK/files/ots.dump" \
+   "$MOUNT/opentak/.portabletak-restore.dump"
+
+echo "PORTABLETAK_RESTORE=DATABASE"
+
+mkdir -p "$ROOT/run/postgresql"
+# PostgreSQL's account differs between cartridges (ASGARD 102:104, the clean
+# base 101:103); read it from the cartridge instead of assuming.
+PG_OWNER="$(awk -F: '$1 == "postgres" {print $3 ":" $4; exit}' "$ROOT/etc/passwd" 2>/dev/null)"
+case "$PG_OWNER" in
+    [0-9]*:[0-9]*) ;;
+    *) PG_OWNER="102:104" ;;
+esac
+chown "$PG_OWNER" "$ROOT/run/postgresql"
+chmod 2775 "$ROOT/run/postgresql"
+
+/usr/sbin/chroot "$ROOT" \
+    /usr/sbin/runuser -u postgres -- \
+    "$PGCTL" \
+    -D "$PGDATA" \
+    -l "$PGDATA/postgresql.log" \
+    start >/dev/null 2>&1 || {
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=postgres_start_failed"
+        return 40 2>/dev/null
+    }
+
+i=0
+
+while [ "$i" -lt 20 ]
+do
+    if /usr/sbin/chroot "$ROOT" \
+        /usr/bin/pg_isready \
+        -h 127.0.0.1 \
+        -p 5432 >/dev/null 2>&1
+    then
+        break
+    fi
+
+    i=$((i + 1))
+    sleep 1
+done
+
+if [ "$i" -ge 20 ]
+then
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=postgres_not_ready"
+    return 41 2>/dev/null
+fi
+
+/usr/sbin/chroot "$ROOT" \
+    /usr/sbin/runuser -u postgres -- \
+    /usr/bin/dropdb \
+    --if-exists \
+    ots || {
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=database_drop_failed"
+        return 42 2>/dev/null
+    }
+
+/usr/sbin/chroot "$ROOT" \
+    /usr/sbin/runuser -u postgres -- \
+    /usr/bin/createdb \
+    -O ots \
+    ots || {
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=database_create_failed"
+        return 43 2>/dev/null
+    }
+
+/usr/sbin/chroot "$ROOT" \
+    /usr/sbin/runuser -u postgres -- \
+    /usr/bin/pg_restore \
+    -d ots \
+    /asgard/opentak/.portabletak-restore.dump || {
+        echo "PORTABLETAK_RESTORE=FAILED"
+        echo "ERROR=database_restore_failed"
+        return 44 2>/dev/null
+    }
+
+rm -f "$MOUNT/opentak/.portabletak-restore.dump"
+
+/usr/sbin/chroot "$ROOT" \
+    /usr/sbin/runuser -u postgres -- \
+    "$PGCTL" \
+    -D "$PGDATA" \
+    stop \
+    -m fast >/dev/null 2>&1
+
+echo "PORTABLETAK_RESTORE=STARTING"
+
+/usr/local/portabletak/bin/portabletak-start || {
+    echo "PORTABLETAK_RESTORE=FAILED"
+    echo "ERROR=restart_failed"
+    return 50 2>/dev/null
+}
+
+rm -rf "$WORK"
+
+echo "PORTABLETAK_RESTORE=COMPLETE"
+echo "BACKUP_FILE=$NAME"
+echo "ROLLBACK_DIR=$ROLLBACK"
+
+return 0 2>/dev/null

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Called by the Windows launcher after it attached the USB drive (usbipd).
+#   portabletak-wsl-start <service-ip>
+# Binds the host profile to the laptop address phones will use, then finds,
+# mounts, adopts and starts the PortableTAK cartridge (same path as a node).
+IP="$1"
+case "$IP" in *.*.*.*) ;; *) echo "PORTABLETAK_WSL_ERROR=service_address_required"; exit 2 ;; esac
+DEV="$(ip -4 -o addr show | awk -v ip="$IP" '{split($4,a,"/"); if (a[1]==ip) {print $2; exit}}')"
+[ -n "$DEV" ] || { echo "PORTABLETAK_WSL_ERROR=address_not_on_this_computer:$IP"; exit 3; }
+mkdir -p /etc/portabletak
+printf 'PT_PROFILE=linux\nPT_SERVICE_IP=%s\nPT_SERVICE_DEV=%s\nPT_BOOT_DEV=%s\n' "$IP" "$DEV" "$DEV" > /etc/portabletak/host-profile
+# Optional: the computer's Tailscale address (remote access via the Windows Tailscale app).
+case "${2:-}" in *.*.*.*) echo "PT_EXTRA_IPS=$2" >> /etc/portabletak/host-profile ;; esac
+/usr/local/portabletak/bin/portabletak-wsl-api start >/dev/null
+mkdir -p /tmp/portabletak
+exec /usr/local/portabletak/bin/portabletak-autoload

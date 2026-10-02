@@ -1,0 +1,161 @@
+#!/bin/bash
+# PortableTAK on a Mac (Apple Silicon): run the server from the PortableTAK USB
+# drive in a small Linux VM (QEMU, hardware accelerated). Phones and WinTAK
+# connect to this Mac's address; QEMU forwards the TAK ports to the VM.
+#
+#   portabletak-mac-run start     (what "Start PortableTAK (Mac)" runs)
+#   portabletak-mac-run stop      (what "Stop PortableTAK" on the Desktop runs)
+set -u
+APP="$HOME/Library/Application Support/PortableTAK"
+STATE="$APP/run"
+QEMU=/opt/homebrew/bin/qemu-system-aarch64
+CONTROL=http://127.0.0.1:18091
+TCP_PORTS="8089 8443 8444 8446 8554 1935 8888 8889 8890"
+UDP_PORTS="8000 8001 8189 8890"
+
+say() { printf '%s\n' "$*"; }
+die() { printf '\nPortableTAK: %s\n' "$*" >&2; read -r -p "Press Return to close. " _; exit 1; }
+
+running() { [ -f "$STATE/qemu.pid" ] && kill -0 "$(cat "$STATE/qemu.pid")" 2>/dev/null; }
+
+stop_server() {
+    if ! running; then say "PortableTAK is not running."; return 0; fi
+    say "Stopping PortableTAK safely..."
+    curl -s -X POST --max-time 120 "$CONTROL/stop" | grep -E "SAFE_TO_REMOVE" >/dev/null ||
+        say "  (the server did not confirm; shutting the VM down anyway)"
+    for i in $(seq 1 30); do running || break; sleep 1; done
+    running && kill "$(cat "$STATE/qemu.pid")" 2>/dev/null
+    DISK="$(cat "$STATE/disk" 2>/dev/null)"
+    rm -f "$STATE/qemu.pid" "$STATE/disk"
+    [ -n "$DISK" ] && diskutil mountDisk "$DISK" >/dev/null 2>&1
+    say "PortableTAK stopped. You can remove the drive now (eject PORTABLETAK first)."
+}
+
+if [ "${1:-start}" = stop ]; then stop_server; exit 0; fi
+
+# ---------------------------------------------------------------- copy tools locally
+HERE="$(cd "$(dirname "$0")" && pwd)"
+case "$HERE" in
+    "$APP"*) ;;
+    *)  # Started from the drive: the drive's volume goes away while the server runs.
+        mkdir -p "$APP"
+        for f in portabletak-mac-run vmlinuz initrd.img vm.qcow2 vm.sha256; do
+            [ -f "$HERE/$f" ] || continue
+            if [ "$f" = vm.qcow2 ] && cmp -s "$HERE/vm.sha256" "$APP/vm.sha256" 2>/dev/null; then continue; fi
+            cp "$HERE/$f" "$APP/$f.tmp" && mv "$APP/$f.tmp" "$APP/$f"
+        done
+        chmod 755 "$APP/portabletak-mac-run"
+        VOLUME="$(cd "$HERE/../.." && pwd)"
+        # macOS leaves "._name" files on FAT drives; they would show up on Windows.
+        dot_clean -m "$VOLUME" 2>/dev/null; rm -f "$VOLUME"/._* 2>/dev/null
+        exec "$APP/portabletak-mac-run" start "$VOLUME" ;;
+esac
+VOLUME="${2:-/Volumes/PORTABLETAK}"
+
+say "== PortableTAK for Mac"
+[ "$(uname -m)" = arm64 ] || die "this needs an Apple Silicon Mac."
+[ -x "$QEMU" ] || die "QEMU is needed once. In Terminal run:  brew install qemu   then start again."
+if running; then
+    # A previous session whose drive was unplugged without stopping: clean it up.
+    OLD_DISK="$(cat "$STATE/disk" 2>/dev/null)"
+    if [ -n "$OLD_DISK" ] && ! diskutil info "$OLD_DISK" >/dev/null 2>&1; then
+        say "Cleaning up the previous session (its drive was unplugged without stopping)..."
+        kill "$(cat "$STATE/qemu.pid")" 2>/dev/null; sleep 2; rm -f "$STATE/qemu.pid" "$STATE/disk"
+    else
+        die "PortableTAK is already running. Use Stop PortableTAK first."
+    fi
+fi
+mkdir -p "$STATE"
+
+# ---------------------------------------------------------------- find the drive
+if [ -n "${PT_TEST_IMAGE:-}" ]; then   # tests only: a drive image instead of a USB disk
+    DISK=""; DRIVE_FILE="$PT_TEST_IMAGE"
+else
+INFO="$(diskutil info -plist "$VOLUME" 2>/dev/null)" || die "PortableTAK drive not found at $VOLUME."
+DISK="$(plutil -extract ParentWholeDisk raw -o - - <<<"$INFO" 2>/dev/null)"
+[ -n "$DISK" ] || die "could not identify the PortableTAK drive."
+DINFO="$(diskutil info -plist "$DISK")"
+[ "$(plutil -extract Internal raw -o - - <<<"$DINFO")" = false ] || die "refusing an internal disk."
+diskutil list "$DISK" | grep -q "Linux" || die "this drive has no PortableTAK partition."
+say "Drive: $(plutil -extract MediaName raw -o - - <<<"$DINFO") ($DISK)"
+DRIVE_FILE="/dev/r$DISK"
+fi
+
+# ---------------------------------------------------------------- address for phones
+IFACE="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+ADDRESS="$(ipconfig getifaddr "${IFACE:-en0}" 2>/dev/null || ipconfig getifaddr en0 2>/dev/null)"
+[ -n "$ADDRESS" ] || die "this Mac is not connected to a network. Connect to Wi-Fi or Ethernet first."
+say "This Mac's address for phones and WinTAK: $ADDRESS"
+# Remote access uses the drive's own Tailscale (set up once in the dashboard), so the
+# Mac's own Tailscale app is not needed and its address is not used.
+
+# ---------------------------------------------------------------- attach and boot
+if [ -n "$DISK" ]; then
+    say "macOS asks for your Mac password to give PortableTAK access to the drive."
+    sudo -v || die "administrator rights are needed to use the drive."
+    sudo diskutil unmountDisk "$DISK" >/dev/null || die "could not unmount the drive (close any open files on it)."
+    sudo chown "$(id -u)" "/dev/r$DISK" || die "could not open the drive."
+    echo "$DISK" > "$STATE/disk"
+fi
+FWD="hostfwd=tcp:127.0.0.1:8090-:8090,hostfwd=tcp:127.0.0.1:18091-:8091"
+for p in $TCP_PORTS; do FWD="$FWD,hostfwd=tcp::$p-:$p"; done
+for p in $UDP_PORTS; do FWD="$FWD,hostfwd=udp::$p-:$p"; done
+"$QEMU" -M virt -accel hvf -cpu host -m 3072 -smp 4 \
+    -kernel "$APP/vmlinuz" -initrd "$APP/initrd.img" \
+    -append "root=/dev/vda rw console=ttyAMA0 init=/usr/local/portabletak/bin/portabletak-vm-init pt.advertise=$ADDRESS pt.time=$(date +%s)" \
+    -drive "file=$APP/vm.qcow2,if=virtio,format=qcow2,snapshot=on" \
+    -drive "file=$DRIVE_FILE,if=virtio,format=raw,cache=none" \
+    -netdev "user,id=n0,$FWD" -device virtio-net-pci,netdev=n0 \
+    -display none -serial "file:$STATE/console.log" -daemonize -pidfile "$STATE/qemu.pid" ||
+    die "the PortableTAK VM did not start (see $STATE/console.log)."
+
+say "Starting the server (first start on this Mac takes a few minutes)..."
+RESULT=""
+for i in $(seq 1 240); do
+    RESULT="$(curl -s --max-time 3 "$CONTROL/status" 2>/dev/null)"
+    printf '%s\n' "$RESULT" | grep -qE "AUTOLOAD=(RUNNING|AWAITING_ACTION|NO_CARTRIDGE|MULTIPLE_CARTRIDGES)|AUTOLOAD_ERROR" && break
+    sleep 5
+done
+
+if printf '%s\n' "$RESULT" | grep -q "PORTABLETAK_PROVISIONING_STATE=new"; then
+    say ""; say "This drive is blank. Let's set it up (one time)."
+    while :; do
+        read -r -p "Server name (letters, numbers, space . _ -): " NAME
+        printf '%s' "$NAME" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9 ._-]{0,62}[A-Za-z0-9])?$' && break
+        say "  That name can't be used. Try again."
+    done
+    ask() { while :; do read -r -s -p "$1 (8+ characters; 12+ recommended): " A; echo
+            [ "${#A}" -ge 8 ] && [ "${#A}" -le 128 ] && ! printf '%s' "$A" | LC_ALL=C grep -q '[^ -~]' || { say "  Use 8 to 128 ordinary characters."; continue; }
+            read -r -s -p "Type it again: " B; echo; [ "$A" = "$B" ] && { PW="$A"; return; }; say "  They didn't match."; done; }
+    while :; do ask "Administrator password (dashboard sign-in)"; ADMIN="$PW"; ask "Client password (used when phones enroll)"; CLIENT="$PW"
+        [ "$ADMIN" != "$CLIENT" ] && break; say "  The two passwords must be different."; done
+    esc() { printf '%s' "$1" | sed 's/[\\"]/\\&/g'; }
+    say "Setting up the server (about 5-10 minutes)..."
+    SETUP="$(printf '{"instance_name":"%s","administrator_password":"%s","client_password":"%s"}' "$NAME" "$(esc "$ADMIN")" "$(esc "$CLIENT")" |
+        curl -s --max-time 1900 -X POST --data-binary @- "$CONTROL/setup")"
+    unset ADMIN CLIENT PW A B
+    printf '%s\n' "$SETUP" | grep -q "PORTABLETAK_SETUP=COMPLETE" || { stop_server; die "setup failed: $(printf '%s' "$SETUP" | grep _ERROR=)"; }
+elif printf '%s\n' "$RESULT" | grep -q "AUTOLOAD=MULTIPLE_CARTRIDGES"; then
+    stop_server; die "more than one PortableTAK drive is attached. Unplug the others and start again."
+elif ! printf '%s\n' "$RESULT" | grep -q "AUTOLOAD=RUNNING"; then
+    printf '%s\n' "$RESULT" | grep -E "ERROR" | head -3
+    stop_server; die "PortableTAK did not start."
+fi
+
+cat > "$HOME/Desktop/Stop PortableTAK.command" <<EOF2
+#!/bin/bash
+"$APP/portabletak-mac-run" stop
+read -r -p "Press Return to close. " _
+EOF2
+chmod 755 "$HOME/Desktop/Stop PortableTAK.command"
+say ""
+say "PortableTAK is running."
+say "  Phones and WinTAK connect to $ADDRESS (TAK port 8089, SSL)."
+say "  Dashboard: http://localhost:8090   (on other devices: https://$ADDRESS:8444)"
+say "  If macOS asks whether qemu may accept incoming connections, click Allow."
+[ -z "${PT_TEST_IMAGE:-}" ] && open "http://localhost:8090/"
+say ""
+read -r -p "Press Return here to STOP PortableTAK safely (or use Stop PortableTAK on the Desktop)... " _
+stop_server
+rm -f "$HOME/Desktop/Stop PortableTAK.command"
+read -r -p "Press Return to close. " _

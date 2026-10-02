@@ -1,0 +1,47 @@
+#!/bin/sh
+
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
+HELPER="/usr/local/portabletak/users.py"
+
+# Generic cartridges are built from the sealed clean base, which carries no
+# PortableTAK runtime helpers; the host package supplies them. ASGARD
+# ("existing") keeps the copies in its own rootfs untouched.
+install_users_helpers()
+{
+    TYPE="$(sed -n 's/^PORTABLETAK_INSTANCE_TYPE=//p' /mnt/asgard/portabletak/cartridge.conf 2>/dev/null | head -n 1)"
+    [ "$TYPE" = "generic" ] || return 0
+    mkdir -p "$ROOT/usr/local/portabletak" || return 1
+    for NAME in users.py users_worker.py; do
+        SRC="/usr/local/portabletak/chroot/$NAME"
+        DST="$ROOT/usr/local/portabletak/$NAME"
+        [ -r "$SRC" ] || return 1
+        if ! cmp -s "$SRC" "$DST"; then
+            cp "$SRC" "$DST.new" && chmod 644 "$DST.new" && mv "$DST.new" "$DST" || return 1
+        fi
+    done
+    return 0
+}
+
+if ! mount | grep -F " on $ROOT/dev " >/dev/null 2>&1
+then
+    echo '{"ok":false,"error":"runtime_not_prepared"}'
+    return 20 2>/dev/null
+fi
+
+install_users_helpers
+
+if [ ! -r "$ROOT$HELPER" ]
+then
+    echo '{"ok":false,"error":"users_helper_missing"}'
+    return 21 2>/dev/null
+fi
+
+chroot "$ROOT" /bin/sh -c '
+    export OTS_DATA_FOLDER=/asgard/opentak/data
+    cd /asgard/opentak
+    /asgard/opentak/venv/bin/python3 /usr/local/portabletak/users.py
+'
+
+RC=$?
+
+return "$RC" 2>/dev/null

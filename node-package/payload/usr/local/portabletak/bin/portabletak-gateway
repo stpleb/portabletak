@@ -1,0 +1,81 @@
+#!/bin/sh
+# Share this node's internet uplink (e.g. Ethernet) with its Wi-Fi clients.
+#
+#   portabletak-gateway auto     share while the uplink has internet, else mesh-only
+#   portabletak-gateway on|off   force sharing on or off (until the next auto)
+#   portabletak-gateway status
+#   portabletak-gateway disable  restore the original settings and stop switching
+#
+# Mesh-only (the node's original setting): clients get routes to 10.41.0.0/16
+# but no default gateway, so phones keep cellular for internet. Sharing: the
+# node is also the default gateway (DHCP options 3 and 121), so clients use the
+# node's uplink instead of their own data. The node already NATs lan -> wan.
+# The original DHCP options are saved once and restored when sharing stops.
+# One change at a time (uplink up/down events can arrive together).
+mkdir -p /tmp/portabletak
+exec 8>/tmp/portabletak/gateway.lock
+flock 8
+SAVED=/etc/portabletak/dhcp-lan-options.original
+STATE=/etc/portabletak/gateway-mode
+LAN_IP="$(uci -q get network.lan.ipaddr)"
+[ -n "$LAN_IP" ] || { echo "PORTABLETAK_GATEWAY_ERROR=no_lan_address"; exit 1; }
+
+save_original()
+{
+    [ -f "$SAVED" ] && return 0
+    mkdir -p /etc/portabletak
+    uci -q get dhcp.lan.dhcp_option > "$SAVED.tmp" || : > "$SAVED.tmp"
+    mv "$SAVED.tmp" "$SAVED"
+}
+
+set_options()  # $@ = list entries
+{
+    uci -q delete dhcp.lan.dhcp_option
+    for option in "$@"; do uci add_list dhcp.lan.dhcp_option="$option"; done
+    uci commit dhcp
+    /etc/init.d/dnsmasq reload >/dev/null 2>&1 || /etc/init.d/dnsmasq restart >/dev/null 2>&1
+}
+
+restore_original()
+{
+    [ -f "$SAVED" ] || return 0
+    # shellcheck disable=SC2046
+    eval "set -- $(cat "$SAVED")"
+    set_options "$@"
+}
+
+uplink_ok()
+{
+    ip route show default 2>/dev/null | grep -qv "dev br-" || return 1
+    ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1
+}
+
+sharing() { uci -q get dhcp.lan.dhcp_option | grep -q "0.0.0.0/0,$LAN_IP"; }
+
+share_on()
+{
+    save_original
+    WANT="3,$LAN_IP 6,$LAN_IP 121,10.41.0.0/16,$LAN_IP,0.0.0.0/0,$LAN_IP"
+    [ "$(uci -q get dhcp.lan.dhcp_option)" = "$WANT" ] && return 0
+    set_options "3,$LAN_IP" "6,$LAN_IP" "121,10.41.0.0/16,$LAN_IP,0.0.0.0/0,$LAN_IP"
+}
+
+share_off()
+{
+    sharing || return 0
+    restore_original
+}
+
+case "${1:-status}" in
+    auto)
+        [ "$(cat "$STATE" 2>/dev/null)" = disabled ] && { echo "PORTABLETAK_GATEWAY=DISABLED"; exit 0; }
+        echo auto > "$STATE"
+        if uplink_ok; then share_on; else share_off; fi ;;
+    on) save_original; share_on; echo manual > "$STATE" ;;
+    off) share_off; echo manual > "$STATE" ;;
+    disable) share_off; restore_original; echo disabled > "$STATE" ;;
+    status) ;;
+    *) echo "usage: portabletak-gateway auto|on|off|status|disable" >&2; exit 2 ;;
+esac
+if sharing; then echo "PORTABLETAK_GATEWAY=SHARING"; else echo "PORTABLETAK_GATEWAY=MESH_ONLY"; fi
+echo "PORTABLETAK_GATEWAY_MODE=$(cat "$STATE" 2>/dev/null || echo unset)"

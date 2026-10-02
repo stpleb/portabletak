@@ -1,0 +1,76 @@
+<!doctype html><html><head><meta charset="utf-8"><title>PortableTAK Quick Reference</title><link rel="stylesheet" href="style.css"></head><body>
+<h1>PortableTAK Quick Reference</h1>
+<p class="subtitle">Addresses, ports and everyday tasks.</p>
+
+<h2>Where to connect</h2>
+<table>
+<tr><th>Where the drive is</th><th>Phones / WinTAK use</th><th>Dashboard</th></tr>
+<tr><td>OpenMANET node (on its Wi-Fi)</td><td><code>10.41.254.1</code></td><td><code>https://10.41.254.1:8444</code> (QR on the drive)</td></tr>
+<tr><td>OpenMANET node (from elsewhere on the mesh)</td><td><code>10.41.250.10</code></td><td><code>https://10.41.250.10:8444</code></td></tr>
+<tr><td>Windows computer</td><td>The address shown in the Start window</td><td>Opens automatically: <code>http://localhost:8090</code> (desktop shortcut)</td></tr>
+<tr><td>Mac (Apple Silicon)</td><td>The address shown in the Start window</td><td>Opens automatically: <code>http://localhost:8090</code></td></tr>
+<tr><td>Anywhere, over cellular (after Remote Access is turned on; Tailscale app on)</td><td>Tailscale address shown under <b>Remote Access</b> (same on every host)</td><td><code>https://&lt;Tailscale address&gt;:8444</code></td></tr>
+</table>
+
+<h2>Ports</h2>
+<table>
+<tr><th>Port</th><th>Use</th><th>Port</th><th>Use</th></tr>
+<tr><td>8089 TCP (SSL)</td><td>TAK clients (CoT)</td><td>8554 TCP</td><td>Video: RTSP</td></tr>
+<tr><td>8443 TCP</td><td>TAK web / Marti API</td><td>1935 TCP</td><td>Video: RTMP</td></tr>
+<tr><td>8444 TCP</td><td>PortableTAK dashboard (sign-in)</td><td>8888 / 8889 TCP</td><td>Video: HLS / WebRTC</td></tr>
+<tr><td>8446 TCP</td><td>Certificate enrollment (QR setup)</td><td>8890 UDP/TCP</td><td>Video: SRT</td></tr>
+</table>
+
+<h2>Accounts and passwords</h2>
+<ul>
+<li><b>Dashboard:</b> user <code>administrator</code> + the administrator password chosen at setup.</li>
+<li><b>Client password:</b> protects the certificate packages; phones use it during QR enrollment.</li>
+<li><b>Phone users:</b> created in <b>Users</b>. Passwords: 8+ characters (12+ recommended).</li>
+<li>Too many wrong sign-ins lock sign-in for a few minutes (per device).</li>
+</ul>
+
+<h2>Everyday tasks (dashboard)</h2>
+<table>
+<tr><th>Task</th><th>Where</th></tr>
+<tr><td>Add a person / device</td><td><b>Users → Create User</b>, then a package or QR under <b>Manage User / Download Setup Package</b></td></tr>
+<tr><td>iPhone over cellular</td><td><b>iTAK Remote Package</b> (second server entry in iTAK)</td></tr>
+<tr><td>Use the server over cellular / from anywhere</td><td><b>Remote Access → Enable remote access</b> (Tailscale), then <b>Finish setup</b></td></tr>
+<tr><td>Back up / restore</td><td><b>Backup / Restore</b> (keep a copy of backups off the drive)</td></tr>
+<tr><td>Stop / start the TAK server</td><td><b>Server → Stop Server / Start Server</b></td></tr>
+<tr><td>Unplug the drive (node)</td><td><b>Server → Safe Remove</b>, wait for "safe to remove"</td></tr>
+<tr><td>Return the drive to brand new</td><td><b>Erase Drive</b> (administrator password + type ERASE). Cannot be undone.</td></tr>
+</table>
+
+<h2>Drone video (Skydio X10D)</h2>
+<table>
+<tr><td>1</td><td>Dashboard → <b>Video Feeds</b> → add a name (lowercase letters, numbers, dashes), e.g. <code>skydio1</code>.</td></tr>
+<tr><td>2</td><td>Controller on the server's Wi-Fi → Menu → Sharing → RTSP → External: name <code>skydio1</code>, IP = server address, port <b>8554</b> → Start Stream.</td></tr>
+<tr><td>3</td><td>ATAK/WinTAK → Video → pick the feed (no sign-in needed).</td></tr>
+<tr><td>Map</td><td>User <code>skydio1</code> → <b>Device TLS Package</b> → controller: Sharing → TAK/CoT → Add a Connection (port 8089, SSL, values in README.txt).</td></tr>
+<tr><td>Hotspot</td><td>Drone team on cellular, server elsewhere: Video Feeds → <b>Drone far from this server</b> → paste the command into Termux on the ATAK phone; the controller uses the address it prints.</td></tr>
+</table>
+
+<h2>Remote access (cellular) checklist</h2>
+<table>
+<tr><td>1</td><td>One free Tailscale account for everything (tailscale.com).</td></tr>
+<tr><td>2</td><td>Remote Access → Enable remote access → approve link → Finish setup (server needs internet). Once per drive; the same on node, Windows and Mac.</td></tr>
+<tr><td>3</td><td>Tailscale app on every phone, same account, switched <b>on</b>.</td></tr>
+<tr><td>4</td><td>Set up phones afterwards: ATAK QR Setup or ATAK Package (both add the Tailscale server); iPhone: iTAK Remote Package or iTAK Remote QR.</td></tr>
+<tr><td>5</td><td>Test with the phone's Wi-Fi off.</td></tr>
+</table>
+
+<h2>Windows and Mac shortcuts</h2>
+<table>
+<tr><td><b>Start PortableTAK (Windows)</b> / <b>(Mac)</b></td><td>On the drive. Starts the server and opens the dashboard.</td></tr>
+<tr><td><b>Stop PortableTAK</b></td><td>Desktop. Stops safely and releases the drive; then unplug. (Dashboard "Stop Server" only pauses the TAK services.)</td></tr>
+<tr><td><b>PortableTAK Dashboard</b> / <b>PortableTAK Status</b></td><td>Desktop.</td></tr>
+</table>
+
+<h2>Rules of thumb</h2>
+<ul>
+<li>Every device needs its <b>own callsign</b>; two devices with the same callsign cannot both connect.</li>
+<li>Make each drive with <b>PortableTAK Setup</b>. Never clone a set-up drive: clones share keys and users.</li>
+<li>A node with internet on its Ethernet shares it with its Wi-Fi clients automatically.</li>
+<li>Phones keep cellular for internet when the node has none.</li>
+</ul>
+</body></html>

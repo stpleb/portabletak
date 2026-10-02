@@ -1,0 +1,88 @@
+#!/bin/sh
+
+MOUNT="/mnt/asgard"
+META="$MOUNT/portabletak/cartridge.conf"
+METADATA_LIB="/usr/local/portabletak/lib/metadata.sh"
+
+if [ ! -r "$METADATA_LIB" ]; then
+    echo "PORTABLETAK_ERROR=metadata_library_missing"
+    return 10 2>/dev/null
+fi
+
+. "$METADATA_LIB"
+
+if ! mount | grep -F " on $MOUNT " >/dev/null 2>&1; then
+    echo "PORTABLETAK_STATE=UNMOUNTED"
+    return 20 2>/dev/null
+fi
+
+if [ ! -r "$META" ]; then
+    echo "PORTABLETAK_ERROR=metadata_missing"
+    return 21 2>/dev/null
+fi
+
+FORMAT="$(portabletak_metadata_get "$META" PORTABLETAK_FORMAT)" || {
+    echo "PORTABLETAK_ERROR=format_missing"
+    return 22 2>/dev/null
+}
+
+ARCH="$(portabletak_metadata_get "$META" PORTABLETAK_ARCH)" || {
+    echo "PORTABLETAK_ERROR=architecture_missing"
+    return 23 2>/dev/null
+}
+
+CARTRIDGE_ID="$(portabletak_metadata_get "$META" PORTABLETAK_CARTRIDGE_ID)" || {
+    echo "PORTABLETAK_ERROR=cartridge_id_missing"
+    return 24 2>/dev/null
+}
+
+INSTANCE_NAME="$(portabletak_metadata_get "$META" PORTABLETAK_INSTANCE_NAME)" || {
+    echo "PORTABLETAK_ERROR=instance_name_missing"
+    return 25 2>/dev/null
+}
+
+INSTANCE_TYPE="$(portabletak_metadata_get "$META" PORTABLETAK_INSTANCE_TYPE)" || {
+    echo "PORTABLETAK_ERROR=instance_type_missing"
+    return 26 2>/dev/null
+}
+
+PROVISIONING_STATE="$(portabletak_metadata_get "$META" PORTABLETAK_PROVISIONING_STATE)" || {
+    echo "PORTABLETAK_ERROR=provisioning_state_missing"
+    return 27 2>/dev/null
+}
+
+if [ "$FORMAT" != "1" ]; then
+    echo "PORTABLETAK_ERROR=unsupported_format"
+    echo "PORTABLETAK_FORMAT=$FORMAT"
+    return 30 2>/dev/null
+fi
+
+case "$ARCH" in
+    arm64|x86_64)
+        ;;
+    *)
+        echo "PORTABLETAK_ERROR=unsupported_architecture"
+        echo "PORTABLETAK_ARCH=$ARCH"
+        return 31 2>/dev/null
+        ;;
+esac
+
+case "$PROVISIONING_STATE" in
+    new|provisioning|failed|existing|provisioned|recovery)
+        ;;
+    *)
+        echo "PORTABLETAK_ERROR=invalid_provisioning_state"
+        return 32 2>/dev/null
+        ;;
+esac
+
+echo "PORTABLETAK_STATE=DETECTED"
+echo "PORTABLETAK_FORMAT=$FORMAT"
+echo "PORTABLETAK_ARCH=$ARCH"
+echo "PORTABLETAK_CARTRIDGE_ID=$CARTRIDGE_ID"
+echo "PORTABLETAK_INSTANCE_NAME=$INSTANCE_NAME"
+echo "PORTABLETAK_INSTANCE_TYPE=$INSTANCE_TYPE"
+echo "PORTABLETAK_PROVISIONING_STATE=$PROVISIONING_STATE"
+echo "PORTABLETAK_MOUNT=$MOUNT"
+
+return 0 2>/dev/null

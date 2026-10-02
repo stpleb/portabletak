@@ -1,0 +1,12 @@
+#!/usr/bin/python3
+import sys
+sys.path.insert(0, '/usr/local/portabletak/lib')
+from emergency_stop import stop
+try:
+    result = stop()
+    print('PORTABLETAK_EMERGENCY_STOP_TARGETED=' + str(result['targeted']))
+    print('PORTABLETAK_EMERGENCY_STOP_REMAINING=' + str(result['remaining']))
+    sys.exit(1 if result['remaining'] else 0)
+except (OSError, AttributeError):
+    print('PORTABLETAK_EMERGENCY_STOP_ERROR=host_process_control_unavailable')
+    sys.exit(1)
