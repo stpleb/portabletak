@@ -310,6 +310,34 @@ function Get-DiskBusId([int]$DiskNumber) {
     return $null
 }
 
+function Dismount-DiskVolumes([int]$DiskNumber) {
+    # Force-dismount every volume on the disk, with or without a drive letter.
+    $paths = @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue | ForEach-Object { $_.AccessPaths } |
+               Where-Object { $_ -like '\\?\Volume*' })
+    foreach ($vol in @(Get-CimInstance Win32_Volume -ErrorAction SilentlyContinue | Where-Object { $_.DeviceID -in $paths })) {
+        $r = Invoke-CimMethod -InputObject $vol -MethodName Dismount -Arguments @{Force = $true; Permanent = $false} -ErrorAction SilentlyContinue
+        Log ("dismount $($vol.DeviceID) -> " + $r.ReturnValue)
+    }
+}
+
+function Stop-DriveHolders([string]$InstanceId, [datetime]$Since) {
+    # Windows logs which program blocked restarting the drive (System event 225).
+    # Close the Explorer helper processes (dllhost.exe) named there; Windows starts
+    # them again when needed. Nothing else is closed.
+    $events = @(Get-WinEvent -FilterHashtable @{LogName = 'System'; Id = 225; StartTime = $Since} -ErrorAction SilentlyContinue |
+                Where-Object { $_.Message -like "*$InstanceId*" })
+    $ids = @($events | ForEach-Object { if ($_.Message -match 'process id (\d+)') { [int]$Matches[1] } } | Select-Object -Unique)
+    foreach ($id in $ids) {
+        $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ProcessName -eq 'dllhost') {
+            Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+            Log "closed Explorer helper dllhost.exe ($id) holding the drive"
+        } elseif ($proc) {
+            Log "drive held by $($proc.ProcessName) ($id)"
+        }
+    }
+}
+
 function Attach-Disk([int]$DiskNumber) {
     # Returns the session record kept in $StateFile: usbip|<busid>|<keep-alive pid>
     Ensure-Usbipd
@@ -353,10 +381,18 @@ function Attach-Disk([int]$DiskNumber) {
                           Where-Object { $_.BusId -eq $busId } | Select-Object -ExpandProperty InstanceId)
                 Log ("restarting USB device ${busId}: " + ($inst -join ','))
                 if ($inst) {
-                    $ErrorActionPreference = 'Continue'
-                    $rs = & pnputil.exe /restart-device "$($inst[0])" 2>&1 | Out-String
-                    $ErrorActionPreference = 'Stop'
-                    Log ("pnputil restart $($inst[0]) -> $LASTEXITCODE " + $rs.Trim())
+                    for ($round = 0; $round -lt 3; $round++) {
+                        $since = (Get-Date).AddSeconds(-5)
+                        Dismount-DiskVolumes $DiskNumber
+                        $ErrorActionPreference = 'Continue'
+                        $rs = & pnputil.exe /restart-device "$($inst[0])" 2>&1 | Out-String
+                        $code = $LASTEXITCODE
+                        $ErrorActionPreference = 'Stop'
+                        Log ("pnputil restart $($inst[0]) -> $code " + $rs.Trim())
+                        if ($code -eq 0) { break }
+                        Start-Sleep -Seconds 2
+                        Stop-DriveHolders $inst[0] $since
+                    }
                     Start-Sleep -Seconds 3
                 }
             }
@@ -368,6 +404,8 @@ function Attach-Disk([int]$DiskNumber) {
     if ($attach.Code -ne 0) {
         if ($forced) { Invoke-Usbipd @('unbind', '--busid', $busId) -AllowFail | Out-Null }
         Stop-Process -Id $keep.Id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+        Restore-DriveLetter
         Fail ('Windows would not let go of the drive. Close any File Explorer windows, unplug the drive, plug it in again and retry. (' + ((($attach.Out -replace "`r", '') -split "`n" | Where-Object { $_ -match 'error' }) -join ' ').Trim() + ')')
     }
     $seen = Invoke-Distro 'modprobe -a usb-storage uas 2>/dev/null; for i in $(seq 1 30); do lsblk -dno TRAN | grep -q usb && exit 0; sleep 1; done; exit 1' -AllowFail
