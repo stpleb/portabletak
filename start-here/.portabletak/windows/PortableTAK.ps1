@@ -308,9 +308,11 @@ function Attach-Disk([int]$DiskNumber) {
     # Windows must let go of the drive: dismount its volumes and remove their drive
     # letters, so Explorer, indexing or antivirus cannot open them again (the letter
     # comes back when the drive is plugged in again or given back on stop).
+    Log "releasing the drive's volumes (disk $DiskNumber)"
     foreach ($part in @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)) {
-        foreach ($path in @($part.AccessPaths)) {
-            if ($path -match '^[A-Z]:\\$') {
+        foreach ($letter in @($part.DriveLetter)) {
+            if ("$letter" -match '^[A-Za-z]$') {
+                $path = "${letter}:\"
                 $vol = Get-CimInstance Win32_Volume -Filter "DriveLetter='$($path.Substring(0, 2))'" -ErrorAction SilentlyContinue
                 if ($vol) { Invoke-CimMethod -InputObject $vol -MethodName Dismount -Arguments @{Force = $true; Permanent = $false} -ErrorAction SilentlyContinue | Out-Null }
                 $ErrorActionPreference = 'Continue'
@@ -332,6 +334,7 @@ function Attach-Disk([int]$DiskNumber) {
                 # Still held: restart the USB device so the handover driver takes it.
                 $inst = @((Invoke-Usbipd @('state')).Out | ConvertFrom-Json | Select-Object -ExpandProperty Devices |
                           Where-Object { $_.BusId -eq $busId } | Select-Object -ExpandProperty InstanceId)
+                Log ("restarting USB device $busId: " + ($inst -join ','))
                 if ($inst) {
                     $ErrorActionPreference = 'Continue'
                     $rs = & pnputil.exe /restart-device "$($inst[0])" 2>&1 | Out-String
