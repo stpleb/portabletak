@@ -320,6 +320,18 @@ function Dismount-DiskVolumes([int]$DiskNumber) {
     }
 }
 
+function Stop-WslFileHelper {
+    # WSL's Windows-side file sharing (Plan9FileSystem, a dllhost.exe) can keep a USB
+    # drive open even after "wsl --shutdown" (microsoft/WSL#7972), which stops the
+    # drive from being handed to PortableTAK. WSL starts it again when needed.
+    $helpers = @(Get-CimInstance Win32_Process -Filter "Name='dllhost.exe'" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.CommandLine -match 'DFB65C4C-B34F-435D-AFE9-A86218684AA8' })
+    foreach ($h in $helpers) {
+        Stop-Process -Id $h.ProcessId -Force -ErrorAction SilentlyContinue
+        Log "closed WSL file helper dllhost.exe ($($h.ProcessId))"
+    }
+}
+
 function Stop-DriveHolders([string]$InstanceId, [datetime]$Since) {
     # Windows logs which program blocked restarting the drive (System event 225).
     # Close the Explorer helper processes (dllhost.exe) named there; Windows starts
@@ -354,6 +366,7 @@ function Attach-Disk([int]$DiskNumber) {
     # letters, so Explorer, indexing or antivirus cannot open them again (the letter
     # comes back when the drive is plugged in again or given back on stop).
     Log "releasing the drive's volumes (disk $DiskNumber)"
+    Stop-WslFileHelper
     foreach ($part in @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)) {
         foreach ($letter in @($part.DriveLetter)) {
             if ("$letter" -match '^[A-Za-z]$') {
@@ -383,6 +396,7 @@ function Attach-Disk([int]$DiskNumber) {
                 if ($inst) {
                     for ($round = 0; $round -lt 3; $round++) {
                         $since = (Get-Date).AddSeconds(-5)
+                        Stop-WslFileHelper
                         Dismount-DiskVolumes $DiskNumber
                         $ErrorActionPreference = 'Continue'
                         $rs = & pnputil.exe /restart-device "$($inst[0])" 2>&1 | Out-String
@@ -390,7 +404,7 @@ function Attach-Disk([int]$DiskNumber) {
                         $ErrorActionPreference = 'Stop'
                         Log ("pnputil restart $($inst[0]) -> $code " + $rs.Trim())
                         if ($code -eq 0) { break }
-                        Start-Sleep -Seconds 2
+                        Start-Sleep -Seconds 8   # Windows logs the blocking program a few seconds later
                         Stop-DriveHolders $inst[0] $since
                     }
                     Start-Sleep -Seconds 3
