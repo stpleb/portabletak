@@ -506,6 +506,9 @@ button.danger {
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
         <button onclick="refreshClientInfo()">Refresh Client Setup</button>
         <button onclick="downloadTrustPackage()" title="Import once in ATAK before using ATAK QR Setup">ATAK Trust Package (for QR)</button>
+        <!-- A plain link: iOS Safari only offers to install a profile when navigating to it. -->
+        <a href="/api/client/ios-trust-profile" title="Open on the iPhone in Safari, install, then turn on full trust (once per iPhone)"
+           style="display:inline-block;padding:7px 12px;border:1px solid #3a4a5e;border-radius:6px;color:white;text-decoration:none">iPhone Trust Profile (for QR)</a>
     </div>
 
     <div id="clientSetupStatus" class="label">

@@ -127,6 +127,9 @@ Import both for Wi-Fi and cellular.</td></tr>
 <tr><td>ATAK / iTAK by QR</td><td><b>ATAK QR Setup</b> / <b>iTAK QR Setup</b></td><td>The device must trust the server first.
 For ATAK, import the <b>ATAK Trust Package (for QR)</b> from Client Setup once per phone, then scan. A QR code works for 3 uses.
 In the QR window, pick the network the phone is on (<b>Phone is on:</b> Wi-Fi, LAN or Tailscale) if it is not already selected.
+<b>iPhone, once:</b> open the dashboard in Safari on the iPhone → Client Setup → <b>iPhone Trust Profile (for QR)</b> → Allow →
+Settings → Profile Downloaded → Install; then Settings → General → About → Certificate Trust Settings → switch on the PortableTAK CA.
+Without this, iTAK's QR sign-in fails with "error connecting to the server". (The iTAK Package needs none of this.)
 With remote access set up, ATAK QR Setup also adds the Tailscale server; on iPhone pick <b>Phone is on: Tailscale</b> in the iTAK QR window for cellular.</td></tr>
 </table></li>
 <li>The server connection turns green in the app.</li>

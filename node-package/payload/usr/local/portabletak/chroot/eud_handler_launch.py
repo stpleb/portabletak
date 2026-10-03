@@ -101,13 +101,28 @@ def install_duplicate_guard(handler_class, registry=REGISTRY, alive=_alive):
         return result
 
     def close_connection(self):
+        # Upstream closes twice when it rejects a login (once in handle_auth, again when
+        # its loop ends); the second time the RabbitMQ channel is already closed.
+        if getattr(self, '_portabletak_closed', False):
+            return None
+        self._portabletak_closed = True
         path = getattr(self, '_portabletak_registered', None)
         uid = getattr(self, 'uid', None)
         if path:
             unregister(path)
             self._portabletak_registered = False
         if not (path and uid and live_siblings(uid, path, registry, alive)):
-            return original_close(self)
+            try:
+                return original_close(self)
+            except Exception:
+                # Channel already gone: just close the socket.
+                self.shutdown = True
+                try:
+                    self.request.shutdown(2)
+                except OSError:
+                    pass
+                self.request.close()
+                return None
         # Another connection of this device is still live: keep its queue
         # bindings and do not announce a disconnect.
         self.logger.info('{} disconnected (device {} still connected on another connection)'.format(
@@ -177,10 +192,29 @@ def install(handler_class):
     return True
 
 
+def install_case_insensitive_users(datastore_class):
+    """Usernames are case-insensitive in PortableTAK (phone keyboards capitalize the
+    first letter: an iPhone enrolled as "Qrtest" for the user "qrtest" must connect)."""
+    original = datastore_class.find_user
+    if getattr(original, '_portabletak_case_insensitive', False):
+        return False
+
+    def find_user(self, case_insensitive=False, **kwargs):
+        if kwargs.get('username'):
+            case_insensitive = True
+        return original(self, case_insensitive=case_insensitive, **kwargs)
+
+    find_user._portabletak_case_insensitive = True
+    datastore_class.find_user = find_user
+    return True
+
+
 def main():
     if len(sys.argv) < 2:
         print('usage: eud_handler_launch.py ENTRY_POINT [args...]', file=sys.stderr)
         return 2
+    from flask_security import SQLAlchemyUserDatastore
+    install_case_insensitive_users(SQLAlchemyUserDatastore)
     from opentakserver.eud_handler.EudHandler import EudHandler
     install(EudHandler)
     try:

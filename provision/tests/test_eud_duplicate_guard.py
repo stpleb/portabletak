@@ -156,5 +156,42 @@ class IdleTimeoutTests(unittest.TestCase):
         self.assertEqual(handler.handle(), 'handled')
 
 
+
+class LoginRejectTests(unittest.TestCase):
+    def test_second_close_is_ignored_and_closed_channel_does_not_crash(self):
+        calls = []
+
+        class Request:
+            def shutdown(self, how): calls.append('shutdown')
+            def close(self): calls.append('close')
+
+        class Handler:
+            def parse_device_info(self, event): return None
+            def close_connection(self):
+                calls.append('original')
+                raise RuntimeError('Channel is closed.')
+
+        with tempfile.TemporaryDirectory() as registry:
+            launch.install_duplicate_guard(Handler, registry=registry)
+            h = Handler()
+            h.request, h.shutdown = Request(), False
+            h.close_connection()
+            h.close_connection()
+        self.assertEqual(calls, ['original', 'shutdown', 'close'])
+
+    def test_usernames_case_insensitive(self):
+        seen = {}
+
+        class Store:
+            def find_user(self, case_insensitive=False, **kwargs):
+                seen.update(kwargs, ci=case_insensitive)
+                return 'user'
+
+        self.assertTrue(launch.install_case_insensitive_users(Store))
+        self.assertFalse(launch.install_case_insensitive_users(Store))
+        Store().find_user(username='Qrtest')
+        self.assertTrue(seen['ci'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -249,3 +249,31 @@ def tls_package(data, record, name, username, uid=None):
         target.writestr('MANIFEST/manifest.xml', manifest)
         target.writestr('README.txt', '\n'.join(lines) + '\n')
     return out.getvalue()
+
+
+def ios_trust_profile(ca_pem, name='PortableTAK'):
+    """An iOS configuration profile that installs this server's CA as a root. iTAK's QR
+    sign-in only accepts a server iOS trusts; after installing, the user turns on full
+    trust in Settings > General > About > Certificate Trust Settings. Unsigned (iOS
+    shows "Not Verified"). Deterministic identifiers, so reinstalling replaces it."""
+    import base64
+    import hashlib
+    import plistlib
+    body = ''.join(line for line in ca_pem.splitlines() if line and not line.startswith('-----'))
+    der = base64.b64decode(body)
+    digest = hashlib.sha256(der).hexdigest()
+    def uid(tag):
+        h = hashlib.sha256((tag + digest).encode()).hexdigest().upper()
+        return f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}'
+    label = server_name(name)
+    profile = {
+        'PayloadContent': [{
+            'PayloadCertificateFileName': 'PortableTAK-CA.cer', 'PayloadContent': der,
+            'PayloadDescription': f'Lets iTAK trust the {label} PortableTAK server',
+            'PayloadDisplayName': f'{label} PortableTAK CA', 'PayloadIdentifier': f'portabletak.ca.{digest[:12]}',
+            'PayloadType': 'com.apple.security.root', 'PayloadUUID': uid('ca'), 'PayloadVersion': 1}],
+        'PayloadDescription': 'Install, then turn on full trust in Settings > General > About > Certificate Trust Settings.',
+        'PayloadDisplayName': f'{label} PortableTAK trust', 'PayloadIdentifier': f'portabletak.trust.{digest[:12]}',
+        'PayloadRemovalDisallowed': False, 'PayloadType': 'Configuration', 'PayloadUUID': uid('profile'),
+        'PayloadVersion': 1}
+    return plistlib.dumps(profile)

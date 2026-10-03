@@ -532,6 +532,21 @@ def client_package(username: str, client_type: str, address: str | None = Query(
     )
 
 
+@app.get("/api/client/ios-trust-profile")
+def client_ios_trust_profile():
+    """iPhone: install once (Safari opens it as a profile), then turn on full trust.
+    iTAK's QR sign-in only accepts a server iOS trusts."""
+    import client_packages
+    import host_adoption
+    try:
+        with open("/mnt/asgard/opentak/data/ca/ca.pem") as stream:
+            data = client_packages.ios_trust_profile(stream.read(), host_adoption.instance_name("/mnt/asgard"))
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="ca_not_available")
+    return Response(content=data, media_type="application/x-apple-aspen-config",
+                    headers={"Content-Disposition": 'attachment; filename="PortableTAK-Trust.mobileconfig"'})
+
+
 @app.get("/api/client/trust-package")
 def client_trust_package():
     """ATAK package that only trusts this server's CA (import once, then QR enrollment works)."""
