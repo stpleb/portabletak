@@ -8,6 +8,8 @@
 #   enable: opt this cartridge in and print a login link for the owner to approve.
 #   apply-address: after approval, add the tailnet address/name to the server
 #   certificate and restart the TAK services.
+#   logout: leave the tailnet, forget the drive's Tailscale identity and take its
+#   tailnet address/name out of the server certificate (then it can join another).
 
 . /usr/local/portabletak/lib/host-profile.sh
 unset LD_PRELOAD
@@ -124,5 +126,34 @@ PY
         [ -n "$NAME" ] && echo "PORTABLETAK_TAILSCALE_NAME=$NAME"
         exit 0
         ;;
-    *) echo "usage: portabletak-tailscale start|stop|status|enable|apply-address" >&2; exit 2 ;;
+    logout)
+        [ -d "$STATE" ] || { echo "PORTABLETAK_TAILSCALE=NOT_CONFIGURED"; exit 0; }
+        OLD="$(cat "$STATE/addresses" 2>/dev/null)"
+        ts_pid >/dev/null && "$BIN/tailscale" --socket="$SOCK" logout >/dev/null 2>&1
+        "$0" stop >/dev/null
+        rm -rf "$STATE"
+        if [ -n "$OLD" ]; then
+            ARGS="$(OLD="$OLD" python3 - <<'PY'
+import os, sys
+sys.path.insert(0, '/usr/local/portabletak/lib')
+import server_addresses
+cur = server_addresses.current('/mnt/asgard')
+drop = set(os.environ['OLD'].split())
+also = []
+for a in cur['addresses']:
+    if a and a != cur['advertise'] and a not in drop and a not in also:
+        also.append(a)
+print(' '.join(['--advertise', cur['advertise']] + [x for a in also for x in ('--also', a)]))
+PY
+)" || { echo "PORTABLETAK_TAILSCALE_ERROR=address_list_failed"; exit 24; }
+            /usr/local/portabletak/bin/portabletak-server-addresses set $ARGS </dev/null >/dev/null 2>&1 ||
+                { echo "PORTABLETAK_TAILSCALE_ERROR=certificate_update_failed"; exit 25; }
+            /usr/local/portabletak/bin/portabletak-stop </dev/null >/dev/null 2>&1
+            /usr/local/portabletak/bin/portabletak-start </dev/null >/dev/null 2>&1 ||
+                { echo "PORTABLETAK_TAILSCALE_ERROR=restart_failed"; exit 26; }
+        fi
+        echo "PORTABLETAK_TAILSCALE=LOGGED_OUT"
+        exit 0
+        ;;
+    *) echo "usage: portabletak-tailscale start|stop|status|enable|apply-address|logout" >&2; exit 2 ;;
 esac

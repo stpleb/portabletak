@@ -18,7 +18,8 @@
     link.target = '_blank'; link.rel = 'noopener noreferrer';
     const enable = el('button', 'margin-right:8px', 'Enable remote access');
     const finish = el('button', 'display:none', 'Finish setup');
-    body.append(help, status, link, enable, finish);
+    const logout = el('button', 'display:none;margin-left:8px', 'Sign out of Tailscale');
+    body.append(help, status, link, enable, finish, logout);
     details.addEventListener('toggle', () => { if (details.open) refresh(); });
     // The drive has its own Tailscale identity, so its remote address is the same on
     // every node and computer it runs on: phones set up once keep working.
@@ -35,10 +36,15 @@
       if (state === 'RUNNING' && s.PORTABLETAK_TAILSCALE_IP) {
         status.textContent = 'On. Remote clients use ' + s.PORTABLETAK_TAILSCALE_IP + ' (phones need the Tailscale app).';
         enable.style.display = 'none'; finish.style.display = 'inline-block'; finish.textContent = 'Update server certificate';
+        logout.style.display = 'inline-block';
+      } else if (state === 'STOPPED') {
+        status.textContent = 'Set up, but not connected right now (check internet).';
+        enable.style.display = 'inline-block'; logout.style.display = 'inline-block';
       } else if (state === 'NOT_INSTALLED') {
         status.textContent = 'Tailscale is not installed on this host.'; enable.disabled = true;
       } else {
         status.textContent = 'Off. Lets phones reach this server over cellular or any Wi-Fi.';
+        enable.style.display = 'inline-block'; finish.style.display = 'none'; logout.style.display = 'none';
       }
     }
     enable.onclick = async () => {
@@ -64,6 +70,20 @@
            ? "The drive's Tailscale is not connected yet. Check this computer's or node's internet, wait a minute and try again."
            : 'Setup did not finish: ' + (r.PORTABLETAK_TAILSCALE_ERROR || 'unknown error'));
       link.style.display = 'none'; finish.disabled = false;
+    };
+    logout.onclick = async () => {
+      if (!confirm('Sign this server out of its Tailscale account?\n\nPhones on cellular stop reaching it until remote ' +
+                   'access is set up again (any account) and the phones are set up again with a new QR or package.')) return;
+      logout.disabled = true; finish.disabled = true;
+      status.textContent = 'Signing out and restarting the server (about 2 minutes)…';
+      const r = await api('/logout', 'POST');
+      logout.disabled = false; finish.disabled = false;
+      if (r.PORTABLETAK_TAILSCALE === 'LOGGED_OUT' || r.PORTABLETAK_TAILSCALE === 'NOT_CONFIGURED') {
+        await refresh();
+        status.textContent = 'Signed out. Press Enable remote access to join a Tailscale account.';
+      } else {
+        status.textContent = 'Sign-out did not finish: ' + (r.PORTABLETAK_TAILSCALE_ERROR || 'unknown error');
+      }
     };
     // Place it directly before Client Setup: remote access comes first in the workflow
     // (packages made afterwards include the remote address).

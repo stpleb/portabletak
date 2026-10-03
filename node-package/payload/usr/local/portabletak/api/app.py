@@ -1011,6 +1011,11 @@ def remote_access_apply():
     return _tailscale("apply-address", 400)
 
 
+@app.post("/api/remote-access/logout")
+def remote_access_logout():
+    return _tailscale("logout", 400)
+
+
 # Sessions are enforced only when PORTABLETAK_MANAGEMENT_AUTH=enforce.
 from management_guard import ManagementGuard, guard_settings
 app = ManagementGuard(app, **guard_settings())
