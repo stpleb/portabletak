@@ -86,12 +86,12 @@ def _rezip(data, change):
     return out.getvalue()
 
 
-def tailscale_only(package, address, name='PortableTAK'):
+def tailscale_only(package, address, name='PortableTAK', label='Tailscale'):
     """The user's ATAK package (<user>_CONFIG.zip) with one connection: Tailscale."""
     body = ('<entry key="count" class="class java.lang.Integer">1</entry>'
-            '<entry key="description0" class="class java.lang.String">%s (Tailscale)</entry>'
+            '<entry key="description0" class="class java.lang.String">%s (%s)</entry>'
             '<entry key="enabled0" class="class java.lang.Boolean">true</entry>'
-            '<entry key="connectString0" class="class java.lang.String">%s:8089:ssl</entry>' % (name, address))
+            '<entry key="connectString0" class="class java.lang.String">%s:8089:ssl</entry>' % (name, label, address))
     changed = []
 
     def pref(name, content):
@@ -201,9 +201,16 @@ def install_profile(module):
             if not user:
                 module.logger.warning('PortableTAK: enrollment profile without a known user; no Tailscale connection added')
                 return buffer
-            package = tailscale_only(user_package(app, user.username), address, server_name())
-            profile = add_to_profile(buffer.getvalue(), user.username + '_Tailscale.zip', package)
-            module.logger.info('PortableTAK: enrollment profile includes the Tailscale connection')
+            # Enrolled over Wi-Fi: add the Tailscale server. Enrolled over Tailscale
+            # (QR from a dashboard opened through Tailscale): add the local server instead.
+            label, extra = 'Tailscale', address
+            if module.request.host.rsplit(':', 1)[0].strip('[]') == address:
+                label, extra = 'Wi-Fi', client_info().get('advertise')
+            if not extra:
+                return buffer
+            package = tailscale_only(user_package(app, user.username), extra, server_name(), label)
+            profile = add_to_profile(buffer.getvalue(), user.username + '_' + label.replace('-', '') + '.zip', package)
+            module.logger.info('PortableTAK: enrollment profile includes the %s connection', label)
             return io.BytesIO(profile)
         except Exception as error:   # never break enrollment over the extra connection
             module.logger.warning('PortableTAK: Tailscale connection not added to profile: %s', error)

@@ -737,7 +737,7 @@ async function fetchJson(url, options = {}) {
 }
 
 // Windows/Mac: the start window attached the drive; stopping and releasing it is done there.
-function showHostActions(kind) {
+function showHostActions(kind, addressGone) {
     const computer = kind === "windows" || kind === "mac";
     byId("nodeActions").style.display = computer ? "none" : "";
     byId("computerActions").style.display = computer ? "block" : "none";
@@ -749,6 +749,12 @@ function showHostActions(kind) {
         : "<b>Running on this Mac.</b><br>To stop PortableTAK, press Return in the PortableTAK window " +
           "(or double-click <b>Stop PortableTAK</b> on the Desktop), then eject the drive.<br>" +
           "To start it again, double-click <b>Start PortableTAK (Mac)</b> on the drive.";
+    if (addressGone) {
+        byId("computerActionsText").innerHTML =
+            "<div style=\"color:#f0b429;font-weight:600;margin-bottom:8px\">This computer changed networks. " +
+            "Phones cannot reach PortableTAK at its old address: stop and start PortableTAK to use the new one.</div>" +
+            byId("computerActionsText").innerHTML;
+    }
 }
 
 async function refreshStatus() {
@@ -775,7 +781,7 @@ async function refreshStatus() {
         const n = networkResponse.network || {};
 
         lastStatus = s;
-        showHostActions(statusResponse.host_kind);
+        showHostActions(statusResponse.host_kind, statusResponse.address_gone);
 
         const runtime = value(s.PORTABLETAK_RUNTIME, "UNAVAILABLE");
 

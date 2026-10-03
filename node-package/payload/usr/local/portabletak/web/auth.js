@@ -81,13 +81,20 @@
     password.focus();
   }
 
+  // At the very bottom of the page (below Erase Drive), not floating over the content.
   function showSignOut() {
-    const link = element('button', 'position:fixed;top:10px;right:10px;z-index:900', 'Sign out');
-    link.addEventListener('click', async function () {
-      await window.fetch('/api/auth/logout', {method: 'POST'});
-      window.location.reload();
-    });
-    document.body.appendChild(link);
+    function place() {
+      const wrap = element('div', 'text-align:center;margin:24px 0 32px');
+      const link = element('button', '', 'Sign out');
+      link.addEventListener('click', async function () {
+        await window.fetch('/api/auth/logout', {method: 'POST'});
+        window.location.reload();
+      });
+      wrap.appendChild(link);
+      (document.querySelector('main') || document.body).appendChild(wrap);
+    }
+    // After the deferred scripts have added their cards (Erase Drive is the last).
+    if (document.readyState === 'complete') place(); else window.addEventListener('load', place);
   }
 
   async function start() {

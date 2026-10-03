@@ -60,7 +60,9 @@
       const r = await api('/apply', 'POST');
       status.textContent = r.PORTABLETAK_TAILSCALE === 'READY'
         ? 'Ready. Remote clients: ' + r.PORTABLETAK_TAILSCALE_IP + (r.PORTABLETAK_TAILSCALE_NAME ? ' or ' + r.PORTABLETAK_TAILSCALE_NAME : '')
-        : 'Setup did not finish: ' + (r.PORTABLETAK_TAILSCALE_ERROR || 'unknown error');
+        : (r.PORTABLETAK_TAILSCALE_ERROR === 'not_connected_check_internet'
+           ? "The drive's Tailscale is not connected yet. Check this computer's or node's internet, wait a minute and try again."
+           : 'Setup did not finish: ' + (r.PORTABLETAK_TAILSCALE_ERROR || 'unknown error'));
       link.style.display = 'none'; finish.disabled = false;
     };
     // Place it directly before Client Setup: remote access comes first in the workflow

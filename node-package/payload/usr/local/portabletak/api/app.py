@@ -4,7 +4,7 @@ import json
 import subprocess
 import threading
 
-from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi import FastAPI, HTTPException, Body, Query, Request
 from fastapi.responses import FileResponse, Response
 import sys
 
@@ -171,7 +171,23 @@ def status():
         "ok": True,
         "status": parse_status(result["output"]),
         "host_kind": host_kind(),
+        "address_gone": address_gone(),
     }
+
+
+def address_gone():
+    """True when the address phones use (taken when PortableTAK started on this
+    computer) is no longer on any network adapter: the computer changed networks."""
+    try:
+        import server_addresses
+        advertise = server_addresses.current("/mnt/asgard").get("advertise")
+        # Only WSL sees the computer's own adapters (mirrored networking); the Mac VM does not.
+        if not advertise or host_kind() != "windows":
+            return False
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+        return (" " + advertise + "/") not in out
+    except Exception:
+        return False
 
 
 def host_kind():
@@ -324,10 +340,20 @@ def users_delete(payload: dict = Body(...)):
     })
 
 
-def qr_host(address):
+def qr_host(address, opened_at=None):
     """None: the normal (local) address. "remote": the Tailscale address, so one
-    server entry works on Wi-Fi and on cellular while the phone's Tailscale is on."""
+    server entry works on Wi-Fi and on cellular while the phone's Tailscale is on.
+    With no choice made, a dashboard opened through the Tailscale address gives a
+    Tailscale QR: a phone on cellular can only enroll that way."""
     if address is None:
+        host = (opened_at or "").rsplit(":", 1)[0].strip("[]")
+        try:
+            import client_packages
+            import server_addresses
+            if host and host == client_packages.remote_address(server_addresses.current("/mnt/asgard")):
+                return host
+        except Exception:
+            pass
         return None
     if address != "remote":
         raise HTTPException(status_code=400, detail="invalid_address")
@@ -340,7 +366,7 @@ def qr_host(address):
 
 
 @app.post("/api/client/itak-qr/{username}")
-def itak_qr(username: str, address: str | None = Query(default=None)):
+def itak_qr(username: str, request: Request, address: str | None = Query(default=None)):
     if not username.replace("_", "").replace("-", "").isalnum():
         raise HTTPException(
             status_code=400,
@@ -350,7 +376,7 @@ def itak_qr(username: str, address: str | None = Query(default=None)):
     result = run_users({
         "action": "itak_onboarding_qr",
         "username": username,
-        "host": qr_host(address),
+        "host": qr_host(address, request.headers.get("host")),
     })
 
     if not result.get("ok"):
@@ -363,7 +389,7 @@ def itak_qr(username: str, address: str | None = Query(default=None)):
 
 
 @app.post("/api/client/atak-qr/{username}")
-def atak_qr(username: str, address: str | None = Query(default=None)):
+def atak_qr(username: str, request: Request, address: str | None = Query(default=None)):
     if not username.replace("_", "").replace("-", "").isalnum():
         raise HTTPException(
             status_code=400,
@@ -373,7 +399,7 @@ def atak_qr(username: str, address: str | None = Query(default=None)):
     result = run_users({
         "action": "atak_onboarding_qr",
         "username": username,
-        "host": qr_host(address),
+        "host": qr_host(address, request.headers.get("host")),
     })
 
     if not result.get("ok"):
