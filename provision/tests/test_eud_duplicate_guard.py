@@ -193,5 +193,31 @@ class LoginRejectTests(unittest.TestCase):
         self.assertTrue(seen['ci'])
 
 
+
+class LatestPositionTests(unittest.TestCase):
+    def test_new_device_gets_others_positions_once(self):
+        sent, asked = [], []
+
+        class Request:
+            def send(self, data): sent.append(data)
+
+        class Handler:
+            def parse_device_info(self, event):
+                self.uid = 'IPHONE-1'
+                return 'ok'
+
+        def positions(app, uid):
+            asked.append(uid)
+            return ['<event uid="S22"/>', '<event uid="WINTAK"/>']
+
+        launch.install_latest_positions(Handler, positions=positions)
+        h = Handler()
+        h.request, h.app = Request(), object()
+        self.assertEqual(h.parse_device_info(None), 'ok')
+        h.parse_device_info(None)
+        self.assertEqual(asked, ['IPHONE-1'])
+        self.assertEqual(sent, [b'<event uid="S22"/>', b'<event uid="WINTAK"/>'])
+
+
 if __name__ == '__main__':
     unittest.main()

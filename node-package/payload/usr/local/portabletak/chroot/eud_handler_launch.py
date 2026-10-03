@@ -192,6 +192,53 @@ def install(handler_class):
     return True
 
 
+def latest_positions(app, own_uid, now=None):
+    """The newest unexpired position report (CoT type a-*) of every other device."""
+    import datetime
+    from opentakserver.extensions import db
+    from opentakserver.models.CoT import CoT
+    from opentakserver.models.EUD import EUD
+    now = now or datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    result = []
+    with app.app_context():
+        for eud in db.session.query(EUD).all():
+            if not eud.uid or eud.uid == own_uid:
+                continue
+            cot = (db.session.query(CoT).filter(CoT.sender_uid == eud.uid, CoT.type.like('a-%'))
+                   .order_by(CoT.timestamp.desc()).first())
+            if cot and cot.xml and cot.stale:
+                stale = cot.stale.replace(tzinfo=None) if cot.stale.tzinfo is None else \
+                    cot.stale.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+                if stale > now:
+                    result.append(cot.xml)
+    return result
+
+
+def install_latest_positions(handler_class, positions=latest_positions):
+    """A device that just connected gets everyone's last known position at once, as
+    TAK Server does; upstream waits for each device's next report, so others show
+    grey (or not at all) for up to a few minutes."""
+    original = handler_class.parse_device_info
+    if getattr(original, '_portabletak_positions', False):
+        return False
+
+    def parse_device_info(self, event):
+        result = original(self, event)
+        uid = getattr(self, 'uid', None)
+        if uid and not getattr(self, '_portabletak_positions_sent', False):
+            self._portabletak_positions_sent = True
+            try:
+                for xml in positions(self.app, uid):
+                    self.request.send(xml.encode())
+            except Exception as error:
+                self.logger.warning('PortableTAK: could not send last positions: {}'.format(error))
+        return result
+
+    parse_device_info._portabletak_positions = True
+    handler_class.parse_device_info = parse_device_info
+    return True
+
+
 def install_case_insensitive_users(datastore_class):
     """Usernames are case-insensitive in PortableTAK (phone keyboards capitalize the
     first letter: an iPhone enrolled as "Qrtest" for the user "qrtest" must connect)."""
@@ -224,6 +271,7 @@ def main():
         pass
     install_duplicate_guard(EudHandler)
     install_idle_timeout(EudHandler)
+    install_latest_positions(EudHandler)
     sys.argv = sys.argv[1:]
     from opentakserver.eud_handler.eud_handler import main as eud_main
     return eud_main()
