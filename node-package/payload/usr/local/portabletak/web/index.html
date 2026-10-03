@@ -340,6 +340,28 @@ button.danger {
         width: 220px !important;
     }
 }
+
+/* QR windows: scroll when taller than the screen (top and bottom stay reachable),
+   and the QR shrinks on short screens. */
+#atakQrOverlay,
+#itakQrOverlay {
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    align-items: flex-start !important;
+}
+
+#atakQrOverlay > div,
+#itakQrOverlay > div {
+    margin: auto !important;
+}
+
+#atakQrImage,
+#itakQrImage {
+    width: auto !important;
+    max-width: min(280px, 100%) !important;
+    max-height: 42vh !important;
+    height: auto !important;
+}
 </style>
 
 </head>
@@ -1955,11 +1977,10 @@ document.addEventListener("DOMContentLoaded", function() {
         <div id="atakQrUser" style="color:white;margin-bottom:12px"></div>
         <div id="atakQrNet" style="margin-bottom:10px;color:#ccc"></div>
 
-        <div id="atakQrRemoteNote" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;
-                    background:#1f2a3d;color:#dde;font-size:.88em;text-align:left;line-height:1.45">
-            <b>Remote QR:</b> this server entry uses the Tailscale address, so it works on Wi-Fi
-            <b>and</b> on cellular. The phone needs the <b>Tailscale app</b> installed, signed in to the
-            same account, and switched <b>on</b>. Use either this QR or the normal one on a phone, not both.
+        <div id="atakQrRemoteNote" style="display:none;margin-bottom:12px;padding:8px 10px;border-radius:8px;
+                    background:#1f2a3d;color:#dde;font-size:.85em;text-align:left;line-height:1.4">
+            <b>Tailscale:</b> works on Wi-Fi and cellular while the phone's Tailscale app is on
+            (signed in to the same account).
         </div>
 
         <img id="atakQrImage"
@@ -2013,11 +2034,10 @@ document.addEventListener("DOMContentLoaded", function() {
         <div id="itakQrUser" style="color:white;margin-bottom:12px"></div>
         <div id="itakQrNet" style="margin-bottom:10px;color:#ccc"></div>
 
-        <div id="itakQrRemoteNote" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;
-                    background:#1f2a3d;color:#dde;font-size:.88em;text-align:left;line-height:1.45">
-            <b>Remote QR:</b> this server entry uses the Tailscale address, so it works on Wi-Fi
-            <b>and</b> on cellular. The phone needs the <b>Tailscale app</b> installed, signed in to the
-            same account, and switched <b>on</b>. Use either this QR or the normal one on a phone, not both.
+        <div id="itakQrRemoteNote" style="display:none;margin-bottom:12px;padding:8px 10px;border-radius:8px;
+                    background:#1f2a3d;color:#dde;font-size:.85em;text-align:left;line-height:1.4">
+            <b>Tailscale:</b> works on Wi-Fi and cellular while the phone's Tailscale app is on
+            (signed in to the same account).
         </div>
 
         <img id="itakQrImage"
