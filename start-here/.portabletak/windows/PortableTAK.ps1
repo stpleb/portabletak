@@ -305,12 +305,18 @@ function Attach-Disk([int]$DiskNumber) {
     # Keep PortableTAK's Linux side running while the server runs (WSL stops an idle one).
     $keep = Start-Process wsl.exe -ArgumentList @('-d', $Distro, '-u', 'root', '--', 'sleep', 'infinity') -WindowStyle Hidden -PassThru
     Invoke-Distro 'modprobe -a vhci_hcd usb-storage uas' -AllowFail | Out-Null
-    # Windows must let go of the drive: dismount its volumes (closes Explorer's handles).
+    # Windows must let go of the drive: dismount its volumes and remove their drive
+    # letters, so Explorer, indexing or antivirus cannot open them again (the letter
+    # comes back when the drive is plugged in again or given back on stop).
     foreach ($part in @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)) {
         foreach ($path in @($part.AccessPaths)) {
             if ($path -match '^[A-Z]:\\$') {
                 $vol = Get-CimInstance Win32_Volume -Filter "DriveLetter='$($path.Substring(0, 2))'" -ErrorAction SilentlyContinue
                 if ($vol) { Invoke-CimMethod -InputObject $vol -MethodName Dismount -Arguments @{Force = $true; Permanent = $false} -ErrorAction SilentlyContinue | Out-Null }
+                $ErrorActionPreference = 'Continue'
+                $mv = & mountvol.exe $path /p 2>&1 | Out-String
+                $ErrorActionPreference = 'Stop'
+                Log ("mountvol $path /p -> $LASTEXITCODE " + $mv.Trim())
             }
         }
     }
@@ -322,6 +328,18 @@ function Attach-Disk([int]$DiskNumber) {
         $forced = $true
         # Windows can take a few seconds to let go after a forced bind.
         for ($try = 0; $try -lt 6; $try++) {
+            if ($try -eq 2) {
+                # Still held: restart the USB device so the handover driver takes it.
+                $inst = @((Invoke-Usbipd @('state')).Out | ConvertFrom-Json | Select-Object -ExpandProperty Devices |
+                          Where-Object { $_.BusId -eq $busId } | Select-Object -ExpandProperty InstanceId)
+                if ($inst) {
+                    $ErrorActionPreference = 'Continue'
+                    $rs = & pnputil.exe /restart-device "$($inst[0])" 2>&1 | Out-String
+                    $ErrorActionPreference = 'Stop'
+                    Log ("pnputil restart $($inst[0]) -> $LASTEXITCODE " + $rs.Trim())
+                    Start-Sleep -Seconds 3
+                }
+            }
             Start-Sleep -Seconds 3
             $attach = Invoke-Usbipd @('attach', '--wsl', '--busid', $busId) -AllowFail
             if ($attach.Code -eq 0 -or $attach.Out -notmatch 'busy|used by Windows') { break }
@@ -330,7 +348,7 @@ function Attach-Disk([int]$DiskNumber) {
     if ($attach.Code -ne 0) {
         if ($forced) { Invoke-Usbipd @('unbind', '--busid', $busId) -AllowFail | Out-Null }
         Stop-Process -Id $keep.Id -Force -ErrorAction SilentlyContinue
-        Fail ('Windows would not let go of the drive. Close any File Explorer windows, unplug the drive, plug it in again and retry. (' + (($attach.Out -split "`n" | Where-Object { $_ -match 'error' }) -join ' ').Trim() + ')')
+        Fail ('Windows would not let go of the drive. Close any File Explorer windows, unplug the drive, plug it in again and retry. (' + ((($attach.Out -replace "`r", '') -split "`n" | Where-Object { $_ -match 'error' }) -join ' ').Trim() + ')')
     }
     $seen = Invoke-Distro 'modprobe -a usb-storage uas 2>/dev/null; for i in $(seq 1 30); do lsblk -dno TRAN | grep -q usb && exit 0; sleep 1; done; exit 1' -AllowFail
     if ($seen.Code -ne 0) {
