@@ -334,7 +334,7 @@ function Attach-Disk([int]$DiskNumber) {
                 # Still held: restart the USB device so the handover driver takes it.
                 $inst = @((Invoke-Usbipd @('state')).Out | ConvertFrom-Json | Select-Object -ExpandProperty Devices |
                           Where-Object { $_.BusId -eq $busId } | Select-Object -ExpandProperty InstanceId)
-                Log ("restarting USB device $busId: " + ($inst -join ','))
+                Log ("restarting USB device ${busId}: " + ($inst -join ','))
                 if ($inst) {
                     $ErrorActionPreference = 'Continue'
                     $rs = & pnputil.exe /restart-device "$($inst[0])" 2>&1 | Out-String
