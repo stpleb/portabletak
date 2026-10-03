@@ -79,6 +79,42 @@ function Invoke-Distro([string]$Command, [switch]$AllowFail) {
     return @{ Code = $code; Out = $out }
 }
 
+function Invoke-DistroLive([string]$Command, [string]$Activity, [scriptblock]$OnLine) {
+    # Invoke-Distro for long jobs: a progress bar shows the current step, the minutes
+    # so far and, while the drive is written or checked, the GB done. Linux reports
+    # every 5 seconds (PORTABLETAK_TICK=<sectors read> <sectors written> of the USB drive).
+    $ticker = '( while sleep 5; do d=$(lsblk -dno NAME,TRAN 2>/dev/null | awk ''$2=="usb"{print $1; exit}''); ' +
+              'if [ -n "$d" ]; then set -- $(cat /sys/block/$d/stat); echo "PORTABLETAK_TICK=$3 $7"; ' +
+              'else echo "PORTABLETAK_TICK=0 0"; fi; done ) & t=$!; '
+    $full = $ticker + $Command + '; r=$?; kill $t 2>/dev/null; exit $r'
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($full))
+    $state = @{ Step = 'starting'; Base = $null; Start = Get-Date }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $ErrorActionPreference = 'Continue'
+    & wsl.exe -d $Distro -u root -- /bin/sh -c "echo $encoded | base64 -d | /bin/sh" 2>&1 | ForEach-Object {
+        $line = "$_"
+        if ($line -match '^PORTABLETAK_TICK=(\d+) (\d+)') {
+            $read = [int64]$Matches[1]; $written = [int64]$Matches[2]
+            if (-not $state.Base) { $state.Base = @($read, $written) }
+            $detail = ''
+            if ($state.Step -eq 'write') { $detail = ' - {0:N1} GB written' -f (($written - $state.Base[1]) * 512 / 1e9) }
+            elseif ($state.Step -eq 'verify') { $detail = ' - {0:N1} GB checked' -f (($read - $state.Base[0]) * 512 / 1e9) }
+            $minutes = [int][math]::Floor(((Get-Date) - $state.Start).TotalMinutes)
+            Write-Progress -Activity $Activity -Status ('{0}{1}  ({2} min so far)' -f ($state.Step -replace '_', ' '), $detail, $minutes)
+            return
+        }
+        if ($line -match '^PORTABLETAK_(MAKE_STEP|SETUP_STEP|SETUP_PHASE)=(.*)') { $state.Step = $Matches[2].Trim(); $state.Base = $null }
+        $lines.Add($line)
+        if ($OnLine) { & $OnLine $line }
+    }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Write-Progress -Activity $Activity -Completed
+    $out = $lines -join "`n"
+    Log ("[$Distro] $Command -> $code`n" + $out.Trim())
+    return @{ Code = $code; Out = $out }
+}
+
 # --- locate the PortableTAK drive -------------------------------------------------
 function Restore-DriveLetter {
     # Starting the server removes the drive's letter (so Windows cannot hold it);
@@ -535,13 +571,13 @@ function Invoke-FirstSetup {
         Invoke-Distro 'mkdir -p /usr/local/portabletak/release && touch /usr/local/portabletak/release/first-run-enabled' | Out-Null
         $json = @{ instance_name = $name; administrator_password = $admin; client_password = $client } | ConvertTo-Json -Compress
         $admin = $null; $client = $null
-        Say 'Setting up the server (about 5-10 minutes)...'
+        Say 'Setting up the server (about 5-10 minutes; progress shows at the top of this window)...'
         # Answers go in through a private file (never on a command line); it is opened
         # and deleted before setup starts, and fed to setup on standard input.
         Invoke-Distro 'rm -rf /var/tmp/pt-first && mkdir -m 700 /var/tmp/pt-first' | Out-Null
         [IO.File]::WriteAllText("\\wsl.localhost\$Distro\var\tmp\pt-first\answers.json", $json, (New-Object Text.UTF8Encoding($false)))
         $json = $null
-        $out = (Invoke-Distro 'f=/var/tmp/pt-first/answers.json; chmod 600 "$f"; exec 3<"$f"; rm -rf /var/tmp/pt-first; /usr/local/portabletak/bin/portabletak-wsl-provision <&3' -AllowFail).Out
+        $out = (Invoke-DistroLive 'f=/var/tmp/pt-first/answers.json; chmod 600 "$f"; exec 3<"$f"; rm -rf /var/tmp/pt-first; /usr/local/portabletak/bin/portabletak-wsl-provision <&3' 'Setting up the server').Out
         Log ("first setup -> " + (($out -split "`n" | Where-Object { $_ -match 'PORTABLETAK_SETUP=|_ERROR=' }) -join ' '))
         if ($out -match 'PORTABLETAK_SETUP=COMPLETE') { return }
         if ($out -match 'PORTABLETAK_SETUP=INVALID') {

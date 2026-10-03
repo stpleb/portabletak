@@ -107,18 +107,14 @@ Start-Sleep -Seconds 2
 Say "Attaching $($disk.FriendlyName) to the PortableTAK host..."
 $record = Attach-Disk $disk.Number
 try {
-    Say 'Building the drive (about 6-10 minutes)...'
-    $ErrorActionPreference = 'Continue'   # see Invoke-Wsl: native error output must not end the script
-    $out = & wsl.exe -d $Distro -u root -- /usr/local/portabletak/bin/portabletak-wsl-make-drive "$([int64]$disk.Size)" $mode 2>&1 |
-        ForEach-Object {
-            $line = "$_"
-            # Leading `r: WSL leaves the console without carriage return on newline.
-            if ($line -match '^PORTABLETAK_(MAKE_STEP|SETUP_STEP)=(.*)') { Say ("`r  step: " + $Matches[2]) }
-            elseif ($line -match '^PORTABLETAK_SETUP_(SERVICES|ICONS)=') { Say ("`r  " + $line.Substring(18)) }
-            $line
-        } | Out-String
-    $ErrorActionPreference = 'Stop'
-    Log $out
+    Say 'Building the drive (about 15-25 minutes; progress shows at the top of this window)...'
+    $result = Invoke-DistroLive "/usr/local/portabletak/bin/portabletak-wsl-make-drive $([int64]$disk.Size) $mode" 'Building the drive' {
+        param($line)
+        # Leading `r: WSL leaves the console without carriage return on newline.
+        if ($line -match '^PORTABLETAK_(MAKE_STEP|SETUP_STEP)=(.*)') { Say ("`r  step: " + $Matches[2]) }
+        elseif ($line -match '^PORTABLETAK_SETUP_(SERVICES|ICONS)=') { Say ("`r  " + $line.Substring(18)) }
+    }
+    $out = $result.Out
 } finally {
     Detach-Disk $record
     Invoke-Distro 'rm -rf /var/tmp/pt-setup' -AllowFail | Out-Null
