@@ -93,6 +93,9 @@ if ($answers) {
     $answers = $null
     $mode = ''
 }
+# Downloaded files carry Windows' Zone.Identifier stream, which arrives as extra
+# 'name:Zone.Identifier' files (a ':' is not allowed on the FAT32 Start Here partition).
+Invoke-Distro "find /var/tmp/pt-setup -name '*:Zone.Identifier' -delete" -AllowFail | Out-Null
 Invoke-Distro 'chmod 600 /var/tmp/pt-setup/secrets/* 2>/dev/null; sed -i "s/\r$//" /var/tmp/pt-setup/container-setup.sh' -AllowFail | Out-Null
 
 # The drive is erased anyway: wipe it on the Windows side first, so Windows has no
@@ -109,8 +112,9 @@ try {
     $out = & wsl.exe -d $Distro -u root -- /usr/local/portabletak/bin/portabletak-wsl-make-drive "$([int64]$disk.Size)" $mode 2>&1 |
         ForEach-Object {
             $line = "$_"
-            if ($line -match '^PORTABLETAK_(MAKE_STEP|SETUP_STEP)=(.*)') { Say ("  step: " + $Matches[2]) }
-            elseif ($line -match '^PORTABLETAK_SETUP_(SERVICES|ICONS)=') { Say ("  " + $line.Substring(18)) }
+            # Leading `r: WSL leaves the console without carriage return on newline.
+            if ($line -match '^PORTABLETAK_(MAKE_STEP|SETUP_STEP)=(.*)') { Say ("`r  step: " + $Matches[2]) }
+            elseif ($line -match '^PORTABLETAK_SETUP_(SERVICES|ICONS)=') { Say ("`r  " + $line.Substring(18)) }
             $line
         } | Out-String
     $ErrorActionPreference = 'Stop'

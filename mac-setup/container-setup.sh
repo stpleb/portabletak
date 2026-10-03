@@ -135,8 +135,10 @@ START=/tmp/start-here.img
 rm -f "$START"; truncate -s $((START_MIB * 1048576)) "$START"
 mkfs.vfat -F 32 -n PORTABLETAK "$START" >/dev/null || fail start_here_format
 if [ -d $STARTHERE_DIR ]; then
+    # Never copy Windows download markers (names with ':' would make mcopy prompt).
+    find $STARTHERE_DIR -name '*:*' -delete 2>/dev/null || true
     for item in $STARTHERE_DIR/* $STARTHERE_DIR/.portabletak; do
-        [ -e "$item" ] && { mcopy -s -Q -i "$START" "$item" ::/ || fail start_here_copy; }
+        [ -e "$item" ] && { mcopy -s -Q -D o -i "$START" "$item" ::/ </dev/null || fail start_here_copy; }
     done
     mattrib -i "$START" +h ::/.portabletak 2>/dev/null || true
 fi
