@@ -117,6 +117,19 @@ class ServerAddressTests(unittest.TestCase):
         self.assertFalse(remote.exists())
         self.assertFalse(list(self.cert.glob('*.new')))
 
+    def test_named_certificates_for_every_other_address(self):
+        self.reissue(['10.41.254.181', '192.168.1.194', '100.102.110.115', '10.0.2.15'], '10.41.254.181')
+        named = lambda: sa.ensure_named(self.root, openssl_prefix=(), ca_dir=self.ca)
+        mapping = named()
+        self.assertEqual(mapping, {'100.102.110.115': sa.REMOTE_CERT, '192.168.1.194': 'opentakserver-192.168.1.194.pem'})
+        lan = self.cert / 'opentakserver-192.168.1.194.pem'
+        details = subprocess.run(['openssl', 'x509', '-noout', '-subject', '-in', str(lan)],
+                                 capture_output=True, text=True, check=True).stdout
+        self.assertIn('CN=192.168.1.194', details.replace(' = ', '='))
+        self.reissue(['10.41.254.181', '100.102.110.115'], '10.41.254.181')   # laptop left that network
+        self.assertEqual(named(), {'100.102.110.115': sa.REMOTE_CERT})
+        self.assertFalse(lan.exists())
+
     def test_listen_everywhere_keeps_remote_blocks(self):
         site = self.root / 'rootfs/etc/nginx/sites-available/portabletak'
         site.parent.mkdir(parents=True)

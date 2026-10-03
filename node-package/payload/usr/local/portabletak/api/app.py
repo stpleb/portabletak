@@ -343,14 +343,18 @@ def users_delete(payload: dict = Body(...)):
 def qr_host(address, opened_at=None):
     """None: the normal (local) address. "remote": the Tailscale address, so one
     server entry works on Wi-Fi and on cellular while the phone's Tailscale is on.
-    With no choice made, a dashboard opened through the Tailscale address gives a
-    Tailscale QR: a phone on cellular can only enroll that way."""
+    With no choice made, the QR uses the address the dashboard was opened with when
+    it is one of this server's addresses (Tailscale, or another network this computer
+    is on): the phone can reach the server there, and a certificate is named for it."""
     if address is None:
         host = (opened_at or "").rsplit(":", 1)[0].strip("[]")
         try:
             import client_packages
             import server_addresses
-            if host and host == client_packages.remote_address(server_addresses.current("/mnt/asgard")):
+            record = server_addresses.current("/mnt/asgard")
+            # Any address of this server other than the default one (the Tailscale
+            # address, or this computer's other network): the phone reached it there.
+            if host and host != record.get("advertise") and host in (record.get("addresses") or []):
                 return host
         except Exception:
             pass

@@ -9,7 +9,7 @@ DEV="$(ip -4 -o addr show | awk -v ip="$IP" '{split($4,a,"/"); if (a[1]==ip) {pr
 [ -n "$DEV" ] || { echo "PORTABLETAK_WSL_ERROR=address_not_on_this_computer:$IP"; exit 3; }
 mkdir -p /etc/portabletak
 printf 'PT_PROFILE=linux\nPT_SERVICE_IP=%s\nPT_SERVICE_DEV=%s\nPT_BOOT_DEV=%s\n' "$IP" "$DEV" "$DEV" > /etc/portabletak/host-profile
-# Optional: the computer's Tailscale address (remote access via the Windows Tailscale app).
+# Optional: the computer's other network addresses (comma-separated), also on the certificate.
 case "${2:-}" in *.*.*.*) echo "PT_EXTRA_IPS=$2" >> /etc/portabletak/host-profile ;; esac
 /usr/local/portabletak/bin/portabletak-wsl-api start >/dev/null
 mkdir -p /tmp/portabletak

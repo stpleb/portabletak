@@ -228,11 +228,13 @@ function Get-ServiceAddress {
     $candidates = $candidates | Where-Object {
         $ip = ($_.IPv4Address | Select-Object -First 1).IPAddress
         $ip -notmatch '^169\.254\.' -and $ip -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.' }
-    $first = $candidates | Sort-Object { if ($_.InterfaceAlias -match 'Wi-?Fi|Wireless|WLAN') { 0 }
-                                         elseif ($_.InterfaceAlias -match 'Ethernet') { 1 } else { 2 } },
-                                       { if ($_.IPv4DefaultGateway) { 0 } else { 1 } } | Select-Object -First 1
-    if (-not $first) { Fail 'This computer is not connected to a network. Connect to Wi-Fi or Ethernet first.' }
-    return ($first.IPv4Address | Select-Object -First 1).IPAddress
+    $sorted = @($candidates | Sort-Object { if ($_.InterfaceAlias -match 'Wi-?Fi|Wireless|WLAN') { 0 }
+                                             elseif ($_.InterfaceAlias -match 'Ethernet') { 1 } else { 2 } },
+                                           { if ($_.IPv4DefaultGateway) { 0 } else { 1 } })
+    if (-not $sorted) { Fail 'This computer is not connected to a network. Connect to Wi-Fi or Ethernet first.' }
+    # First: the address phones normally use. All of them go on the server certificate,
+    # so a phone on any network this computer is on (Wi-Fi and Ethernet) can connect.
+    return @($sorted | ForEach-Object { ($_.IPv4Address | Select-Object -First 1).IPAddress } | Select-Object -Unique)
 }
 
 # --- attaching the USB drive to PortableTAK (usbipd) -------------------------------
@@ -342,7 +344,9 @@ function Start-PortableTAK {
     Ensure-Networking $build
     Ensure-Distro $drive.Root
     Ensure-Shortcuts
-    $address = Get-ServiceAddress
+    $addresses = Get-ServiceAddress
+    $address = $addresses[0]
+    $others = ($addresses | Select-Object -Skip 1 -First 3) -join ','
     Say "This computer's address for phones and WinTAK: $address" 'Cyan'
     # Remote access uses the drive's own Tailscale (set up once in the dashboard); this
     # computer's own Tailscale app is not needed and its address is not used.
@@ -350,7 +354,7 @@ function Start-PortableTAK {
     $record = Attach-Disk $drive.Disk
     Set-Content -Path $StateFile -Value $record
     Say 'Starting the server (first start on a computer takes a few minutes)...'
-    $result = Invoke-Distro "/usr/local/portabletak/bin/portabletak-wsl-start $address" -AllowFail
+    $result = Invoke-Distro "/usr/local/portabletak/bin/portabletak-wsl-start $address $others" -AllowFail
     if ($result.Out -match 'PORTABLETAK_AUTOLOAD=RUNNING') {
         Invoke-Distro 'rm -f /usr/local/portabletak/release/first-run-enabled' -AllowFail | Out-Null
         Say 'PortableTAK is running.' 'Green'

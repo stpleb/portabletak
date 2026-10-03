@@ -70,42 +70,53 @@ def upgrade_tak_site(text):
 LOOPBACK = '127.0.0.1'
 
 
-def remote_blocks(text, address):
-    """Copies of the 8443/8446 servers that present the certificate named for the
-    Tailscale address to connections arriving at it (ATAK checks the name).
-    Listening on one address next to the wildcard listen needs no extra socket and
-    works even while that address is absent. `address` None removes them."""
-    from server_addresses import REMOTE_MARK, REMOTE_CERT
+def named_blocks(text, mapping):
+    """Copies of the 8443/8446 servers that present, to connections arriving at an
+    address, the certificate named for that address (ATAK checks the name). mapping:
+    {listen address: certificate file}. Listening on one address next to the wildcard
+    listen needs no extra socket and works even while that address is absent."""
+    from server_addresses import REMOTE_MARK
     lines = [line for line in text.split('\n') if not line.endswith(REMOTE_MARK)]
-    if address:
+    if mapping:
         extra = []
         for line in lines:
             for port in ('8443', '8446'):
                 if line.startswith('server { listen %s ssl; ' % port) and '/opentakserver.pem;' in line:
-                    for where in (LOOPBACK, address):
+                    for where, cert in mapping.items():
                         extra.append(line.replace('listen %s ssl;' % port, 'listen %s:%s ssl;' % (where, port), 1)
-                                     .replace('/opentakserver.pem;', '/' + REMOTE_CERT + ';') + ' ' + REMOTE_MARK)
+                                     .replace('/opentakserver.pem;', '/' + cert + ';') + ' ' + REMOTE_MARK)
         while lines and lines[-1] == '':
             lines.pop()
         lines += extra + ['']
     return '\n'.join(lines)
 
 
-def remote_cert(root):
-    """Make sure the Tailscale-named certificate is current; its address or None."""
+def remote_blocks(text, address):
+    """The Tailscale-named certificate on the Tailscale address and on loopback (the
+    drive's Tailscale hands tailnet connections to 127.0.0.1). None removes them."""
+    from server_addresses import REMOTE_CERT
+    return named_blocks(text, {LOOPBACK: REMOTE_CERT, address: REMOTE_CERT} if address else {})
+
+
+def named_certs(root):
+    """Make sure every address-named certificate is current: {listen address: file}."""
     try:
         import server_addresses
-        return server_addresses.ensure_remote(root)
+        mapping = server_addresses.ensure_named(root)
     except Exception:
-        return None
+        return {}
+    from server_addresses import REMOTE_CERT
+    if REMOTE_CERT in mapping.values():
+        mapping = {LOOPBACK: REMOTE_CERT, **mapping}
+    return mapping
 
 
-def ensure_tak_site(root='/mnt/asgard', remote=None):
+def ensure_tak_site(root='/mnt/asgard', mapping=None):
     site = Path(root) / 'rootfs' / TAK_SITE
     if site.is_symlink() or not site.is_file():
         return False
     text = site.read_text()
-    updated = remote_blocks(upgrade_tak_site(text), remote)
+    updated = named_blocks(upgrade_tak_site(text), mapping or {})
     if updated != text:
         atomic_write(site, updated, 0o644)
         return True
@@ -150,7 +161,7 @@ def ensure(root='/mnt/asgard'):
             link.unlink()
         link.symlink_to(target)
         changed = True
-    changed = ensure_tak_site(root, remote_cert(root)) or changed
+    changed = ensure_tak_site(root, named_certs(root)) or changed
     try:
         changed = write_client_info(root) or changed
     except Exception:

@@ -178,24 +178,67 @@ def ensure_remote(root, openssl_prefix=None, ca_dir=None, runner=subprocess.run)
     """Keep a second server certificate whose common name is the Tailscale address.
 
     ATAK checks the certificate's common name against the address it connected to,
-    so phones set up with the Remote QR (Tailscale address) need a certificate named
-    for it. Same key, same addresses, signed by the same CA; nginx presents it on
-    connections that arrive at the Tailscale address. Returns that address or None."""
+    so phones enrolled over Tailscale need a certificate named for it. Same key, same
+    addresses, signed by the same CA; nginx presents it on connections that arrive at
+    the Tailscale address. Returns that address or None."""
+    address = remote_address(current(root))
+    _ensure_cert(root, address, REMOTE_CERT, REMOTE_STAMP, openssl_prefix, ca_dir, runner)
+    return address
+
+
+def named_cert(address):
+    return 'opentakserver-%s.pem' % address
+
+
+def ensure_named(root, openssl_prefix=None, ca_dir=None, runner=subprocess.run):
+    """A certificate named for each other address of this host (a laptop on Wi-Fi and
+    Ethernet), so a phone can enroll on whichever network it shares with the server.
+    Returns {address: certificate file name} including the Tailscale one."""
+    root = Path(root)
+    record = current(root)
+    remote = ensure_remote(root, openssl_prefix, ca_dir, runner)
+    result = {remote: REMOTE_CERT} if remote else {}
+    cert_dir = root / 'opentak/data/ca/certs/opentakserver'
+    wanted = []
+    for value in record.get('addresses') or []:
+        try:
+            ip = ipaddress.IPv4Address(value)
+        except ValueError:
+            continue
+        if value == record.get('advertise') or ip in TAILSCALE or value.startswith('10.0.2.'):
+            continue
+        wanted.append(value)
+    for value in wanted:
+        _ensure_cert(root, value, named_cert(value), named_cert(value) + '.json', openssl_prefix, ca_dir, runner)
+        result[value] = named_cert(value)
+    # Certificates for addresses this host no longer has.
+    for old in cert_dir.glob('opentakserver-*.pem'):
+        address = old.name[len('opentakserver-'):-len('.pem')]
+        if old.name != REMOTE_CERT and address not in wanted:
+            old.unlink()
+            stamp = cert_dir / (old.name + '.json')
+            if stamp.is_file():
+                stamp.unlink()
+    return result
+
+
+def _ensure_cert(root, address, cert_name, stamp_name, openssl_prefix=None, ca_dir=None, runner=subprocess.run):
+    """Issue (or keep) a certificate named for `address`: same key and addresses as the
+    main server certificate, common name = address. None removes it."""
     import hashlib
     root = Path(root)
     host_ca = root / 'opentak/data/ca'
     cert_dir = host_ca / 'certs/opentakserver'
-    remote_cert, stamp = cert_dir / REMOTE_CERT, cert_dir / REMOTE_STAMP
-    address = remote_address(current(root))
+    named, stamp = cert_dir / cert_name, cert_dir / stamp_name
     main = cert_dir / 'opentakserver.pem'
     if address is None or not main.is_file():
-        for stale in (remote_cert, stamp):
+        for stale in (named, stamp):
             if stale.is_file():
                 stale.unlink()
         return None
     wanted = {'address': address, 'main': hashlib.sha256(main.read_bytes()).hexdigest()}
     try:
-        if remote_cert.is_file() and json.loads(stamp.read_text()) == wanted:
+        if named.is_file() and json.loads(stamp.read_text()) == wanted:
             return address
     except (OSError, ValueError):
         pass
@@ -213,13 +256,13 @@ def ensure_remote(root, openssl_prefix=None, ca_dir=None, runner=subprocess.run)
         result = runner([*prefix, 'openssl', *arguments], capture_output=True, text=True, env=env,
                         stdin=subprocess.DEVNULL)
         if result.returncode:
-            raise ProvisionError('remote_certificate_openssl_failed')
+            raise ProvisionError('named_certificate_openssl_failed')
         return result.stdout
 
     subject = config.get('OTS_CA_SUBJECT') or '/O=PortableTAK/OU=TAK'
     if not re.fullmatch(r'(/[A-Za-z]+=[A-Za-z0-9 ._-]{1,64}){1,6}', subject):
         subject = '/O=PortableTAK/OU=TAK'
-    new_cert, new_csr = cert_dir / (REMOTE_CERT + '.new'), cert_dir / 'opentakserver-remote.csr.new'
+    new_cert, new_csr = cert_dir / (cert_name + '.new'), cert_dir / (cert_name + '.csr.new')
     try:
         openssl('req', '-new', '-sha256', '-key', str(seen_cert / 'opentakserver.nopass.key'),
                 '-subj', subject + '/CN=' + address, '-out', str(seen_cert / new_csr.name))
@@ -233,14 +276,14 @@ def ensure_remote(root, openssl_prefix=None, ca_dir=None, runner=subprocess.run)
         openssl('verify', '-CAfile', str(seen / 'ca.pem'), str(seen_cert / new_cert.name))
         details = openssl('x509', '-noout', '-text', '-in', str(seen_cert / new_cert.name))
         if 'IP Address:' + address not in details:
-            raise ProvisionError('remote_certificate_address_missing')
+            raise ProvisionError('named_certificate_address_missing')
     except Exception:
         for leftover in (new_cert, new_csr):
             if leftover.exists():
                 leftover.unlink()
         raise
     os.chmod(new_cert, 0o644)
-    os.replace(new_cert, remote_cert)
+    os.replace(new_cert, named)
     new_csr.unlink()
     atomic_write(stamp, json.dumps(wanted) + '\n', 0o644)
     return address
