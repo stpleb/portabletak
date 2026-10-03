@@ -172,7 +172,21 @@ def status():
         "status": parse_status(result["output"]),
         "host_kind": host_kind(),
         "address_gone": address_gone(),
+        "opentakserver_version": opentakserver_version(),
     }
+
+
+def opentakserver_version():
+    """Installed OpenTAKServer version on the drive (x86 computers use the amd64 copy)."""
+    import glob
+    import platform
+    venvs = ["/mnt/asgard/opentak/venv"]
+    if platform.machine() in ("x86_64", "AMD64"):
+        venvs.insert(0, "/mnt/asgard/arch/amd64/venv")
+    for venv in venvs:
+        for info in glob.glob(venv + "/lib/python3*/site-packages/opentakserver-*.dist-info"):
+            return info.rsplit("/", 1)[1][len("opentakserver-"):-len(".dist-info")]
+    return None
 
 
 def address_gone():

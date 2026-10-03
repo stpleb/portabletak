@@ -397,6 +397,11 @@ button.danger {
         <span class="label">Device</span>
         <span id="device">...</span>
     </div>
+
+    <div class="row">
+        <span class="label">OpenTAKServer</span>
+        <span id="otsVersion">...</span>
+    </div>
 </div>
 
 <div class="card">
@@ -825,6 +830,7 @@ async function refreshStatus() {
         setText("cartridge", value(s.PORTABLETAK_CARTRIDGE));
         setText("storage", value(s.PORTABLETAK_STORAGE));
         setText("device", value(s.PORTABLETAK_DEVICE));
+        setText("otsVersion", statusResponse.opentakserver_version ? "version " + statusResponse.opentakserver_version : "unknown");
 
         setText("prepared", yesNo(s.PORTABLETAK_RUNTIME_PREPARED));
         setText("foundation", yesNo(s.PORTABLETAK_FOUNDATION_RUNNING));
