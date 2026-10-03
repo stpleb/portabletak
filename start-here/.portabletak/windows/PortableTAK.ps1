@@ -536,11 +536,12 @@ function Invoke-FirstSetup {
         $json = @{ instance_name = $name; administrator_password = $admin; client_password = $client } | ConvertTo-Json -Compress
         $admin = $null; $client = $null
         Say 'Setting up the server (about 5-10 minutes)...'
-        # Answers go in on standard input, never on a command line.
-        $ErrorActionPreference = 'Continue'
-        $out = $json | & wsl.exe -d $Distro -u root -- /usr/local/portabletak/bin/portabletak-wsl-provision 2>&1 | ForEach-Object { "$_" } | Out-String
-        $ErrorActionPreference = 'Stop'
+        # Answers go in through a private file (never on a command line); it is opened
+        # and deleted before setup starts, and fed to setup on standard input.
+        Invoke-Distro 'rm -rf /var/tmp/pt-first && mkdir -m 700 /var/tmp/pt-first' | Out-Null
+        [IO.File]::WriteAllText("\\wsl.localhost\$Distro\var\tmp\pt-first\answers.json", $json, (New-Object Text.UTF8Encoding($false)))
         $json = $null
+        $out = (Invoke-Distro 'f=/var/tmp/pt-first/answers.json; chmod 600 "$f"; exec 3<"$f"; rm -rf /var/tmp/pt-first; /usr/local/portabletak/bin/portabletak-wsl-provision <&3' -AllowFail).Out
         Log ("first setup -> " + (($out -split "`n" | Where-Object { $_ -match 'PORTABLETAK_SETUP=|_ERROR=' }) -join ' '))
         if ($out -match 'PORTABLETAK_SETUP=COMPLETE') { return }
         if ($out -match 'PORTABLETAK_SETUP=INVALID') {
