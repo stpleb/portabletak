@@ -1253,8 +1253,15 @@ async function qrNetworks() {
 function renderQrNet(id, nets, selected, onPick) {
     const box = document.getElementById(id);
     box.innerHTML = "";
-    if (!nets.addresses || nets.addresses.length < 2) return;
+    if (!nets.addresses || !nets.addresses.length) return;
     box.appendChild(document.createTextNode("Phone is on: "));
+    if (!nets.addresses.some(function(n) { return n.label === "Tailscale"; })) {
+        // Only local networks so far: say how phones on cellular get a QR.
+        const hint = document.createElement("div");
+        hint.style.cssText = "font-size:0.85em;opacity:0.8;margin-top:4px";
+        hint.textContent = "Phones on cellular: set up Remote Access in the dashboard first; a Tailscale choice then appears here.";
+        setTimeout(function() { box.appendChild(hint); }, 0);
+    }
     nets.addresses.forEach(function(n) {
         const b = document.createElement("button");
         b.textContent = n.label + " (" + n.address + ")";

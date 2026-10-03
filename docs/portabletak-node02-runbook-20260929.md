@@ -994,3 +994,8 @@ Node02 installer 37fc39803f0a68d2a5c9736fa0663c786f3e7700dc66f59590f11019ca86d5c
 - Also added: dashboard "iPhone Trust Profile (for QR)" link (/api/client/ios-trust-profile → .mobileconfig, deterministic UUIDs), guides (iPhone once-per-phone step). Full rebuild running.
 - Release v2026.10.03 published (Windows/Mac setup, node package 20261003, SHA256SUMS). Owner to rerun Setup for Windows with it (Lexar busy fix).
 - 2026-10-03: owner quick-formatted a Lexar in Windows before Setup; the other Lexar (read-only check on the Mac, superblock label) is PORTABLETAK → the formatted one was ASGARD. Owner: nothing needed on it. Both Lexars are now spares.
+- 2026-10-03 Windows Setup + Start on Lexar (work laptop) PASSED after fixes (all in release v2026.10.03 Windows zip, repo up to 9b27d3a):
+  - Setup: Clear-Disk before handover; Zone.Identifier files removed; mcopy non-interactive (hung on 'name:Zone.Identifier').
+  - Start: "Device busy" root cause = WSL Plan9FileSystem dllhost.exe {DFB65C4C-...} holding the FAT volume (WSL#7972; System event 225). Start closes that helper, dismounts all volumes, removes letter (mountvol /p), forced bind + pnputil restart; letter restored at start/stop/failure.
+  - Single-address bug (@() around Get-ServiceAddress); first-setup answers via private file (pipe into wsl.exe delivered nothing → invalid_input).
+  - Live progress bar (Write-Progress) for Setup build and first setup. PS syntax not machine-checked on Mac (no pwsh); user runs Parser check on Windows.
