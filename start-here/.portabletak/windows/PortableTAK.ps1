@@ -391,7 +391,7 @@ function Start-PortableTAK {
     Ensure-Networking $build
     Ensure-Distro $drive.Root
     Ensure-Shortcuts
-    $addresses = Get-ServiceAddress
+    $addresses = @(Get-ServiceAddress)
     $address = $addresses[0]
     $others = ($addresses | Select-Object -Skip 1 -First 3) -join ','
     Say "This computer's address for phones and WinTAK: $address" 'Cyan'
