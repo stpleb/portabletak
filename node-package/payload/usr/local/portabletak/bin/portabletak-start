@@ -353,6 +353,13 @@ if [ -x "$ADOPT" ]; then
     fi
 fi
 
+# Server certificate within Apple's 825-day limit (iTAK), renewed before it expires:
+# same key and addresses, so enrolled clients are unaffected. Before the services
+# start, so they serve the renewed certificate. Uses the chroot's openssl.
+if /usr/local/portabletak/bin/portabletak-prepare >/dev/null 2>&1 &&
+    /usr/bin/python3 -c "import sys; sys.path.insert(0, '/usr/local/portabletak/lib'); import server_addresses as s; print('PORTABLETAK_CERT_RENEWED=1' if s.renew_if_needed('/mnt/asgard') else 'PORTABLETAK_CERT=CURRENT')" 2>/dev/null
+then :; else echo "ASGARD_WARNING=certificate_renewal_check_failed"; fi
+
 # ---------------------------------------------------------
 # 1c. Use the whole drive: grow the cartridge partition and filesystem to the
 #     end of the disk (drives made by PortableTAK Setup start compact).

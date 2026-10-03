@@ -1236,6 +1236,32 @@ async function refreshClientInfo() {
 let userFormMode = "create";
 let selectedUsername = "";
 
+// "Phone is on:" picker in the QR windows: a QR made on this computer's own dashboard
+// cannot know which network the phone uses, so the user picks it.
+async function qrNetworks() {
+    try {
+        const r = await fetch("/api/client/qr-addresses");
+        return await r.json();
+    } catch (err) {
+        return {addresses: [], default: null};
+    }
+}
+
+function renderQrNet(id, nets, selected, onPick) {
+    const box = document.getElementById(id);
+    box.innerHTML = "";
+    if (!nets.addresses || nets.addresses.length < 2) return;
+    box.appendChild(document.createTextNode("Phone is on: "));
+    nets.addresses.forEach(function(n) {
+        const b = document.createElement("button");
+        b.textContent = n.label + " (" + n.address + ")";
+        b.style.cssText = "margin:3px;font-size:0.85em;" +
+            (n.address === selected ? "background:#2d6cdf;color:white;border-color:#2d6cdf" : "");
+        b.onclick = function() { onPick(n.address); };
+        box.appendChild(b);
+    });
+}
+
 async function showItakQr(username, remote) {
     const overlay = document.getElementById("itakQrOverlay");
     const image = document.getElementById("itakQrImage");
@@ -1244,9 +1270,15 @@ async function showItakQr(username, remote) {
     user.textContent = username;
     image.removeAttribute("src");
 
+    const nets = await qrNetworks();
+    const address = remote === true ? "remote" : (remote || nets.default || "");
+    const tailscale = (nets.addresses || []).find(function(n) { return /Tailscale/.test(n.label); });
+    const selected = address === "remote" ? (tailscale || {}).address : address;
+    const viaTailscale = !!tailscale && selected === tailscale.address;
+    renderQrNet("itakQrNet", nets, selected, function(a) { showItakQr(username, a); });
     document.getElementById("itakQrTitle").textContent =
-        remote ? "iTAK Remote QR (Tailscale)" : "iTAK QR Setup";
-    document.getElementById("itakQrRemoteNote").style.display = remote ? "block" : "none";
+        viaTailscale ? "iTAK Remote QR (Tailscale)" : "iTAK QR Setup";
+    document.getElementById("itakQrRemoteNote").style.display = viaTailscale ? "block" : "none";
 
     overlay.style.display = "flex";
 
@@ -1254,7 +1286,7 @@ async function showItakQr(username, remote) {
         const response = await fetch(
             "/api/client/itak-qr/" +
             encodeURIComponent(username) +
-            (remote ? "?address=remote" : ""),
+            (address ? "?address=" + encodeURIComponent(address) : ""),
             {
                 method: "POST"
             }
@@ -1295,9 +1327,15 @@ async function showAtakQr(username, remote) {
     image.removeAttribute("src");
     link.href = "#";
 
+    const nets = await qrNetworks();
+    const address = remote === true ? "remote" : (remote || nets.default || "");
+    const tailscale = (nets.addresses || []).find(function(n) { return /Tailscale/.test(n.label); });
+    const selected = address === "remote" ? (tailscale || {}).address : address;
+    const viaTailscale = !!tailscale && selected === tailscale.address;
+    renderQrNet("atakQrNet", nets, selected, function(a) { showAtakQr(username, a); });
     document.getElementById("atakQrTitle").textContent =
-        remote ? "ATAK Remote QR (Tailscale)" : "ATAK QR Setup";
-    document.getElementById("atakQrRemoteNote").style.display = remote ? "block" : "none";
+        viaTailscale ? "ATAK Remote QR (Tailscale)" : "ATAK QR Setup";
+    document.getElementById("atakQrRemoteNote").style.display = viaTailscale ? "block" : "none";
 
     overlay.style.display = "flex";
 
@@ -1305,7 +1343,7 @@ async function showAtakQr(username, remote) {
         const response = await fetch(
             "/api/client/atak-qr/" +
             encodeURIComponent(username) +
-            (remote ? "?address=remote" : ""),
+            (address ? "?address=" + encodeURIComponent(address) : ""),
             {
                 method: "POST"
             }
@@ -1552,18 +1590,6 @@ async function refreshUsers() {
                 };
 
                 packageActions.appendChild(itakQrButton);
-
-                const itakRemoteQrButton =
-                    document.createElement("button");
-
-                itakRemoteQrButton.textContent = "iTAK Remote QR";
-                itakRemoteQrButton.title = "iTAK server entry that also works over cellular (Tailscale)";
-                itakRemoteQrButton.style.order = "4";
-                itakRemoteQrButton.onclick = function() {
-                    showItakQr(user.username, true);
-                };
-
-                packageActions.appendChild(itakRemoteQrButton);
 
                 itakButton.style.order = "5";
                 packageActions.appendChild(itakButton);
@@ -1917,6 +1943,7 @@ document.addEventListener("DOMContentLoaded", function() {
         <h2 id="atakQrTitle" style="color:white;margin-top:0">ATAK QR Setup</h2>
 
         <div id="atakQrUser" style="color:white;margin-bottom:12px"></div>
+        <div id="atakQrNet" style="margin-bottom:10px;color:#ccc"></div>
 
         <div id="atakQrRemoteNote" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;
                     background:#1f2a3d;color:#dde;font-size:.88em;text-align:left;line-height:1.45">
@@ -1974,6 +2001,7 @@ document.addEventListener("DOMContentLoaded", function() {
         <h2 id="itakQrTitle" style="color:white;margin-top:0">iTAK QR Setup</h2>
 
         <div id="itakQrUser" style="color:white;margin-bottom:12px"></div>
+        <div id="itakQrNet" style="margin-bottom:10px;color:#ccc"></div>
 
         <div id="itakQrRemoteNote" style="display:none;margin-bottom:12px;padding:10px;border-radius:8px;
                     background:#1f2a3d;color:#dde;font-size:.88em;text-align:left;line-height:1.45">

@@ -23,6 +23,10 @@ from host_profile import rootfs as host_rootfs
 from portabletak_provision import ProvisionError, atomic_write, read_json
 
 MAX_ADDRESSES = 8
+# Apple devices (iTAK) refuse TLS server certificates valid for more than 825 days,
+# even from a private CA; renew automatically when RENEW_DAYS or fewer remain.
+SERVER_DAYS = 820
+RENEW_DAYS = 120
 HOSTNAME = re.compile(r'(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
                       r'(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*')
 
@@ -67,7 +71,7 @@ def current(root='/mnt/asgard'):
 
 
 def reissue(root, addresses, advertise, openssl_prefix=None, ca_dir=None,
-            runner=subprocess.run, days=3650, clock=time.time):
+            runner=subprocess.run, days=SERVER_DAYS, clock=time.time):
     """Re-sign the server certificate for `addresses` and advertise one of them."""
     root = Path(root)
     entries = normalize(addresses)
@@ -266,7 +270,7 @@ def _ensure_cert(root, address, cert_name, stamp_name, openssl_prefix=None, ca_d
     try:
         openssl('req', '-new', '-sha256', '-key', str(seen_cert / 'opentakserver.nopass.key'),
                 '-subj', subject + '/CN=' + address, '-out', str(seen_cert / new_csr.name))
-        openssl('x509', '-sha256', '-req', '-days', '3650', '-in', str(seen_cert / new_csr.name),
+        openssl('x509', '-sha256', '-req', '-days', str(SERVER_DAYS), '-in', str(seen_cert / new_csr.name),
                 '-CA', str(seen / 'ca.pem'), '-CAkey', str(seen / 'ca-do-not-share.key'),
                 '-passin', 'env:PT_CA_PASSWORD', '-set_serial', str(secrets.randbits(62) + 1),
                 '-extensions', 'server', '-extfile', str(seen_cert / 'opentakserver_config.cfg'),
@@ -287,6 +291,35 @@ def _ensure_cert(root, address, cert_name, stamp_name, openssl_prefix=None, ca_d
     new_csr.unlink()
     atomic_write(stamp, json.dumps(wanted) + '\n', 0o644)
     return address
+
+
+def needs_renewal(root, openssl_prefix=None, ca_dir=None, runner=subprocess.run, clock=time.time):
+    """True when the server certificate is valid for longer than Apple allows (older
+    drives used 10 years) or expires within RENEW_DAYS."""
+    import calendar
+    prefix = list(openssl_prefix if openssl_prefix is not None
+                  else ('/usr/sbin/chroot', str(host_rootfs(root))))
+    seen = Path(ca_dir or '/asgard/opentak/data/ca') / 'certs/opentakserver/opentakserver.pem'
+    result = runner([*prefix, 'openssl', 'x509', '-noout', '-startdate', '-enddate', '-in', str(seen)],
+                    capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if result.returncode:
+        return False
+    dates = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    try:
+        start = calendar.timegm(time.strptime(dates['notBefore'].replace('  ', ' '), '%b %d %H:%M:%S %Y %Z'))
+        end = calendar.timegm(time.strptime(dates['notAfter'].replace('  ', ' '), '%b %d %H:%M:%S %Y %Z'))
+    except (KeyError, ValueError):
+        return False
+    return end - start > 825 * 86400 or end - clock() < RENEW_DAYS * 86400
+
+
+def renew_if_needed(root, **kwargs):
+    """Re-sign the server certificate (same key and addresses) when needs_renewal."""
+    if not needs_renewal(root, **{k: v for k, v in kwargs.items() if k in ('openssl_prefix', 'ca_dir', 'runner', 'clock')}):
+        return False
+    record = current(root)
+    reissue(root, record['addresses'], record['advertise'], **kwargs)
+    return True
 
 
 def listen_everywhere(root):

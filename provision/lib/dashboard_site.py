@@ -102,6 +102,7 @@ def named_certs(root):
     """Make sure every address-named certificate is current: {listen address: file}."""
     try:
         import server_addresses
+        server_addresses.renew_if_needed(root)
         mapping = server_addresses.ensure_named(root)
     except Exception:
         return {}

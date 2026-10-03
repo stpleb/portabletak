@@ -305,20 +305,45 @@ function Attach-Disk([int]$DiskNumber) {
     # Keep PortableTAK's Linux side running while the server runs (WSL stops an idle one).
     $keep = Start-Process wsl.exe -ArgumentList @('-d', $Distro, '-u', 'root', '--', 'sleep', 'infinity') -WindowStyle Hidden -PassThru
     Invoke-Distro 'modprobe -a vhci_hcd usb-storage uas' -AllowFail | Out-Null
-    Invoke-Usbipd @('attach', '--wsl', '--busid', $busId) | Out-Null
+    # Windows must let go of the drive: dismount its volumes (closes Explorer's handles).
+    foreach ($part in @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)) {
+        foreach ($path in @($part.AccessPaths)) {
+            if ($path -match '^[A-Z]:\\$') {
+                $vol = Get-CimInstance Win32_Volume -Filter "DriveLetter='$($path.Substring(0, 2))'" -ErrorAction SilentlyContinue
+                if ($vol) { Invoke-CimMethod -InputObject $vol -MethodName Dismount -Arguments @{Force = $true; Permanent = $false} -ErrorAction SilentlyContinue | Out-Null }
+            }
+        }
+    }
+    $forced = $false
+    $attach = Invoke-Usbipd @('attach', '--wsl', '--busid', $busId) -AllowFail
+    if ($attach.Code -ne 0 -and $attach.Out -match 'busy|used by Windows') {
+        # Still held by Windows: hand it over anyway (given back with unbind on stop).
+        Invoke-Usbipd @('bind', '--force', '--busid', $busId) | Out-Null
+        $forced = $true
+        Start-Sleep -Seconds 2
+        $attach = Invoke-Usbipd @('attach', '--wsl', '--busid', $busId) -AllowFail
+    }
+    if ($attach.Code -ne 0) {
+        if ($forced) { Invoke-Usbipd @('unbind', '--busid', $busId) -AllowFail | Out-Null }
+        Stop-Process -Id $keep.Id -Force -ErrorAction SilentlyContinue
+        Fail ('Could not hand the drive to PortableTAK: ' + $attach.Out.Trim())
+    }
     $seen = Invoke-Distro 'modprobe -a usb-storage uas 2>/dev/null; for i in $(seq 1 30); do lsblk -dno TRAN | grep -q usb && exit 0; sleep 1; done; exit 1' -AllowFail
     if ($seen.Code -ne 0) {
         Invoke-Usbipd @('detach', '--busid', $busId) -AllowFail | Out-Null
+        if ($forced) { Invoke-Usbipd @('unbind', '--busid', $busId) -AllowFail | Out-Null }
         Stop-Process -Id $keep.Id -Force -ErrorAction SilentlyContinue
         Fail 'The drive did not appear inside PortableTAK. Unplug it, plug it in again and retry.'
     }
-    return "usbip|$busId|$($keep.Id)"
+    return "usbip|$busId|$($keep.Id)|$([int]$forced)"
 }
 
 function Detach-Disk([string]$Record) {
     $parts = $Record -split '\|'
     if ($parts[0] -eq 'usbip') {
         Invoke-Usbipd @('detach', '--busid', $parts[1]) -AllowFail | Out-Null
+        # A forced handover keeps Windows away from the drive until it is unbound.
+        if ($parts.Count -gt 3 -and $parts[3] -eq '1') { Invoke-Usbipd @('unbind', '--busid', $parts[1]) -AllowFail | Out-Null }
         if ($parts.Count -gt 2 -and $parts[2]) { Stop-Process -Id ([int]$parts[2]) -Force -ErrorAction SilentlyContinue }
     } else {
         Invoke-Wsl @('--unmount', $Record) -AllowFail | Out-Null    # sessions from older versions

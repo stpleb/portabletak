@@ -359,14 +359,38 @@ def qr_host(address, opened_at=None):
         except Exception:
             pass
         return None
-    if address != "remote":
-        raise HTTPException(status_code=400, detail="invalid_address")
     import client_packages
     import server_addresses
-    host = client_packages.remote_address(server_addresses.current("/mnt/asgard"))
-    if host is None:
-        raise HTTPException(status_code=404, detail="remote_access_not_set_up")
-    return host
+    record = server_addresses.current("/mnt/asgard")
+    if address == "remote":
+        host = client_packages.remote_address(record)
+        if host is None:
+            raise HTTPException(status_code=404, detail="remote_access_not_set_up")
+        return host
+    # The network the phone is on, picked in the QR window: any of this server's addresses.
+    if address in (record.get("addresses") or []):
+        return None if address == record.get("advertise") else address
+    raise HTTPException(status_code=400, detail="invalid_address")
+
+
+@app.get("/api/client/qr-addresses")
+def qr_addresses(request: Request):
+    """The networks a phone can enroll on, for the QR window's "Phone is on" picker.
+    Default: the address the dashboard was opened with, if it is one of them."""
+    import client_packages
+    import server_addresses
+    record = server_addresses.current("/mnt/asgard")
+    items = []
+    for description, address, _ in client_packages.connections(record):
+        if address.startswith("10.0.2.") or address.endswith(".ts.net"):
+            continue
+        label = description[description.rfind("(") + 1:].rstrip(")") if "(" in description else address
+        if label.startswith("LAN "):
+            label = "LAN"
+        items.append({"address": address, "label": label})
+    opened = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+    default = opened if any(i["address"] == opened for i in items) else record.get("advertise")
+    return {"ok": True, "addresses": items, "default": default}
 
 
 @app.post("/api/client/itak-qr/{username}")

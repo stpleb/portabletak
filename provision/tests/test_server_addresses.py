@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
@@ -129,6 +130,16 @@ class ServerAddressTests(unittest.TestCase):
         self.reissue(['10.41.254.181', '100.102.110.115'], '10.41.254.181')   # laptop left that network
         self.assertEqual(named(), {'100.102.110.115': sa.REMOTE_CERT})
         self.assertFalse(lan.exists())
+
+    def test_certificates_fit_apple_limit_and_old_ones_are_renewed(self):
+        kw = dict(openssl_prefix=(), ca_dir=self.ca)
+        sa.reissue(self.root, ['10.41.254.1'], '10.41.254.1', days=3650, **kw)      # an older drive
+        self.assertTrue(sa.needs_renewal(self.root, **kw))
+        self.assertTrue(sa.renew_if_needed(self.root, **kw))
+        self.assertFalse(sa.needs_renewal(self.root, **kw))
+        self.assertFalse(sa.renew_if_needed(self.root, **kw))
+        later = lambda: time.time() + (sa.SERVER_DAYS - 100) * 86400
+        self.assertTrue(sa.needs_renewal(self.root, clock=later, **kw))
 
     def test_listen_everywhere_keeps_remote_blocks(self):
         site = self.root / 'rootfs/etc/nginx/sites-available/portabletak'

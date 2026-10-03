@@ -126,7 +126,8 @@ Import both for Wi-Fi and cellular.</td></tr>
 <tr><td>WinTAK</td><td><b>WinTAK Setup</b></td><td>Import in WinTAK.</td></tr>
 <tr><td>ATAK / iTAK by QR</td><td><b>ATAK QR Setup</b> / <b>iTAK QR Setup</b></td><td>The device must trust the server first.
 For ATAK, import the <b>ATAK Trust Package (for QR)</b> from Client Setup once per phone, then scan. A QR code works for 3 uses.
-With remote access set up, ATAK QR Setup also adds the Tailscale server; on iPhone use the <b>iTAK Remote QR</b> for cellular.</td></tr>
+In the QR window, pick the network the phone is on (<b>Phone is on:</b> Wi-Fi, LAN or Tailscale) if it is not already selected.
+With remote access set up, ATAK QR Setup also adds the Tailscale server; on iPhone pick <b>Phone is on: Tailscale</b> in the iTAK QR window for cellular.</td></tr>
 </table></li>
 <li>The server connection turns green in the app.</li>
 </ol>
@@ -158,7 +159,7 @@ so phones set up once keep working wherever the drive runs. The computer does no
 <li>Install the <b>Tailscale</b> app, sign in with the <b>same account</b>, and switch it on (allow the VPN profile when asked).</li>
 <li>Set up ATAK with <b>ATAK QR Setup</b> or the <b>ATAK Package</b> (Users → your user). Either one gives the phone
 two servers: the local one and "<i>server name</i> (Tailscale)". On iPhone import the <b>iTAK Remote Package</b>
-(or scan the <b>iTAK Remote QR</b>) as a second server; keep the normal iTAK one for local Wi-Fi.
+(or scan <b>iTAK QR Setup</b> with "Phone is on: Tailscale") as a second server; keep the normal iTAK one for local Wi-Fi.
 Phones set up before Step 1 must be set up again.</li>
 <li>Test: switch the phone's Wi-Fi off. With Tailscale on, the Tailscale server turns green over cellular.</li>
 </ol>
