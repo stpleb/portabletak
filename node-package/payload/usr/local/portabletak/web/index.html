@@ -532,6 +532,10 @@ button.danger {
         <a href="/api/client/ios-trust-profile" title="Open on the iPhone in Safari, install, then turn on full trust (once per iPhone)"
            style="display:inline-block;padding:7px 12px;border:1px solid #3a4a5e;border-radius:6px;color:white;text-decoration:none">iPhone Trust Profile (for QR)</a>
     </div>
+    <div style="margin:-6px 0 14px;font-size:.85em;opacity:.8">
+        iPhone, once per drive: after installing the profile, also switch it on in
+        Settings → General → About → Certificate Trust Settings.
+    </div>
 
     <div id="clientSetupStatus" class="label">
         Press Refresh Client Setup to load connection details.
@@ -2049,6 +2053,9 @@ document.addEventListener("DOMContentLoaded", function() {
             <b>Scan this from inside iTAK</b> (a phone's camera app cannot use it):
             iTAK &rarr; Settings &rarr; Network &rarr; Servers &rarr; + &rarr; Scan QR, then sign in
             with this user's name and password.<br>
+            <b>First time with this drive on this iPhone?</b> Install the <b>iPhone Trust Profile</b> from Client Setup,
+            then switch it on in Settings &rarr; General &rarr; About &rarr; Certificate Trust Settings
+            (otherwise iTAK says "error connecting to the server").<br>
             This QR has the server settings only (no user credential or certificate).
             The <b>iTAK Package</b> is the alternative that needs no sign-in.
         </div>
