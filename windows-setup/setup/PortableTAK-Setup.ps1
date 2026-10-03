@@ -95,6 +95,12 @@ if ($answers) {
 }
 Invoke-Distro 'chmod 600 /var/tmp/pt-setup/secrets/* 2>/dev/null; sed -i "s/\r$//" /var/tmp/pt-setup/container-setup.sh' -AllowFail | Out-Null
 
+# The drive is erased anyway: wipe it on the Windows side first, so Windows has no
+# volume to keep open (Explorer, indexing or antivirus would block the handover).
+Say "Clearing $($disk.FriendlyName)..."
+try { Clear-Disk -Number $disk.Number -RemoveData -RemoveOEM -Confirm:$false -ErrorAction Stop } catch { Log ("Clear-Disk: " + $_) }
+Update-HostStorageCache -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
 Say "Attaching $($disk.FriendlyName) to the PortableTAK host..."
 $record = Attach-Disk $disk.Number
 try {

@@ -320,13 +320,17 @@ function Attach-Disk([int]$DiskNumber) {
         # Still held by Windows: hand it over anyway (given back with unbind on stop).
         Invoke-Usbipd @('bind', '--force', '--busid', $busId) | Out-Null
         $forced = $true
-        Start-Sleep -Seconds 2
-        $attach = Invoke-Usbipd @('attach', '--wsl', '--busid', $busId) -AllowFail
+        # Windows can take a few seconds to let go after a forced bind.
+        for ($try = 0; $try -lt 6; $try++) {
+            Start-Sleep -Seconds 3
+            $attach = Invoke-Usbipd @('attach', '--wsl', '--busid', $busId) -AllowFail
+            if ($attach.Code -eq 0 -or $attach.Out -notmatch 'busy|used by Windows') { break }
+        }
     }
     if ($attach.Code -ne 0) {
         if ($forced) { Invoke-Usbipd @('unbind', '--busid', $busId) -AllowFail | Out-Null }
         Stop-Process -Id $keep.Id -Force -ErrorAction SilentlyContinue
-        Fail ('Could not hand the drive to PortableTAK: ' + $attach.Out.Trim())
+        Fail ('Windows would not let go of the drive. Close any File Explorer windows, unplug the drive, plug it in again and retry. (' + (($attach.Out -split "`n" | Where-Object { $_ -match 'error' }) -join ' ').Trim() + ')')
     }
     $seen = Invoke-Distro 'modprobe -a usb-storage uas 2>/dev/null; for i in $(seq 1 30); do lsblk -dno TRAN | grep -q usb && exit 0; sleep 1; done; exit 1' -AllowFail
     if ($seen.Code -ne 0) {
