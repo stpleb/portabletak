@@ -398,10 +398,6 @@ button.danger {
         <span id="device">...</span>
     </div>
 
-    <div class="row">
-        <span class="label">OpenTAKServer</span>
-        <span id="otsVersion">...</span>
-    </div>
 </div>
 
 <div class="card">
@@ -485,10 +481,6 @@ button.danger {
         <span id="nginx">...</span>
     </div>
 
-    <div class="row">
-        <span class="label">Connected TAK Devices</span>
-        <span id="clients">0</span>
-    </div>
 </div>
 
 <div class="card">
@@ -510,9 +502,50 @@ button.danger {
     </div>
 </div>
 
+<div class="card">
+    <h2 style="color:white;font-size:1.35rem;font-weight:600">About This Server</h2>
+
+    <div class="row">
+        <span class="label">OpenTAKServer</span>
+        <span id="aboutOts">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">PortableTAK</span>
+        <span id="aboutPt">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Running on</span>
+        <span id="aboutHost">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Phones connect to</span>
+        <span id="aboutPhones">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Remote access</span>
+        <span id="aboutRemote">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Connected TAK devices</span>
+        <span id="clients">...</span>
+    </div>
+
+    <div class="row">
+        <span class="label">Video feeds</span>
+        <span id="aboutVideo">...</span>
+    </div>
+</div>
+
 </section>
 
-<section class="actions" id="nodeActions">
+<section class="card" id="controlsCard" style="margin-top:18px">
+<h2 style="color:white;font-size:1.35rem;font-weight:600">Controls</h2>
+<section class="actions" id="nodeActions" style="margin-top:0">
     <button id="mountButton" onclick="runAction('mount')">Mount</button>
     <button id="startButton" class="primary" onclick="runAction('start')">Start Server</button>
     <button id="stopButton" onclick="runAction('stop')">Stop Server</button>
@@ -523,8 +556,9 @@ button.danger {
     </div>
 </section>
 <!-- On a Windows or Mac computer the launcher attached the drive, so only it can stop it and give it back. -->
-<section class="card" id="computerActions" style="display:none;margin-top:18px;text-align:center;line-height:1.5">
+<div id="computerActions" style="display:none;text-align:center;line-height:1.5">
     <div id="computerActionsText"></div>
+</div>
 </section>
 
 <section class="card" style="margin-top:18px">
@@ -830,7 +864,9 @@ async function refreshStatus() {
         setText("cartridge", value(s.PORTABLETAK_CARTRIDGE));
         setText("storage", value(s.PORTABLETAK_STORAGE));
         setText("device", value(s.PORTABLETAK_DEVICE));
-        setText("otsVersion", statusResponse.opentakserver_version ? "version " + statusResponse.opentakserver_version : "unknown");
+        setText("aboutOts", statusResponse.opentakserver_version ? "version " + statusResponse.opentakserver_version : "unknown");
+        setText("aboutPt", statusResponse.portabletak_version || "unknown");
+        setText("aboutHost", {windows: "Windows computer", mac: "Mac"}[statusResponse.host_kind] || "OpenMANET node");
 
         setText("prepared", yesNo(s.PORTABLETAK_RUNTIME_PREPARED));
         setText("foundation", yesNo(s.PORTABLETAK_FOUNDATION_RUNNING));
@@ -889,6 +925,7 @@ async function refreshStatus() {
         setText("format", value(s.PORTABLETAK_FORMAT));
 
         setText("serviceIp", value(n.PORTABLETAK_SERVICE_IP));
+        setText("aboutPhones", value(n.PORTABLETAK_SERVICE_IP));
         setText("serviceDev", value(n.PORTABLETAK_SERVICE_DEV));
 
         const networkState = value(
@@ -1933,6 +1970,23 @@ refreshUsers();
 refreshBackups();
 
 setInterval(refreshStatus, 3000);
+
+async function refreshAbout() {
+    try {
+        const r = await fetchJson("/api/remote-access");
+        const st = r.PORTABLETAK_TAILSCALE;
+        setText("aboutRemote", st === "RUNNING" && r.PORTABLETAK_TAILSCALE_IP ? "On \u00b7 " + r.PORTABLETAK_TAILSCALE_IP
+            : st === "STOPPED" ? "Set up, not connected" : st === "NOT_INSTALLED" ? "Not available" : "Off");
+    } catch (err) { setText("aboutRemote", "..."); }
+    try {
+        const v = await fetchJson("/api/video-feeds");
+        const feeds = v.feeds || [];
+        const live = feeds.filter(f => f.live).map(f => f.name);
+        setText("aboutVideo", feeds.length ? feeds.length + (live.length ? " (" + live.join(", ") + " live)" : " (none live)") : "None");
+    } catch (err) { setText("aboutVideo", "..."); }
+}
+refreshAbout();
+setInterval(refreshAbout, 30000);
 </script>
 
 

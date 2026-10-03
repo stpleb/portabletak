@@ -173,7 +173,15 @@ def status():
         "host_kind": host_kind(),
         "address_gone": address_gone(),
         "opentakserver_version": opentakserver_version(),
+        "portabletak_version": portabletak_version(),
     }
+
+
+def portabletak_version():
+    try:
+        return open("/usr/local/portabletak/VERSION").read().strip() or None
+    except OSError:
+        return None
 
 
 def opentakserver_version():
