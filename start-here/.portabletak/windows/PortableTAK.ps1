@@ -80,7 +80,24 @@ function Invoke-Distro([string]$Command, [switch]$AllowFail) {
 }
 
 # --- locate the PortableTAK drive -------------------------------------------------
+function Restore-DriveLetter {
+    # Starting the server removes the drive's letter (so Windows cannot hold it);
+    # give it back: partition 1 FAT32 (Start here) next to partition 2 Linux.
+    foreach ($disk in @(Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'USB' -and -not $_.IsBoot -and -not $_.IsSystem })) {
+        $parts = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue)
+        $start = $parts | Where-Object { $_.PartitionNumber -eq 1 -and $_.MbrType -eq 12 }
+        $linux = $parts | Where-Object { $_.PartitionNumber -eq 2 -and $_.MbrType -eq 131 }
+        if ($start -and $linux -and -not ("$($start.DriveLetter)" -match '^[A-Za-z]$')) {
+            try {
+                $start | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction Stop
+                Log "gave the drive letter back (disk $($disk.Number))"
+            } catch { Log ("drive letter: " + $_) }
+        }
+    }
+}
+
 function Find-Drive {
+    Restore-DriveLetter
     $volumes = Get-Volume | Where-Object { $_.FileSystemLabel -eq 'PORTABLETAK' -and $_.DriveLetter }
     if ($DriveLetter) { $volumes = $volumes | Where-Object { $_.DriveLetter -eq $DriveLetter[0] } }
     foreach ($v in $volumes) {
@@ -370,6 +387,10 @@ function Detach-Disk([string]$Record) {
         # A forced handover keeps Windows away from the drive until it is unbound.
         if ($parts.Count -gt 3 -and $parts[3] -eq '1') { Invoke-Usbipd @('unbind', '--busid', $parts[1]) -AllowFail | Out-Null }
         if ($parts.Count -gt 2 -and $parts[2]) { Stop-Process -Id ([int]$parts[2]) -Force -ErrorAction SilentlyContinue }
+        # Windows sees the drive again after a few seconds; then restore its letter.
+        Start-Sleep -Seconds 5
+        Update-HostStorageCache -ErrorAction SilentlyContinue
+        Restore-DriveLetter
     } else {
         Invoke-Wsl @('--unmount', $Record) -AllowFail | Out-Null    # sessions from older versions
     }
