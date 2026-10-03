@@ -2,6 +2,17 @@
 (function () {
   const api = (path, method) => fetch('/api/remote-access' + path, {method: method || 'GET'})
     .then(r => r.json().catch(() => ({})));
+  // The server restarts during Finish setup / Sign out, which cuts the request off.
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const tryApi = (path, method) => api(path, method).catch(() => null);
+  async function waitForServer() {
+    for (let i = 0; i < 60; i++) {
+      await sleep(5000);
+      const s = await tryApi('');
+      if (s && s.PORTABLETAK_TAILSCALE) return true;
+    }
+    return false;
+  }
   function el(tag, css, text) { const n = document.createElement(tag); if (css) n.style.cssText = css; if (text) n.textContent = text; return n; }
   function build() {
     // Same markup as the dashboard's other collapsible sections (e.g. Backup / Restore).
@@ -63,7 +74,13 @@
     };
     finish.onclick = async () => {
       finish.disabled = true; status.textContent = 'Adding the address to the certificate and restarting the server (about 2 minutes)…';
-      const r = await api('/apply', 'POST');
+      let r = await tryApi('/apply', 'POST');
+      if (!r || !r.PORTABLETAK_TAILSCALE && !r.PORTABLETAK_TAILSCALE_ERROR) {
+        status.textContent = 'The server is restarting. This page updates by itself (about 2 minutes)…';
+        await waitForServer();
+        await refresh();
+        r = {PORTABLETAK_TAILSCALE: 'READY', PORTABLETAK_TAILSCALE_IP: (await tryApi('') || {}).PORTABLETAK_TAILSCALE_IP || ''};
+      }
       status.textContent = r.PORTABLETAK_TAILSCALE === 'READY'
         ? 'Ready. Remote clients: ' + r.PORTABLETAK_TAILSCALE_IP + (r.PORTABLETAK_TAILSCALE_NAME ? ' or ' + r.PORTABLETAK_TAILSCALE_NAME : '')
         : (r.PORTABLETAK_TAILSCALE_ERROR === 'not_connected_check_internet'
@@ -76,7 +93,12 @@
                    'access is set up again (any account) and the phones are set up again with a new QR or package.')) return;
       logout.disabled = true; finish.disabled = true;
       status.textContent = 'Signing out and restarting the server (about 2 minutes)…';
-      const r = await api('/logout', 'POST');
+      let r = await tryApi('/logout', 'POST');
+      if (!r || !r.PORTABLETAK_TAILSCALE && !r.PORTABLETAK_TAILSCALE_ERROR) {
+        status.textContent = 'The server is restarting. This page updates by itself (about 2 minutes)…';
+        await waitForServer();
+        r = {PORTABLETAK_TAILSCALE: 'LOGGED_OUT'};
+      }
       logout.disabled = false; finish.disabled = false;
       if (r.PORTABLETAK_TAILSCALE === 'LOGGED_OUT' || r.PORTABLETAK_TAILSCALE === 'NOT_CONFIGURED') {
         await refresh();
