@@ -61,6 +61,10 @@ if [ -d /usr/local/portabletak/python ]; then
 fi
 mv "$RUNTIME_TEMP/python" /usr/local/portabletak/python
 chown -R 0:0 /usr/local/portabletak/python || fail api_runtime_ownership_failed 29
+# Keep only the two newest backups of the package and of its Python runtime
+# (drives can update nodes automatically; old copies must not fill the node).
+ls -1t "$BACKUP_ROOT"/host-*.tar.gz 2>/dev/null | tail -n +3 | while read -r old; do rm -f "$old"; done
+ls -1dt /usr/local/portabletak/python.before-* 2>/dev/null | tail -n +3 | while read -r old; do rm -rf "$old"; done
 # The runtime archive also carries requirements.lock; the temp dir is ours.
 rm -rf "$RUNTIME_TEMP"
 
@@ -83,6 +87,7 @@ python3 -m py_compile /usr/local/portabletak/lib/*.py /usr/local/portabletak/api
     fail python_validation_failed 24
 sh -n /usr/local/portabletak/lib/host-profile.sh || fail shell_validation_failed 25
 for script in /usr/local/portabletak/bin/* /usr/local/portabletak/adapters/*/network; do
+    [ -f "$script" ] || continue
     case "$(head -n 1 "$script")" in
         '#!/bin/sh'*) sh -n "$script" || fail shell_validation_failed 25 ;;
     esac

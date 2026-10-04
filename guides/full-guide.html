@@ -54,7 +54,10 @@ icons download later the first time the server runs with internet.</div>
 certificate authority. Always make each drive with PortableTAK Setup.</div>
 
 <h2>3. Using the drive on an OpenMANET node</h2>
-<p>The node needs the PortableTAK host package installed (one time, by an administrator).</p>
+<p>The node needs the <b>PortableTAK loader</b> (part of the field extension, or installed once by an administrator
+with <code>portabletak-loader-install.sh</code>). With it, the first time a PortableTAK drive is plugged in the node
+installs PortableTAK from the drive by itself (about 5 minutes extra), and a drive made with a newer release updates
+the node the same way. Only packages signed with the PortableTAK release key are accepted.</p>
 <ol>
 <li>Plug the drive into a <b>blue USB&nbsp;3 port</b> on a running node. It starts by itself in 3–5 minutes, and also
 after every reboot or power loss.</li>
@@ -265,8 +268,8 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <tr><td>The drive was unplugged without Safe Remove / Stop PortableTAK (or power was lost)</td><td>Usually no harm: plug it back in and start PortableTAK. It checks and repairs the drive automatically and cleans up the previous session. Next time use <b>Safe Remove</b> (dashboard) or <b>Stop PortableTAK</b> (desktop) first.</td></tr>
 <tr><td>Map icons missing</td><td>They download automatically the first time the server runs with internet.</td></tr>
 <tr><td>Forgot the administrator password</td><td>It cannot be recovered. Use a backup made elsewhere, or erase and set up the drive again.</td></tr>
+<tr><td>Node: a new node does not start PortableTAK</td><td>The node needs the PortableTAK loader once (field extension or <code>portabletak-loader-install.sh</code>). On the node, <code>portabletak-loader status</code> shows what happened; a refused drive means its package is not signed with the PortableTAK release key (make the drive again with the official Setup).</td></tr>
 </table>
-
 <h3>Logs</h3>
 <p><b>Windows:</b> <code>%LOCALAPPDATA%\PortableTAK\portabletak.log</code>. <b>Node</b> (administrators, over SSH):
 <code>/usr/local/portabletak/bin/portabletak-health</code> and the logs under <code>/mnt/asgard/opentak/data/logs</code>.</p>

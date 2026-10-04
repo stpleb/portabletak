@@ -115,6 +115,13 @@ if [ "${PT_BLANK:-0}" != 1 ]; then
     $R/bin/portabletak-stop >/dev/null 2>&1 || fail stop
 fi
 $R/bin/portabletak-unprepare >/dev/null 2>&1
+# The signed node package: an OpenMANET node with the PortableTAK loader installs
+# or updates PortableTAK from it when the drive is plugged in.
+if [ -f "$STARTHERE_DIR/.portabletak/node/node-package.manifest.sig" ]; then
+    mkdir -p /mnt/asgard/portabletak/node
+    cp "$STARTHERE_DIR"/.portabletak/node/node-package.* /mnt/asgard/portabletak/node/ || fail node_package_copy
+    echo "PORTABLETAK_SETUP_NODE_PACKAGE=$(sed -n 's/^version=//p' /mnt/asgard/portabletak/node/node-package.manifest)"
+fi
 sync; umount /mnt/asgard || fail unmount
 e2fsck -fn "${LOOP}p1" >/dev/null 2>&1 || fail filesystem_check
 losetup -d "$LOOP"; trap - EXIT
@@ -140,6 +147,7 @@ if [ -d $STARTHERE_DIR ]; then
     for item in $STARTHERE_DIR/* $STARTHERE_DIR/.portabletak; do
         [ -e "$item" ] && { mcopy -s -Q -D o -i "$START" "$item" ::/ </dev/null || fail start_here_copy; }
     done
+    mdeltree -i "$START" ::/.portabletak/node 2>/dev/null || true   # lives on the Linux partition
     mattrib -i "$START" +h ::/.portabletak 2>/dev/null || true
 fi
 # Keep macOS from indexing / journaling the volume (its folders would show on Windows).

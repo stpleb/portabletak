@@ -1005,3 +1005,4 @@ Node02 installer 37fc39803f0a68d2a5c9736fa0663c786f3e7700dc66f59590f11019ca86d5c
 - Release note: payload/usr/local/portabletak/VERSION (shown in dashboard About card) must be set to the release version at each build (now 2026.10.04).
 
 - PowerShell syntax checks: docker run --rm --platform linux/amd64 -v "$PWD":/w:ro mcr.microsoft.com/powershell:latest pwsh -c <Parser::ParseFile loop> (works on this Mac; use before every Windows release).
+- 2026-10-04 Release v2026.10.04 published (Windows/Mac setup, node package 20261004, SHA256SUMS). Tests 241 pass (6 container-only errors as usual); PowerShell parser OK for both Windows scripts. Next: refresh SanDisk + Lexars on the Mac; quick Mac start check; Skydio field test.
