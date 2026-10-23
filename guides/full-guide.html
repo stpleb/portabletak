@@ -233,7 +233,37 @@ that phone forwards the drone's traffic to the server over its own Tailscale. No
 the phone needs the free <b>Termux</b> app. Dashboard → <b>Video Feeds</b> → <b>Drone far from this server</b> has the
 one command to paste. Step by step: <b>PortableTAK Skydio X10D Guide</b> (Setup B).</p>
 
-<h2>8. Backups, moving and erasing</h2>
+<h2>8. Linking servers (federation)</h2>
+<p>Federation shares positions, markers, alerts and chat between two TAK servers, so each team sees the other on
+its map. It works with another PortableTAK, OpenTAKServer with PortableTAK's federation add-on, and the official
+TAK Server (tak.gov). Data packages and missions are not shared. Dashboard &rarr; <b>Federation</b>.</p>
+<h3>Two PortableTAK servers: one code</h3>
+<ol>
+<li>On the first server: <b>Invite a server</b>. Copy the code (or download the invite file) and send it to the
+other server's admin. It works once, for 24 hours.</li>
+<li>On the second server: <b>Join a server</b>, paste the code, <b>Join</b>. Both servers trust each other, share with
+everyone, and the link turns green within a minute.</li>
+</ol>
+<p>The servers need a network path to each other: the same network, or both drives' Remote Access signed in to the
+same Tailscale account.</p>
+<h3>An official TAK Server</h3>
+<ol>
+<li><b>Connect to a TAK Server</b>: name, address and federation port (9001), then <b>Check</b>. PortableTAK reads the
+TAK Server's certificate authority itself and shows its fingerprint; have the TAK Server admin confirm it if you can,
+then <b>Trust and connect</b>.</li>
+<li>Send the TAK Server admin the sheet that appears (it is also under Advanced): this server's CA certificate to upload
+under <i>Federation &gt; Manage Federate Certificate Authorities</i>, then, once PortableTAK has connected, the groups to
+allow for its federate (users without a group are <code>__ANON__</code>).</li>
+</ol>
+<h3>Good to know</h3>
+<ul>
+<li>A server that connects to yours without an invite appears as <i>not sharing yet</i>: press <b>Allow sharing</b> only
+if you trust it.</li>
+<li>Each link is locked to the other server's certificate. If that server is rebuilt, use <b>Forget its certificate</b>
+(or remove the link and invite again).</li>
+<li>Moving the drive to another node or computer keeps its links: the federation certificate belongs to the drive.</li>
+</ul>
+<h2>9. Backups, moving and erasing</h2>
 <ul>
 <li><b>Backups:</b> <b>Backup / Restore</b> creates checked backups on the drive. Download important ones and keep them elsewhere.</li>
 <li><b>Moving the drive</b> to another node or computer: stop or safely remove it, plug it in elsewhere. It adapts by itself.</li>
@@ -242,7 +272,7 @@ settings, remote access, data and on-drive backups. It asks for the administrato
 and cannot be undone. Set the drive up again with PortableTAK Setup afterwards.</li>
 </ul>
 
-<h2 class="pb">9. Troubleshooting</h2>
+<h2 class="pb">10. Troubleshooting</h2>
 <table>
 <tr><th style="width:32%">Problem</th><th>What to do</th></tr>
 <tr><td>Phone says "host unreachable" or never connects</td><td>Check the phone is on the node's Wi-Fi (or the same network as the Windows computer).
@@ -261,6 +291,7 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <tr><td>Windows: asks to restart</td><td>WSL was just installed. Restart, then start PortableTAK again.</td></tr>
 <tr><td>Windows: phones cannot connect</td><td>Phones must be on the same network as the computer. Changed Wi-Fi since starting? Use <b>Stop PortableTAK</b> and start it again so it uses the new address, then set phones up again (QR or package). Windows 11 22H2+ is required.</td></tr>
 <tr><td>ATAK: "The TAK Server's identity could not be verified" after QR setup</td><td>ATAK no longer trusts the drive (deleting servers in ATAK can remove the trust). Import the <b>ATAK Trust Package (for QR)</b> again from Client Setup, then scan a fresh QR. Or import the <b>ATAK Package</b> for that user, which carries everything ATAK needs.</td></tr>
+<tr><td>Federation link stays red</td><td>"Not connected: certificate" after the other server was rebuilt: <b>Forget its certificate</b>, or remove and invite again. "Connection refused" or unreachable: the servers need a network path (same network, or the same Tailscale account). A TAK Server peer: its admin must upload this server's CA and set the federate's groups.</td></tr>
 <tr><td>Drone feed never shows Live</td><td>The controller must be on the server's network, with the IP address and port <b>8554</b> from the Video Feeds card and exactly the same stream name. Video only starts once the aircraft is flying.</td></tr>
 <tr><td>Windows: drive vanished from File Explorer</td><td>Normal while PortableTAK runs. Use <b>Stop PortableTAK</b> to get it back.</td></tr>
 <tr><td>Windows offers to format the drive, or macOS to initialize it</td><td>Always Cancel / Ignore. The Linux partition holds the server.</td></tr>
@@ -274,7 +305,7 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <p><b>Windows:</b> <code>%LOCALAPPDATA%\PortableTAK\portabletak.log</code>. <b>Node</b> (administrators, over SSH):
 <code>/usr/local/portabletak/bin/portabletak-health</code> and the logs under <code>/mnt/asgard/opentak/data/logs</code>.</p>
 
-<h2>10. Security notes</h2>
+<h2>11. Security notes</h2>
 <ul>
 <li>The dashboard requires sign-in. It is reachable on the TAK network at port 8444 (HTTPS), and with remote access
 also from devices signed in to your Tailscale account (nobody else can reach it). It is protected against

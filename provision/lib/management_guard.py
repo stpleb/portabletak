@@ -25,7 +25,9 @@ from portabletak_provision import ProvisionError, read_json, write_json
 COOKIE = 'ptak_session'
 UNSAFE = frozenset({'POST', 'PUT', 'PATCH', 'DELETE'})
 PUBLIC = frozenset({('GET', '/'), ('GET', '/auth.js'), ('GET', '/remote-access.js'), ('GET', '/factory-reset.js'), ('GET', '/wizard.html'),
-                    ('GET', '/provision.js')})
+                    ('GET', '/provision.js'),
+                    # Federation invites: the CA is public; accept is guarded by the invite secret.
+                    ('GET', '/api/federation/public-ca'), ('POST', '/api/federation/accept')})
 MAX_LOGIN_BODY = 4096
 MAX_REVOKED = 10000
 MAX_AUDIT_BYTES = 1024 * 1024

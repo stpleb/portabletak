@@ -1,0 +1,59 @@
+From 77dc71237898db3050db66b27618b6ba53871d81 Mon Sep 17 00:00:00 2001
+From: pt <pt@local>
+Date: Thu, 22 Oct 2026 23:51:05 -0500
+Subject: [PATCH 15/16] PortableTAK: v2 dial without a fixed authority (CA
+ trust + leaf pin, peer cert name)
+
+---
+ opentakserver/federation/grpc_engine.py | 5 ++++-
+ opentakserver/federation/truststore.py  | 7 +++++--
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/opentakserver/federation/grpc_engine.py b/opentakserver/federation/grpc_engine.py
+index c47aa52..d8f55a5 100644
+--- a/opentakserver/federation/grpc_engine.py
++++ b/opentakserver/federation/grpc_engine.py
+@@ -338,7 +338,6 @@ class GrpcClient:
+         config = self.federate
+         target = f"{config['address']}:{config['port']}"
+         authority = self.config.get("OTS_FEDERATION_V2_AUTHORITY", "opentakserver")
+-        options = [("grpc.ssl_target_name_override", authority)]
+ 
+         try:
+             credentials = _channel_credentials(self.config)
+@@ -350,6 +349,10 @@ class GrpcClient:
+             )
+             verify_peer_fingerprint(config, fingerprint)
+             self.directory.pin_fingerprint(config["id"], fingerprint, common_name)
++            # PortableTAK: no configured authority -> use the peer certificate's own
++            # name (TAK Server: its host name; PortableTAK: its address).
++            authority = authority or common_name or config["address"]
++            options = [("grpc.ssl_target_name_override", authority)]
+         except (OSError, ssl.SSLError, truststore.NoFederationCAsError) as e:
+             self.logger.warning(f"Federation v2 dial to '{config['name']}' failed: {e}")
+             self.directory.record_state(config["id"], connected=False, error=str(e))
+diff --git a/opentakserver/federation/truststore.py b/opentakserver/federation/truststore.py
+index aa995ec..4724cda 100644
+--- a/opentakserver/federation/truststore.py
++++ b/opentakserver/federation/truststore.py
+@@ -150,12 +150,15 @@ def probe_grpc_peer_identity(
+     enforce the per-federate leaf-certificate pin before opening the streams.
+     """
+     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+-    context.check_hostname = True
++    # PortableTAK: with no configured authority, trust rests on the federation CA
++    # truststore plus the per-federate leaf pin (as for v1); the caller then uses
++    # the name the peer's certificate actually carries as the gRPC authority.
++    context.check_hostname = bool(authority)
+     context.set_alpn_protocols(["h2"])
+     _load_common(context, config)
+ 
+     with socket.create_connection((address, port), timeout=timeout) as raw_socket:
+-        with context.wrap_socket(raw_socket, server_hostname=authority) as tls_socket:
++        with context.wrap_socket(raw_socket, server_hostname=authority or None) as tls_socket:
+             if tls_socket.selected_alpn_protocol() != "h2":
+                 raise ssl.SSLError("federation v2 peer did not negotiate HTTP/2")
+             fingerprint, common_name = peer_identity(tls_socket)
+-- 
+2.23.0
+

@@ -1,0 +1,62 @@
+#!/bin/sh
+# Start/stop the OpenTAKServer federation server: links to other TAK servers
+# (PortableTAK, OpenTAKServer, official TAK Server) on ports 9000 (v1) / 9001 (v2).
+# Runs only when federation is turned on in the dashboard.
+#   portabletak-federation start|stop|status
+. /usr/local/portabletak/lib/federation.sh
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
+PIDFILE=/mnt/asgard/opentak/run/federation.pid
+LOG=/mnt/asgard/opentak/data/logs/federation-runtime.log
+NEEDLE=opentakserver.federation.federation_server
+
+running()
+{
+    P="$(cat "$PIDFILE" 2>/dev/null)"
+    [ -n "$P" ] && [ -r "/proc/$P/cmdline" ] && tr '\000' ' ' < "/proc/$P/cmdline" | grep -q "$NEEDLE"
+}
+
+case "${1:-status}" in
+    start)
+        pt_federation_enabled || { echo "PORTABLETAK_FEDERATION=DISABLED"; exit 0; }
+        running && { echo "PORTABLETAK_FEDERATION=RUNNING"; exit 0; }
+        mount | grep -F " on /mnt/asgard " >/dev/null 2>&1 || { echo "PORTABLETAK_FEDERATION_ERROR=cartridge_not_mounted"; exit 21; }
+        PYP="$(pt_federation_overlay)"
+        [ -n "$PYP" ] || { echo "PORTABLETAK_FEDERATION_ERROR=addon_unavailable"; exit 22; }
+        mkdir -p /mnt/asgard/opentak/run
+        # The drive's stable federation identity (lib/federation_cert.py), made once.
+        CERT="$(/usr/bin/python3 /usr/local/portabletak/lib/federation_cert.py ensure /mnt/asgard 2>&1)" ||
+            { echo "PORTABLETAK_FEDERATION_ERROR=certificate"; echo "$CERT" | tail -n 2 | sed 's/^/PORTABLETAK_FEDERATION_LOG=/'; exit 24; }
+        # No fixed v2 authority: trust is the federation CA truststore plus the
+        # per-link certificate pin (PortableTAK change in the add-on).
+        PYTHONPATH="$PYP" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            export OTS_DATA_FOLDER=/asgard/opentak/data OTS_ENABLE_FEDERATION=True OTS_FEDERATION_V2_AUTHORITY=
+            cd /asgard/opentak
+            /usr/bin/nohup /asgard/opentak/venv/bin/python -m opentakserver.federation.federation_server \
+                >> /asgard/opentak/data/logs/federation-runtime.log 2>&1 </dev/null &
+            echo $! > /asgard/opentak/run/federation.pid
+        '
+        i=0
+        while [ "$i" -lt 20 ]; do
+            sleep 1; i=$((i + 1))
+            running || { echo "PORTABLETAK_FEDERATION_ERROR=exited"; tail -n 5 "$LOG" 2>/dev/null | sed 's/^/PORTABLETAK_FEDERATION_LOG=/'; exit 23; }
+            [ "$i" -ge 5 ] && break
+        done
+        echo "PORTABLETAK_FEDERATION=RUNNING"
+        ;;
+    stop)
+        running || { rm -f "$PIDFILE"; echo "PORTABLETAK_FEDERATION=STOPPED"; exit 0; }
+        P="$(cat "$PIDFILE")"
+        kill -TERM "$P" 2>/dev/null
+        i=0
+        while [ "$i" -lt 10 ] && [ -d "/proc/$P" ]; do sleep 1; i=$((i + 1)); done
+        [ -d "/proc/$P" ] && kill -KILL "$P" 2>/dev/null
+        rm -f "$PIDFILE"
+        echo "PORTABLETAK_FEDERATION=STOPPED"
+        ;;
+    status)
+        if running; then echo "PORTABLETAK_FEDERATION=RUNNING"
+        elif pt_federation_enabled; then echo "PORTABLETAK_FEDERATION=STOPPED"
+        else echo "PORTABLETAK_FEDERATION=DISABLED"; fi
+        ;;
+    *) echo "usage: portabletak-federation start|stop|status" >&2; exit 2 ;;
+esac

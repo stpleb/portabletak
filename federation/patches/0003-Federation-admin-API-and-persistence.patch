@@ -1,0 +1,365 @@
+From 65f87e8661432bbddd55bf150d603f9d881c7d19 Mon Sep 17 00:00:00 2001
+From: Francesco Romano <fwromano15@gmail.com>
+Date: Fri, 17 Jul 2026 12:52:14 -0500
+Subject: [PATCH 03/16] Federation admin API and persistence
+
+- Federation model + migration: peer address/port, direction, enable flag,
+  reconnect interval, pinned certificate fingerprint, and inbound/outbound
+  group lists (empty lists exchange nothing, matching TAK Server's default).
+- /api/federation CRUD and /api/federation/ca truststore management,
+  administrator-only.
+---
+ opentakserver/blueprints/ots_api/__init__.py  |   2 +
+ .../blueprints/ots_api/federation_api.py      | 191 ++++++++++++++++++
+ .../b4c2e91a7d55_added_federation_table.py    |  44 ++++
+ opentakserver/models/Federation.py            |  69 +++++++
+ 4 files changed, 306 insertions(+)
+ create mode 100644 opentakserver/blueprints/ots_api/federation_api.py
+ create mode 100644 opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py
+ create mode 100644 opentakserver/models/Federation.py
+
+diff --git a/opentakserver/blueprints/ots_api/__init__.py b/opentakserver/blueprints/ots_api/__init__.py
+index e56a0be..06fc21c 100644
+--- a/opentakserver/blueprints/ots_api/__init__.py
++++ b/opentakserver/blueprints/ots_api/__init__.py
+@@ -7,6 +7,7 @@ from opentakserver.blueprints.ots_api.casevac_api import casevac_api_blueprint
+ from opentakserver.blueprints.ots_api.data_package_api import data_package_api
+ from opentakserver.blueprints.ots_api.device_profile_api import device_profile_api_blueprint
+ from opentakserver.blueprints.ots_api.eud_stats_api import eud_stats_blueprint
++from opentakserver.blueprints.ots_api.federation_api import federation_api_blueprint
+ from opentakserver.blueprints.ots_api.group_api import group_api
+ from opentakserver.blueprints.ots_api.marker_api import marker_api_blueprint
+ from opentakserver.blueprints.ots_api.mediamtx_api import mediamtx_api_blueprint
+@@ -37,6 +38,7 @@ ots_api.register_blueprint(user_api_blueprint)
+ ots_api.register_blueprint(video_api_blueprint)
+ ots_api.register_blueprint(data_sync_api)
+ ots_api.register_blueprint(group_api)
++ots_api.register_blueprint(federation_api_blueprint)
+ ots_api.register_blueprint(eud_stats_blueprint)
+ ots_api.register_blueprint(plugin_blueprint)
+ ots_api.register_blueprint(token_api_blueprint)
+diff --git a/opentakserver/blueprints/ots_api/federation_api.py b/opentakserver/blueprints/ots_api/federation_api.py
+new file mode 100644
+index 0000000..2af8c52
+--- /dev/null
++++ b/opentakserver/blueprints/ots_api/federation_api.py
+@@ -0,0 +1,191 @@
++import traceback
++
++import bleach
++import sqlalchemy.exc
++from flask import Blueprint
++from flask import current_app as app
++from flask import jsonify, request
++from flask_babel import gettext
++from flask_security import roles_required
++
++from opentakserver.blueprints.ots_api.api import paginate, search
++from opentakserver.extensions import db, logger
++from opentakserver.federation import truststore
++from opentakserver.models.Federation import Federation
++
++federation_api_blueprint = Blueprint("federation_api_blueprint", __name__)
++
++
++@federation_api_blueprint.route("/api/federation")
++@roles_required("administrator")
++def get_federation():
++    """Search federates with filters and pagination
++
++    :parameter: name
++    :parameter: enabled
++    :parameter: page
++    :parameter: per_page
++
++    :return: JSON array of federates
++    """
++    query = db.session.query(Federation)
++    query = search(query, Federation, "name")
++    query = search(query, Federation, "enabled")
++
++    return paginate(query)
++
++
++@federation_api_blueprint.route("/api/federation", methods=["POST"])
++@roles_required("administrator")
++def add_federation():
++    """Create or update a federate.
++
++    Body: name (required), address, port, outbound, enabled,
++    reconnect_interval, inbound_groups, outbound_groups.
++
++    A federate exchanges no data until inbound_groups/outbound_groups are set.
++    """
++    if not request.json or not request.json.get("name"):
++        return jsonify({"success": False, "error": gettext("Please specify a name")}), 400
++
++    name = bleach.clean(request.json.get("name"))
++
++    federation = db.session.execute(
++        db.session.query(Federation).filter_by(name=name)
++    ).first()
++    if federation:
++        federation = federation[0]
++    else:
++        federation = Federation()
++        federation.name = name
++        federation.inbound_groups = []
++        federation.outbound_groups = []
++
++    if "address" in request.json:
++        federation.address = bleach.clean(request.json.get("address") or "") or None
++    if "port" in request.json:
++        try:
++            federation.port = int(request.json.get("port"))
++        except (TypeError, ValueError):
++            return jsonify({"success": False, "error": gettext("Invalid port")}), 400
++    if "outbound" in request.json:
++        federation.outbound = bool(request.json.get("outbound"))
++    if "enabled" in request.json:
++        federation.enabled = bool(request.json.get("enabled"))
++    if "reconnect_interval" in request.json:
++        try:
++            federation.reconnect_interval = int(request.json.get("reconnect_interval"))
++        except (TypeError, ValueError):
++            return (
++                jsonify({"success": False, "error": gettext("Invalid reconnect_interval")}),
++                400,
++            )
++
++    for field in ("inbound_groups", "outbound_groups"):
++        if field in request.json:
++            groups = request.json.get(field) or []
++            if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
++                return (
++                    jsonify(
++                        {"success": False, "error": gettext("Groups must be a list of names")}
++                    ),
++                    400,
++                )
++            setattr(federation, field, [bleach.clean(g) for g in groups])
++
++    if federation.outbound and not federation.address:
++        return (
++            jsonify(
++                {"success": False, "error": gettext("Outbound federates require an address")}
++            ),
++            400,
++        )
++
++    try:
++        db.session.add(federation)
++        db.session.commit()
++    except sqlalchemy.exc.SQLAlchemyError as e:
++        db.session.rollback()
++        logger.error(f"Failed to save federate: {e}")
++        logger.debug(traceback.format_exc())
++        return jsonify({"success": False, "error": str(e)}), 400
++
++    return jsonify({"success": True, "federation": federation.to_json()})
++
++
++@federation_api_blueprint.route("/api/federation", methods=["DELETE"])
++@roles_required("administrator")
++def delete_federation():
++    """Delete a federate
++
++    :parameter: name
++    """
++    name = request.args.get("name")
++    if not name:
++        return jsonify({"success": False, "error": gettext("Please specify a name")}), 400
++
++    federation = db.session.execute(
++        db.session.query(Federation).filter_by(name=bleach.clean(name))
++    ).first()
++    if not federation:
++        return jsonify({"success": False, "error": gettext("No such federate")}), 404
++
++    db.session.delete(federation[0])
++    db.session.commit()
++
++    return jsonify({"success": True})
++
++
++@federation_api_blueprint.route("/api/federation/ca")
++@roles_required("administrator")
++def get_federation_cas():
++    """List CA certificates in the federation truststore"""
++    return jsonify(truststore.list_cas(app.config))
++
++
++@federation_api_blueprint.route("/api/federation/ca", methods=["POST"])
++@roles_required("administrator")
++def add_federation_ca():
++    """Add a peer's CA certificate to the federation truststore.
++
++    Accepts a PEM file upload (multipart field ``ca``) or a JSON body with
++    ``filename`` and ``pem``.
++    """
++    if "ca" in request.files:
++        filename = request.files["ca"].filename
++        pem = request.files["ca"].read()
++    elif request.is_json and request.json.get("pem"):
++        filename = request.json.get("filename") or "federate-ca.pem"
++        pem = request.json.get("pem").encode()
++    else:
++        return (
++            jsonify({"success": False, "error": gettext("Please provide a PEM certificate")}),
++            400,
++        )
++
++    try:
++        result = truststore.save_ca(app.config, filename, pem)
++    except ValueError as e:
++        return (
++            jsonify({"success": False, "error": gettext("Invalid certificate: %(error)s", error=str(e))}),
++            400,
++        )
++
++    return jsonify({"success": True, "ca": result})
++
++
++@federation_api_blueprint.route("/api/federation/ca", methods=["DELETE"])
++@roles_required("administrator")
++def delete_federation_ca():
++    """Remove a CA certificate from the federation truststore
++
++    :parameter: filename
++    """
++    filename = request.args.get("filename")
++    if not filename:
++        return jsonify({"success": False, "error": gettext("Please specify a filename")}), 400
++
++    if truststore.delete_ca(app.config, filename):
++        return jsonify({"success": True})
++
++    return jsonify({"success": False, "error": gettext("No such certificate")}), 404
+diff --git a/opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py b/opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py
+new file mode 100644
+index 0000000..422c285
+--- /dev/null
++++ b/opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py
+@@ -0,0 +1,44 @@
++"""Added federation table
++
++Revision ID: b4c2e91a7d55
++Revises: 6a7929c07690
++Create Date: 2026-07-17 20:15:00.000000
++
++"""
++
++import sqlalchemy as sa
++from alembic import op
++
++# revision identifiers, used by Alembic.
++revision = "b4c2e91a7d55"
++down_revision = "6a7929c07690"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_table(
++        "federation",
++        sa.Column("id", sa.Integer(), nullable=False),
++        sa.Column("name", sa.String(length=255), nullable=False),
++        sa.Column("address", sa.String(length=255), nullable=True),
++        sa.Column("port", sa.Integer(), nullable=True),
++        sa.Column("protocol_version", sa.Integer(), nullable=False),
++        sa.Column("outbound", sa.Boolean(), nullable=False),
++        sa.Column("enabled", sa.Boolean(), nullable=False),
++        sa.Column("reconnect_interval", sa.Integer(), nullable=True),
++        sa.Column("cert_fingerprint", sa.String(length=64), nullable=True),
++        sa.Column("cert_common_name", sa.String(length=255), nullable=True),
++        sa.Column("inbound_groups", sa.JSON(), nullable=True),
++        sa.Column("outbound_groups", sa.JSON(), nullable=True),
++        sa.Column("last_connected", sa.DateTime(), nullable=True),
++        sa.Column("last_disconnected", sa.DateTime(), nullable=True),
++        sa.Column("last_error", sa.String(length=255), nullable=True),
++        sa.PrimaryKeyConstraint("id"),
++        sa.UniqueConstraint("name"),
++        sa.UniqueConstraint("cert_fingerprint"),
++    )
++
++
++def downgrade():
++    op.drop_table("federation")
+diff --git a/opentakserver/models/Federation.py b/opentakserver/models/Federation.py
+new file mode 100644
+index 0000000..30c8c55
+--- /dev/null
++++ b/opentakserver/models/Federation.py
+@@ -0,0 +1,69 @@
++from dataclasses import dataclass
++from datetime import datetime
++
++from sqlalchemy import JSON, Boolean, DateTime, Integer, String
++from sqlalchemy.orm import Mapped, mapped_column
++
++from opentakserver.extensions import db
++from opentakserver.functions import iso8601_string_from_datetime
++
++
++@dataclass
++class Federation(db.Model):
++    """A federate: another TAK server we exchange data with.
++
++    Outbound federates are dialed by the federation server; inbound federates
++    are auto-registered when a server whose CA is in the federation truststore
++    connects. ``inbound_groups``/``outbound_groups`` gate the flow of data in
++    each direction - a federate with empty group lists exchanges nothing,
++    matching TAK Server's default posture.
++    """
++
++    __tablename__ = "federation"
++
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
++    address: Mapped[str] = mapped_column(String(255), nullable=True)
++    port: Mapped[int] = mapped_column(Integer, default=9000, nullable=True)
++    protocol_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
++    outbound: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
++    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
++    reconnect_interval: Mapped[int] = mapped_column(Integer, default=30, nullable=True)
++    cert_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=True)
++    cert_common_name: Mapped[str] = mapped_column(String(255), nullable=True)
++    inbound_groups: Mapped[JSON] = mapped_column(JSON, default=[], nullable=True)
++    outbound_groups: Mapped[JSON] = mapped_column(JSON, default=[], nullable=True)
++    last_connected: Mapped[datetime] = mapped_column(DateTime, nullable=True)
++    last_disconnected: Mapped[datetime] = mapped_column(DateTime, nullable=True)
++    last_error: Mapped[str] = mapped_column(String(255), nullable=True)
++
++    def serialize(self):
++        return {
++            "id": self.id,
++            "name": self.name,
++            "address": self.address,
++            "port": self.port,
++            "protocol_version": self.protocol_version,
++            "outbound": self.outbound,
++            "enabled": self.enabled,
++            "reconnect_interval": self.reconnect_interval,
++            "cert_fingerprint": self.cert_fingerprint,
++            "cert_common_name": self.cert_common_name,
++            "inbound_groups": self.inbound_groups,
++            "outbound_groups": self.outbound_groups,
++            "last_connected": self.last_connected,
++            "last_disconnected": self.last_disconnected,
++            "last_error": self.last_error,
++        }
++
++    def to_json(self):
++        json = self.serialize()
++        json["last_connected"] = (
++            iso8601_string_from_datetime(self.last_connected) if self.last_connected else None
++        )
++        json["last_disconnected"] = (
++            iso8601_string_from_datetime(self.last_disconnected)
++            if self.last_disconnected
++            else None
++        )
++        return json
+-- 
+2.23.0
+

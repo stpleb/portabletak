@@ -13,7 +13,7 @@ install_users_helpers()
     TYPE="$(sed -n 's/^PORTABLETAK_INSTANCE_TYPE=//p' /mnt/asgard/portabletak/cartridge.conf 2>/dev/null | head -n 1)"
     [ "$TYPE" = "generic" ] || return 0
     mkdir -p "$ROOT/usr/local/portabletak" || return 1
-    for NAME in users.py users_worker.py; do
+    for NAME in users.py users_worker.py federation_actions.py; do
         SRC="/usr/local/portabletak/chroot/$NAME"
         DST="$ROOT/usr/local/portabletak/$NAME"
         [ -r "$SRC" ] || return 1
@@ -78,7 +78,9 @@ case "$ACTION" in
             return 30 2>/dev/null
         }
 
-        chroot "$ROOT" /bin/sh -c '
+        # With the federation add-on (when available) the worker can manage federation.
+        . /usr/local/portabletak/lib/federation.sh
+        PYTHONPATH="$(pt_federation_overlay)" chroot "$ROOT" /bin/sh -c '
             export OTS_DATA_FOLDER=/asgard/opentak/data
             cd /asgard/opentak
             /asgard/opentak/venv/bin/python3 \

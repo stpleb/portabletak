@@ -601,6 +601,12 @@ fi
 # 6. OpenTAKServer web/app
 # ---------------------------------------------------------
 
+# Federation add-on (OpenTAKServer with federation, see lib/federation.sh): every
+# OpenTAKServer process runs with it first on PYTHONPATH. Empty when unavailable.
+. /usr/local/portabletak/lib/federation.sh
+OTS_PYTHONPATH="$(pt_federation_overlay)"
+[ -n "$OTS_PYTHONPATH" ] && echo "OTS_FEDERATION_ADDON=$(cat /usr/local/portabletak/share/ots-federation/VERSION 2>/dev/null | cut -d';' -f1)"
+
 OTS_PID="$(cat "$OTS_PIDFILE" 2>/dev/null)"
 
 if pid_matches "$OTS_PID" "/asgard/opentak/venv/bin/opentakserver"; then
@@ -626,7 +632,7 @@ else
             OTS_COMMAND="/asgard/opentak/venv/bin/python /usr/local/portabletak/opentakserver_launch.py /asgard/opentak/venv/bin/opentakserver"
     fi
 
-    OTS_COMMAND="$OTS_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+    PYTHONPATH="$OTS_PYTHONPATH" OTS_COMMAND="$OTS_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
         export OTS_DATA_FOLDER=/asgard/opentak/data
         cd /asgard/opentak
 
@@ -748,7 +754,7 @@ else
         fi
     fi
 
-    COT_COMMAND="$COT_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+    PYTHONPATH="$OTS_PYTHONPATH" COT_COMMAND="$COT_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
         export OTS_DATA_FOLDER=/asgard/opentak/data
         cd /asgard/opentak
 
@@ -788,7 +794,7 @@ else
         fi
     fi
 
-    EUD_COMMAND="$EUD_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+    PYTHONPATH="$OTS_PYTHONPATH" EUD_COMMAND="$EUD_COMMAND" /usr/sbin/chroot "$ROOT" /bin/sh -c '
         export OTS_DATA_FOLDER=/asgard/opentak/data
         cd /asgard/opentak
 
@@ -1024,5 +1030,7 @@ echo "ASGARD_TAK_SERVER=READY"
 
 # Optional remote access; never fails the TAK start.
 /usr/local/portabletak/bin/portabletak-tailscale start </dev/null 2>/dev/null || true
+# Federation with other TAK servers, when turned on; never fails the TAK start.
+/usr/local/portabletak/bin/portabletak-federation start </dev/null 2>/dev/null | grep '^PORTABLETAK_FEDERATION' || true
 
 exit 0

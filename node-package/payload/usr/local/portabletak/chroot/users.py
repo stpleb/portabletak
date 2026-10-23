@@ -75,6 +75,12 @@ with app.app_context():
 
         raise SystemExit(0)
 
+    if str(request.get("action", "")).startswith("federation_"):
+        import federation_actions
+        result = federation_actions.handle(app, db, request)
+        print(json.dumps(result))
+        raise SystemExit(0 if result.get("ok") else 4)
+
     username = str(request.get("username", "")).strip()
 
     if not username:

@@ -1,0 +1,873 @@
+From 2187b4eab1874352b39fb8b040089f0dbb4f29e6 Mon Sep 17 00:00:00 2001
+From: Francesco Romano <fwromano15@gmail.com>
+Date: Fri, 17 Jul 2026 12:52:14 -0500
+Subject: [PATCH 01/16] Federation v1 core: wire protocol messages, frame
+ codec, CoT mapper, truststore
+
+- Vendor the federation protobuf definitions (fig.proto, binarypayload.proto)
+  from the TAK Product Center's public TAK Server source (GPLv3), minus the
+  gRPC service which federation v1 does not use. Field numbers unchanged, so
+  the wire format is identical to official TAK Server federation.
+- Frame codec for v1's length-prefixed FederatedEvent stream, with
+  partial-frame buffering and a max-frame-size guard.
+- CoT XML <-> FederatedEvent mapper mirroring TAK Server's ProtoBufHelper:
+  track/status/precisionlocation/image extraction, opaque detail passthrough,
+  and <marti><dest> to ptpCallsigns/ptpUids/missionNames mapping.
+- Federation truststore: peer CAs live in a separate folder from the EUD CA
+  so a federate's server can connect while its client certs cannot, with
+  helpers for CA management and peer identity (SHA-256 cert fingerprint).
+---
+ opentakserver/federation/__init__.py          |   0
+ opentakserver/federation/codec.py             |  68 +++++
+ opentakserver/federation/mapper.py            | 253 ++++++++++++++++++
+ opentakserver/federation/proto/__init__.py    |   0
+ .../federation/proto/binarypayload.proto      |  12 +
+ .../federation/proto/binarypayload_pb2.py     |  36 +++
+ opentakserver/federation/proto/fig.proto      | 179 +++++++++++++
+ opentakserver/federation/proto/fig_pb2.py     |  80 ++++++
+ opentakserver/federation/truststore.py        | 155 +++++++++++
+ 9 files changed, 783 insertions(+)
+ create mode 100644 opentakserver/federation/__init__.py
+ create mode 100644 opentakserver/federation/codec.py
+ create mode 100644 opentakserver/federation/mapper.py
+ create mode 100644 opentakserver/federation/proto/__init__.py
+ create mode 100644 opentakserver/federation/proto/binarypayload.proto
+ create mode 100644 opentakserver/federation/proto/binarypayload_pb2.py
+ create mode 100644 opentakserver/federation/proto/fig.proto
+ create mode 100644 opentakserver/federation/proto/fig_pb2.py
+ create mode 100644 opentakserver/federation/truststore.py
+
+diff --git a/opentakserver/federation/__init__.py b/opentakserver/federation/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/opentakserver/federation/codec.py b/opentakserver/federation/codec.py
+new file mode 100644
+index 0000000..97b1d26
+--- /dev/null
++++ b/opentakserver/federation/codec.py
+@@ -0,0 +1,68 @@
++"""Federation v1 frame codec.
++
++TAK Server federation v1 streams protobuf ``FederatedEvent`` messages over a
++mutually-authenticated TLS socket. Each frame is a 4-byte big-endian unsigned
++length followed by the serialized message. There is no handshake or
++negotiation; peers simply start streaming frames after the TLS handshake.
++Reference implementation: TAK Server's NioNettyFederationServerHandler.
++"""
++
++import struct
++
++from opentakserver.federation.proto import fig_pb2
++
++LENGTH_PREFIX = struct.Struct(">I")
++
++# TAK Server does not bound frame size, but an unbounded length prefix from a
++# misbehaving peer would let it allocate arbitrary memory. SA events are tiny;
++# even image-bearing events stay far below this.
++DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024
++
++
++class FrameTooLargeError(Exception):
++    def __init__(self, size: int, limit: int):
++        super().__init__(f"federation frame of {size} bytes exceeds limit of {limit}")
++        self.size = size
++        self.limit = limit
++
++
++def encode_frame(event: fig_pb2.FederatedEvent) -> bytes:
++    payload = event.SerializeToString()
++    return LENGTH_PREFIX.pack(len(payload)) + payload
++
++
++class FrameDecoder:
++    """Incremental decoder for a stream of length-prefixed FederatedEvents.
++
++    Feed arbitrary chunks from the socket; complete messages are returned as
++    they become available and partial frames are buffered until the rest
++    arrives.
++    """
++
++    def __init__(self, max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES):
++        self._buffer = bytearray()
++        self._max_frame_bytes = max_frame_bytes
++
++    def feed(self, data: bytes) -> list[fig_pb2.FederatedEvent]:
++        self._buffer.extend(data)
++        events = []
++
++        while True:
++            if len(self._buffer) < LENGTH_PREFIX.size:
++                break
++
++            (size,) = LENGTH_PREFIX.unpack_from(self._buffer, 0)
++            if size > self._max_frame_bytes:
++                raise FrameTooLargeError(size, self._max_frame_bytes)
++
++            if len(self._buffer) < LENGTH_PREFIX.size + size:
++                break
++
++            payload = bytes(self._buffer[LENGTH_PREFIX.size : LENGTH_PREFIX.size + size])
++            del self._buffer[: LENGTH_PREFIX.size + size]
++
++            event = fig_pb2.FederatedEvent()
++            event.ParseFromString(payload)
++            events.append(event)
++
++        return events
+diff --git a/opentakserver/federation/mapper.py b/opentakserver/federation/mapper.py
+new file mode 100644
+index 0000000..bdbf6f2
+--- /dev/null
++++ b/opentakserver/federation/mapper.py
+@@ -0,0 +1,253 @@
++"""CoT XML <-> federation protobuf mapping.
++
++Mirrors TAK Server's ProtoBufHelper (tak.server.federation.ProtoBufHelper) so
++that events produced here are byte-compatible with what an official TAK Server
++expects on a federation link, and events received from one reconstruct the
++same CoT XML an official server would produce:
++
++- ``time``/``start``/``stale`` become epoch milliseconds.
++- ``<track speed course>``, ``<status battery>`` (without a ``readiness``
++  attribute), ``<precisionlocation geopointsrc altsrc>`` and ``<image>`` data
++  are lifted out of ``<detail>`` into dedicated fields.
++- The remaining ``<detail>`` element is carried opaquely in ``other``.
++- ``<marti><dest>`` routing intent maps to ``ptpCallsigns``/``ptpUids``/
++  ``missionNames`` (TAK Server carries these in broker context rather than in
++  the federated detail).
++"""
++
++import base64
++import logging
++import xml.etree.ElementTree as ET
++from datetime import datetime, timezone
++
++from bs4 import BeautifulSoup
++
++from opentakserver.federation.proto import fig_pb2
++
++logger = logging.getLogger("OpenTAKServer")
++
++# Control traffic that has no business crossing a federation link.
++EXCLUDED_COT_TYPES = {"t-x-c-t", "t-x-c-t-r"}  # ping / pong
++
++
++def millis_from_cot_time(value: str) -> int:
++    value = value.strip()
++    if value.endswith("Z"):
++        value = value[:-1] + "+00:00"
++    dt = datetime.fromisoformat(value)
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=timezone.utc)
++    return int(dt.timestamp() * 1000)
++
++
++def cot_time_from_millis(millis: int) -> str:
++    dt = datetime.fromtimestamp(millis / 1000, tz=timezone.utc)
++    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
++
++
++def _float_attr(tag, name: str, default: float) -> float:
++    try:
++        return float(tag.attrs[name])
++    except (KeyError, TypeError, ValueError):
++        return default
++
++
++def cot_to_federated_event(cot: str) -> fig_pb2.FederatedEvent | None:
++    """Convert a CoT ``<event>`` XML string to a FederatedEvent.
++
++    Returns None for events that cannot be represented (no event element or
++    missing mandatory attributes), mirroring TAK Server which drops events it
++    cannot convert.
++    """
++    soup = BeautifulSoup(cot, "xml")
++    event = soup.find("event")
++    if not event:
++        return None
++
++    point = event.find("point")
++
++    fed_event = fig_pb2.FederatedEvent()
++    geo = fed_event.event
++
++    try:
++        geo.sendTime = millis_from_cot_time(event.attrs["time"])
++        geo.startTime = millis_from_cot_time(event.attrs["start"])
++        geo.staleTime = millis_from_cot_time(event.attrs["stale"])
++        geo.uid = event.attrs["uid"]
++        geo.type = event.attrs["type"]
++    except (KeyError, ValueError) as e:
++        logger.warning(f"Cannot federate CoT event, missing/invalid attribute: {e}")
++        return None
++
++    geo.coordSource = event.attrs.get("how", "")
++    if point:
++        geo.lat = _float_attr(point, "lat", 0)
++        geo.lon = _float_attr(point, "lon", 0)
++        geo.hae = _float_attr(point, "hae", 0)
++        geo.ce = _float_attr(point, "ce", 999999)
++        geo.le = _float_attr(point, "le", 999999)
++    else:
++        geo.ce = 999999
++        geo.le = 999999
++
++    if "access" in event.attrs:
++        geo.access = event.attrs["access"]
++    if "caveat" in event.attrs:
++        geo.caveat = event.attrs["caveat"]
++    if "releasableTo" in event.attrs:
++        geo.releaseableTo = event.attrs["releasableTo"]
++
++    detail = event.find("detail")
++    if detail:
++        # Work on a copy so callers keep their original document intact.
++        detail = BeautifulSoup(str(detail), "xml").find("detail")
++
++        track = detail.find("track")
++        if track and "speed" in track.attrs and "course" in track.attrs:
++            geo.speed = _float_attr(track, "speed", 0)
++            geo.course = _float_attr(track, "course", 0)
++            track.decompose()
++
++        status = detail.find("status")
++        if status and "battery" in status.attrs and "readiness" not in status.attrs:
++            try:
++                geo.battery = int(status.attrs["battery"])
++            except ValueError:
++                pass
++            status.decompose()
++
++        ploc = detail.find("precisionlocation")
++        if ploc and "geopointsrc" in ploc.attrs and "altsrc" in ploc.attrs:
++            geo.ploc = ploc.attrs["geopointsrc"]
++            geo.palt = ploc.attrs["altsrc"]
++            ploc.decompose()
++
++        image = detail.find("image")
++        if image and image.text:
++            try:
++                geo.binary.type = fig_pb2.IMAGE
++                geo.binary.data = base64.b64decode(image.text)
++                image.string = ""
++            except ValueError:
++                logger.warning("Could not decode image data, sending as-is")
++
++        # TAK Server strips <marti> destinations during ingest and carries the
++        # routing intent alongside the event; reproduce that on the wire.
++        marti = detail.find("marti")
++        if marti:
++            for dest in marti.find_all("dest"):
++                if dest.attrs.get("callsign"):
++                    geo.ptpCallsigns.append(dest.attrs["callsign"])
++                elif dest.attrs.get("mission"):
++                    geo.missionNames.append(dest.attrs["mission"])
++                elif dest.attrs.get("uid"):
++                    geo.ptpUids.append(dest.attrs["uid"])
++            marti.decompose()
++
++        geo.other = str(detail)
++
++    return fed_event
++
++
++def federated_event_to_cot(fed_event: fig_pb2.FederatedEvent) -> str | None:
++    """Convert a received FederatedEvent's GeoEvent back to CoT XML.
++
++    Mirrors ProtoBufHelper.proto2cot, and additionally re-synthesizes
++    ``<marti><dest>`` elements from the ptp/mission fields so the local router
++    can honor the sender's addressing.
++    """
++    if not fed_event.HasField("event"):
++        return None
++
++    geo = fed_event.event
++
++    event = ET.Element(
++        "event",
++        {
++            "version": "2.0",
++            "uid": geo.uid,
++            "type": geo.type,
++            "how": geo.coordSource,
++            "time": cot_time_from_millis(geo.sendTime),
++            "start": cot_time_from_millis(geo.startTime),
++            "stale": cot_time_from_millis(geo.staleTime),
++        },
++    )
++
++    if geo.access:
++        event.set("access", geo.access)
++    if geo.caveat:
++        event.set("caveat", geo.caveat)
++    if geo.releaseableTo:
++        event.set("releasableTo", geo.releaseableTo)
++
++    ET.SubElement(
++        event,
++        "point",
++        {
++            "lat": str(geo.lat),
++            "lon": str(geo.lon),
++            "hae": str(geo.hae),
++            "ce": str(geo.ce),
++            "le": str(geo.le),
++        },
++    )
++
++    detail = None
++    if geo.other:
++        try:
++            detail = ET.fromstring(geo.other)
++        except ET.ParseError as e:
++            logger.warning(f"Could not parse federated detail, dropping it: {e}")
++
++    if detail is None and (geo.ptpCallsigns or geo.ptpUids or geo.missionNames):
++        detail = ET.Element("detail")
++
++    if detail is not None:
++        ET.SubElement(
++            detail, "track", {"speed": str(geo.speed), "course": str(geo.course)}
++        )
++
++        if detail.find("status") is None:
++            ET.SubElement(detail, "status", {"battery": str(geo.battery)})
++
++        if detail.find("precisionlocation") is None and (geo.ploc or geo.palt):
++            ploc = ET.SubElement(detail, "precisionlocation")
++            if geo.ploc:
++                ploc.set("geopointsrc", geo.ploc)
++            if geo.palt:
++                ploc.set("altsrc", geo.palt)
++
++        image = detail.find("image")
++        if (
++            geo.HasField("binary")
++            and geo.binary.type == fig_pb2.IMAGE
++            and image is not None
++        ):
++            image.text = base64.b64encode(geo.binary.data).decode()
++
++        if geo.ptpCallsigns or geo.ptpUids or geo.missionNames:
++            marti = detail.find("marti")
++            if marti is None:
++                marti = ET.SubElement(detail, "marti")
++            for callsign in geo.ptpCallsigns:
++                ET.SubElement(marti, "dest", {"callsign": callsign})
++            for uid in geo.ptpUids:
++                ET.SubElement(marti, "dest", {"uid": uid})
++            for mission in geo.missionNames:
++                ET.SubElement(marti, "dest", {"mission": mission})
++
++        event.append(detail)
++
++    return ET.tostring(event, encoding="unicode")
++
++
++def contact_event(
++    uid: str, callsign: str, operation: int = fig_pb2.CREATE
++) -> fig_pb2.FederatedEvent:
++    """Build a ContactListEntry announcement for a local EUD."""
++    fed_event = fig_pb2.FederatedEvent()
++    fed_event.contact.operation = operation
++    fed_event.contact.uid = uid
++    fed_event.contact.callsign = callsign
++    return fed_event
+diff --git a/opentakserver/federation/proto/__init__.py b/opentakserver/federation/proto/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/opentakserver/federation/proto/binarypayload.proto b/opentakserver/federation/proto/binarypayload.proto
+new file mode 100644
+index 0000000..9f34765
+--- /dev/null
++++ b/opentakserver/federation/proto/binarypayload.proto
+@@ -0,0 +1,12 @@
++syntax = "proto3";
++
++package gov.tak.cop.proto.v1;
++
++message BinaryPayload {
++    string type = 1;        // type identifier for the BinaryPayload. Use this type to determine decoding strategy
++    string version = 2;     // version identifier for the binary message
++    bytes data = 3;         // binary message payload data
++	  int64 timestamp = 4;    // timestamp when ingested
++    string uuid = 5;        // unique id for this BinaryPayload
++}
++
+diff --git a/opentakserver/federation/proto/binarypayload_pb2.py b/opentakserver/federation/proto/binarypayload_pb2.py
+new file mode 100644
+index 0000000..c97f866
+--- /dev/null
++++ b/opentakserver/federation/proto/binarypayload_pb2.py
+@@ -0,0 +1,36 @@
++# -*- coding: utf-8 -*-
++# Generated by the protocol buffer compiler.  DO NOT EDIT!
++# NO CHECKED-IN PROTOBUF GENCODE
++# source: binarypayload.proto
++# Protobuf Python Version: 6.31.1
++"""Generated protocol buffer code."""
++from google.protobuf import descriptor as _descriptor
++from google.protobuf import descriptor_pool as _descriptor_pool
++from google.protobuf import runtime_version as _runtime_version
++from google.protobuf import symbol_database as _symbol_database
++from google.protobuf.internal import builder as _builder
++_runtime_version.ValidateProtobufRuntimeVersion(
++    _runtime_version.Domain.PUBLIC,
++    6,
++    31,
++    1,
++    '',
++    'binarypayload.proto'
++)
++# @@protoc_insertion_point(imports)
++
++_sym_db = _symbol_database.Default()
++
++
++
++
++DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x13\x62inarypayload.proto\x12\x14gov.tak.cop.proto.v1\"]\n\rBinaryPayload\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\x12\x11\n\ttimestamp\x18\x04 \x01(\x03\x12\x0c\n\x04uuid\x18\x05 \x01(\tb\x06proto3')
++
++_globals = globals()
++_builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
++_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'binarypayload_pb2', _globals)
++if not _descriptor._USE_C_DESCRIPTORS:
++  DESCRIPTOR._loaded_options = None
++  _globals['_BINARYPAYLOAD']._serialized_start=45
++  _globals['_BINARYPAYLOAD']._serialized_end=138
++# @@protoc_insertion_point(module_scope)
+diff --git a/opentakserver/federation/proto/fig.proto b/opentakserver/federation/proto/fig.proto
+new file mode 100644
+index 0000000..bdfd253
+--- /dev/null
++++ b/opentakserver/federation/proto/fig.proto
+@@ -0,0 +1,179 @@
++// TAK Server federation wire messages.
++//
++// Vendored from the TAK Product Center's TAK Server source (GPLv3), with the
++// gRPC service definition omitted: federation v1 exchanges these messages as
++// length-prefixed frames over a mutually-authenticated TLS socket and needs
++// no gRPC. Field numbers and types are unchanged, so the wire format is
++// identical to official TAK Server federation.
++// Source: https://github.com/TAK-Product-Center/Server
++//         src/takserver-protobuf/src/main/proto/fig.proto
++
++syntax = "proto3";
++
++import "binarypayload.proto";
++
++option java_multiple_files = true;
++option java_package = "com.atakmap.Tak";
++option java_outer_classname = "FigProto";
++option objc_class_prefix = "TAK";
++
++package com.atakmap;
++
++enum CRUD { INVALID = 0; CREATE = 1; READ = 2; UPDATE = 3; DELETE = 4; }
++enum BINARY_TYPES { EMPTY = 0; OTHER = 1; IMAGE = 2; }
++
++message FederatedEvent {
++	GeoEvent event = 1;
++	ContactListEntry contact = 2;
++	repeated string federateGroups = 3;
++	repeated FederateProvenance federateProvenance = 4;
++	FederateHops federateHops = 5;
++	FederateGroupHopLimits federateGroupHopLimits = 6;
++}
++
++message GeoEvent {
++	 int64 sendTime = 1;
++	 int64 startTime = 2;
++	 int64 staleTime = 3;
++	 double lat = 4;  // WSG-84
++	 double lon = 5;  // WSG-84
++	 double hae = 6;  // meters
++	 double ce = 7;   // meters
++	 double le = 8;   // meters
++	 string uid = 9;  // track-id
++	 string type= 10; // CoT type
++	 string coordSource = 11;  // CoT 'how'
++	string other = 12;  // CoT detail
++	int32 battery = 13;
++	string ploc = 14;
++	string palt = 15;
++	string screenName = 16;  // callsign
++ 	string groupName = 17;
++ 	string groupRole = 18;
++	string phone = 19;
++	double speed = 20;
++	double course = 21;
++	BinaryBlob binary = 22; //image
++	repeated string ptpUids  = 23;
++	repeated string ptpCallsigns = 24;
++	string feedUid = 25;
++	repeated string missionNames = 26;
++	string access = 27;
++	string caveat = 28;
++	string releaseableTo = 29;
++
++	// optional sequence of binary payloads
++	repeated gov.tak.cop.proto.v1.BinaryPayload bloads = 30;
++}
++
++message BinaryBlob {
++	 BINARY_TYPES type = 1;
++	 bytes data = 2;
++	string filename = 3;
++	int64 timestamp = 4;
++	string description = 5;
++	repeated FederateProvenance federateProvenance = 6;
++	FederateHops federateHops = 7;
++	FederateGroupHopLimits federateGroupHopLimits = 8;
++}
++
++message ContactListEntry {
++	 CRUD operation = 1;
++	 string uid = 2;
++	string callsign = 3;
++	string phone = 4;
++	string sip = 5;
++	string directConnect = 6;
++}
++
++message Empty { }
++
++message Identity {
++    enum ConnectionType {
++        FEDERATION_HUB_SERVER = 0;
++        FEDERATION_HUB_CLIENT = 1;
++        FEDERATION_TAK_SERVER = 2;
++        FEDERATION_TAK_CLIENT = 3;
++    }
++	 string name = 1;
++	 string uid = 2;
++	 string description = 3;
++	 ConnectionType type = 4;
++	 string serverId = 5;
++}
++
++message Subscription {
++	Identity identity = 1;
++	string filter = 2;
++    TakServerVersion version = 3;
++}
++
++message ClientHealth {
++    enum ServingStatus {
++        UNKNOWN = 0;
++        SERVING = 1;
++        NOT_SERVING = 2;
++    }
++    ServingStatus status = 1;
++}
++
++message ServerHealth {
++    enum ServingStatus {
++        UNKNOWN = 0;
++        SERVING = 1;
++        NOT_SERVING = 2;
++        NOT_CONNECTED = 3;
++    }
++    ServingStatus status = 1;
++}
++
++message ROL {
++    string program = 1;
++    repeated BinaryBlob payload = 2;
++	repeated string federateGroups = 3;
++	repeated FederateProvenance federateProvenance = 4;
++	FederateHops federateHops = 5;
++	FederateGroupHopLimits federateGroupHopLimits = 6;
++}
++
++message FederateGroups {
++    ServerHealth streamUpdate = 1;
++	repeated string federateGroups = 2;
++	repeated FederateProvenance federateProvenance = 3;
++	FederateHops federateHops = 4;
++	repeated FederateGroups nestedGroups = 5;
++	FederateGroupHopLimits federateGroupHopLimits = 6;
++}
++
++message TakServerVersion {
++    int64 major = 1; // major version number
++    int64 minor = 2; // minor version number
++    int64 patch = 3; // patch version number
++    string branch = 4; // branch name
++    string variant = 5; // variant name
++}
++
++message FederateProvenance {
++	string federationServerId = 1;
++	string federationServerName = 2;
++}
++
++message FederateHops {
++	int64 maxHops = 1;
++	int64 currentHops = 2;
++}
++
++message FederateGroupHopLimit {
++	string groupName = 1;
++	int64 maxHops = 2;
++	int64 currentHops = 3;
++}
++
++message FederateGroupHopLimits {
++	repeated FederateGroupHopLimit limits = 1;
++	bool useFederateGroupHopLimits = 2;
++}
++
++message FederateTokenResponse {
++	string token = 1;
++}
+diff --git a/opentakserver/federation/proto/fig_pb2.py b/opentakserver/federation/proto/fig_pb2.py
+new file mode 100644
+index 0000000..5a005b5
+--- /dev/null
++++ b/opentakserver/federation/proto/fig_pb2.py
+@@ -0,0 +1,80 @@
++# -*- coding: utf-8 -*-
++# Generated by the protocol buffer compiler.  DO NOT EDIT!
++# NO CHECKED-IN PROTOBUF GENCODE
++# source: fig.proto
++# Protobuf Python Version: 6.31.1
++"""Generated protocol buffer code."""
++from google.protobuf import descriptor as _descriptor
++from google.protobuf import descriptor_pool as _descriptor_pool
++from google.protobuf import runtime_version as _runtime_version
++from google.protobuf import symbol_database as _symbol_database
++from google.protobuf.internal import builder as _builder
++_runtime_version.ValidateProtobufRuntimeVersion(
++    _runtime_version.Domain.PUBLIC,
++    6,
++    31,
++    1,
++    '',
++    'fig.proto'
++)
++# @@protoc_insertion_point(imports)
++
++_sym_db = _symbol_database.Default()
++
++
++from opentakserver.federation.proto import binarypayload_pb2 as binarypayload__pb2
++
++
++DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\tfig.proto\x12\x0b\x63om.atakmap\x1a\x13\x62inarypayload.proto\"\xb1\x02\n\x0e\x46\x65\x64\x65ratedEvent\x12$\n\x05\x65vent\x18\x01 \x01(\x0b\x32\x15.com.atakmap.GeoEvent\x12.\n\x07\x63ontact\x18\x02 \x01(\x0b\x32\x1d.com.atakmap.ContactListEntry\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x03 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x04 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x05 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\xb8\x04\n\x08GeoEvent\x12\x10\n\x08sendTime\x18\x01 \x01(\x03\x12\x11\n\tstartTime\x18\x02 \x01(\x03\x12\x11\n\tstaleTime\x18\x03 \x01(\x03\x12\x0b\n\x03lat\x18\x04 \x01(\x01\x12\x0b\n\x03lon\x18\x05 \x01(\x01\x12\x0b\n\x03hae\x18\x06 \x01(\x01\x12\n\n\x02\x63\x65\x18\x07 \x01(\x01\x12\n\n\x02le\x18\x08 \x01(\x01\x12\x0b\n\x03uid\x18\t \x01(\t\x12\x0c\n\x04type\x18\n \x01(\t\x12\x13\n\x0b\x63oordSource\x18\x0b \x01(\t\x12\r\n\x05other\x18\x0c \x01(\t\x12\x0f\n\x07\x62\x61ttery\x18\r \x01(\x05\x12\x0c\n\x04ploc\x18\x0e \x01(\t\x12\x0c\n\x04palt\x18\x0f \x01(\t\x12\x12\n\nscreenName\x18\x10 \x01(\t\x12\x11\n\tgroupName\x18\x11 \x01(\t\x12\x11\n\tgroupRole\x18\x12 \x01(\t\x12\r\n\x05phone\x18\x13 \x01(\t\x12\r\n\x05speed\x18\x14 \x01(\x01\x12\x0e\n\x06\x63ourse\x18\x15 \x01(\x01\x12\'\n\x06\x62inary\x18\x16 \x01(\x0b\x32\x17.com.atakmap.BinaryBlob\x12\x0f\n\x07ptpUids\x18\x17 \x03(\t\x12\x14\n\x0cptpCallsigns\x18\x18 \x03(\t\x12\x0f\n\x07\x66\x65\x65\x64Uid\x18\x19 \x01(\t\x12\x14\n\x0cmissionNames\x18\x1a \x03(\t\x12\x0e\n\x06\x61\x63\x63\x65ss\x18\x1b \x01(\t\x12\x0e\n\x06\x63\x61veat\x18\x1c \x01(\t\x12\x15\n\rreleaseableTo\x18\x1d \x01(\t\x12\x33\n\x06\x62loads\x18\x1e \x03(\x0b\x32#.gov.tak.cop.proto.v1.BinaryPayload\"\xb0\x02\n\nBinaryBlob\x12\'\n\x04type\x18\x01 \x01(\x0e\x32\x19.com.atakmap.BINARY_TYPES\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\x12\x10\n\x08\x66ilename\x18\x03 \x01(\t\x12\x11\n\ttimestamp\x18\x04 \x01(\x03\x12\x13\n\x0b\x64\x65scription\x18\x05 \x01(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x06 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x07 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x08 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\x8a\x01\n\x10\x43ontactListEntry\x12$\n\toperation\x18\x01 \x01(\x0e\x32\x11.com.atakmap.CRUD\x12\x0b\n\x03uid\x18\x02 \x01(\t\x12\x10\n\x08\x63\x61llsign\x18\x03 \x01(\t\x12\r\n\x05phone\x18\x04 \x01(\t\x12\x0b\n\x03sip\x18\x05 \x01(\t\x12\x15\n\rdirectConnect\x18\x06 \x01(\t\"\x07\n\x05\x45mpty\"\xfe\x01\n\x08Identity\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0b\n\x03uid\x18\x02 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x03 \x01(\t\x12\x32\n\x04type\x18\x04 \x01(\x0e\x32$.com.atakmap.Identity.ConnectionType\x12\x10\n\x08serverId\x18\x05 \x01(\t\"|\n\x0e\x43onnectionType\x12\x19\n\x15\x46\x45\x44\x45RATION_HUB_SERVER\x10\x00\x12\x19\n\x15\x46\x45\x44\x45RATION_HUB_CLIENT\x10\x01\x12\x19\n\x15\x46\x45\x44\x45RATION_TAK_SERVER\x10\x02\x12\x19\n\x15\x46\x45\x44\x45RATION_TAK_CLIENT\x10\x03\"w\n\x0cSubscription\x12\'\n\x08identity\x18\x01 \x01(\x0b\x32\x15.com.atakmap.Identity\x12\x0e\n\x06\x66ilter\x18\x02 \x01(\t\x12.\n\x07version\x18\x03 \x01(\x0b\x32\x1d.com.atakmap.TakServerVersion\"\x83\x01\n\x0c\x43lientHealth\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.com.atakmap.ClientHealth.ServingStatus\":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\"\x96\x01\n\x0cServerHealth\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.com.atakmap.ServerHealth.ServingStatus\"M\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\x12\x11\n\rNOT_CONNECTED\x10\x03\"\x8b\x02\n\x03ROL\x12\x0f\n\x07program\x18\x01 \x01(\t\x12(\n\x07payload\x18\x02 \x03(\x0b\x32\x17.com.atakmap.BinaryBlob\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x03 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x04 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x05 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\xbf\x02\n\x0e\x46\x65\x64\x65rateGroups\x12/\n\x0cstreamUpdate\x18\x01 \x01(\x0b\x32\x19.com.atakmap.ServerHealth\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x02 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x03 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x04 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x31\n\x0cnestedGroups\x18\x05 \x03(\x0b\x32\x1b.com.atakmap.FederateGroups\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"`\n\x10TakServerVersion\x12\r\n\x05major\x18\x01 \x01(\x03\x12\r\n\x05minor\x18\x02 \x01(\x03\x12\r\n\x05patch\x18\x03 \x01(\x03\x12\x0e\n\x06\x62ranch\x18\x04 \x01(\t\x12\x0f\n\x07variant\x18\x05 \x01(\t\"N\n\x12\x46\x65\x64\x65rateProvenance\x12\x1a\n\x12\x66\x65\x64\x65rationServerId\x18\x01 \x01(\t\x12\x1c\n\x14\x66\x65\x64\x65rationServerName\x18\x02 \x01(\t\"4\n\x0c\x46\x65\x64\x65rateHops\x12\x0f\n\x07maxHops\x18\x01 \x01(\x03\x12\x13\n\x0b\x63urrentHops\x18\x02 \x01(\x03\"P\n\x15\x46\x65\x64\x65rateGroupHopLimit\x12\x11\n\tgroupName\x18\x01 \x01(\t\x12\x0f\n\x07maxHops\x18\x02 \x01(\x03\x12\x13\n\x0b\x63urrentHops\x18\x03 \x01(\x03\"o\n\x16\x46\x65\x64\x65rateGroupHopLimits\x12\x32\n\x06limits\x18\x01 \x03(\x0b\x32\".com.atakmap.FederateGroupHopLimit\x12!\n\x19useFederateGroupHopLimits\x18\x02 \x01(\x08\"&\n\x15\x46\x65\x64\x65rateTokenResponse\x12\r\n\x05token\x18\x01 \x01(\t*A\n\x04\x43RUD\x12\x0b\n\x07INVALID\x10\x00\x12\n\n\x06\x43REATE\x10\x01\x12\x08\n\x04READ\x10\x02\x12\n\n\x06UPDATE\x10\x03\x12\n\n\x06\x44\x45LETE\x10\x04*/\n\x0c\x42INARY_TYPES\x12\t\n\x05\x45MPTY\x10\x00\x12\t\n\x05OTHER\x10\x01\x12\t\n\x05IMAGE\x10\x02\x42#\n\x0f\x63om.atakmap.TakB\x08\x46igProtoP\x01\xa2\x02\x03TAKb\x06proto3')
++
++_globals = globals()
++_builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
++_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'fig_pb2', _globals)
++if not _descriptor._USE_C_DESCRIPTORS:
++  _globals['DESCRIPTOR']._loaded_options = None
++  _globals['DESCRIPTOR']._serialized_options = b'\n\017com.atakmap.TakB\010FigProtoP\001\242\002\003TAK'
++  _globals['_CRUD']._serialized_start=3107
++  _globals['_CRUD']._serialized_end=3172
++  _globals['_BINARY_TYPES']._serialized_start=3174
++  _globals['_BINARY_TYPES']._serialized_end=3221
++  _globals['_FEDERATEDEVENT']._serialized_start=48
++  _globals['_FEDERATEDEVENT']._serialized_end=353
++  _globals['_GEOEVENT']._serialized_start=356
++  _globals['_GEOEVENT']._serialized_end=924
++  _globals['_BINARYBLOB']._serialized_start=927
++  _globals['_BINARYBLOB']._serialized_end=1231
++  _globals['_CONTACTLISTENTRY']._serialized_start=1234
++  _globals['_CONTACTLISTENTRY']._serialized_end=1372
++  _globals['_EMPTY']._serialized_start=1374
++  _globals['_EMPTY']._serialized_end=1381
++  _globals['_IDENTITY']._serialized_start=1384
++  _globals['_IDENTITY']._serialized_end=1638
++  _globals['_IDENTITY_CONNECTIONTYPE']._serialized_start=1514
++  _globals['_IDENTITY_CONNECTIONTYPE']._serialized_end=1638
++  _globals['_SUBSCRIPTION']._serialized_start=1640
++  _globals['_SUBSCRIPTION']._serialized_end=1759
++  _globals['_CLIENTHEALTH']._serialized_start=1762
++  _globals['_CLIENTHEALTH']._serialized_end=1893
++  _globals['_CLIENTHEALTH_SERVINGSTATUS']._serialized_start=1835
++  _globals['_CLIENTHEALTH_SERVINGSTATUS']._serialized_end=1893
++  _globals['_SERVERHEALTH']._serialized_start=1896
++  _globals['_SERVERHEALTH']._serialized_end=2046
++  _globals['_SERVERHEALTH_SERVINGSTATUS']._serialized_start=1969
++  _globals['_SERVERHEALTH_SERVINGSTATUS']._serialized_end=2046
++  _globals['_ROL']._serialized_start=2049
++  _globals['_ROL']._serialized_end=2316
++  _globals['_FEDERATEGROUPS']._serialized_start=2319
++  _globals['_FEDERATEGROUPS']._serialized_end=2638
++  _globals['_TAKSERVERVERSION']._serialized_start=2640
++  _globals['_TAKSERVERVERSION']._serialized_end=2736
++  _globals['_FEDERATEPROVENANCE']._serialized_start=2738
++  _globals['_FEDERATEPROVENANCE']._serialized_end=2816
++  _globals['_FEDERATEHOPS']._serialized_start=2818
++  _globals['_FEDERATEHOPS']._serialized_end=2870
++  _globals['_FEDERATEGROUPHOPLIMIT']._serialized_start=2872
++  _globals['_FEDERATEGROUPHOPLIMIT']._serialized_end=2952
++  _globals['_FEDERATEGROUPHOPLIMITS']._serialized_start=2954
++  _globals['_FEDERATEGROUPHOPLIMITS']._serialized_end=3065
++  _globals['_FEDERATETOKENRESPONSE']._serialized_start=3067
++  _globals['_FEDERATETOKENRESPONSE']._serialized_end=3105
++# @@protoc_insertion_point(module_scope)
+diff --git a/opentakserver/federation/truststore.py b/opentakserver/federation/truststore.py
+new file mode 100644
+index 0000000..105dab5
+--- /dev/null
++++ b/opentakserver/federation/truststore.py
+@@ -0,0 +1,155 @@
++"""Federation trust management.
++
++TAK federation's security model hinges on a second truststore: the CAs that
++may open *server-to-server* federation connections are kept separate from the
++CA that signs EUD client certificates. A partner's CA lives only here, so
++their TAK server can federate with us while EUD certificates issued by them
++remain useless against the client streaming port.
++
++Peer CA certificates are stored as individual PEM files in
++``OTS_FEDERATION_TRUSTSTORE_FOLDER`` (default: ``<OTS_CA_FOLDER>/federation``).
++Federates are identified by the SHA-256 fingerprint of their server
++certificate, as in TAK Server.
++"""
++
++import hashlib
++import logging
++import os
++import re
++import ssl
++
++from cryptography import x509
++from cryptography.hazmat.primitives import hashes
++
++logger = logging.getLogger("OpenTAKServer")
++
++
++class NoFederationCAsError(Exception):
++    def __init__(self, folder: str):
++        super().__init__(
++            f"No federation CA certificates in {folder} - upload a peer's CA before "
++            "enabling federation"
++        )
++
++
++def truststore_folder(config) -> str:
++    folder = config.get("OTS_FEDERATION_TRUSTSTORE_FOLDER") or os.path.join(
++        config.get("OTS_CA_FOLDER"), "federation"
++    )
++    os.makedirs(folder, exist_ok=True)
++    return folder
++
++
++def _ca_paths(config) -> list[str]:
++    folder = truststore_folder(config)
++    return [
++        os.path.join(folder, name) for name in sorted(os.listdir(folder)) if name.endswith(".pem")
++    ]
++
++
++def _server_cert_paths(config) -> tuple[str, str]:
++    cert_folder = os.path.join(config.get("OTS_CA_FOLDER"), "certs", "opentakserver")
++    return (
++        os.path.join(cert_folder, "opentakserver.pem"),
++        os.path.join(cert_folder, "opentakserver.nopass.key"),
++    )
++
++
++def _load_common(context: ssl.SSLContext, config) -> ssl.SSLContext:
++    cert, key = _server_cert_paths(config)
++    context.load_cert_chain(cert, key)
++
++    ca_paths = _ca_paths(config)
++    if not ca_paths:
++        raise NoFederationCAsError(truststore_folder(config))
++    for path in ca_paths:
++        context.load_verify_locations(cafile=path)
++
++    context.verify_mode = ssl.CERT_REQUIRED
++    context.minimum_version = ssl.TLSVersion.TLSv1_2
++    return context
++
++
++def server_ssl_context(config) -> ssl.SSLContext:
++    return _load_common(ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER), config)
++
++
++def client_ssl_context(config) -> ssl.SSLContext:
++    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
++    # TAK federation trusts by CA, not by hostname: federate certificates are
++    # commonly issued to a server name that does not match the address dialed.
++    context.check_hostname = bool(config.get("OTS_FEDERATION_VERIFY_HOSTNAME", False))
++    return _load_common(context, config)
++
++
++def cert_fingerprint(der: bytes) -> str:
++    return hashlib.sha256(der).hexdigest()
++
++
++def peer_identity(ssl_socket: ssl.SSLSocket) -> tuple[str | None, str | None]:
++    """Return (sha256 fingerprint, common name) of the peer's certificate."""
++    der = ssl_socket.getpeercert(binary_form=True)
++    if not der:
++        return None, None
++
++    fingerprint = cert_fingerprint(der)
++    common_name = None
++    try:
++        cert = x509.load_der_x509_certificate(der)
++        attrs = cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)
++        if attrs:
++            common_name = attrs[0].value
++    except ValueError:
++        logger.warning("Could not parse federation peer certificate for its common name")
++
++    return fingerprint, common_name
++
++
++def _safe_filename(name: str) -> str:
++    name = os.path.basename(name)
++    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
++    if not name.endswith(".pem"):
++        name += ".pem"
++    return name
++
++
++def list_cas(config) -> list[dict]:
++    cas = []
++    for path in _ca_paths(config):
++        entry = {"filename": os.path.basename(path)}
++        try:
++            with open(path, "rb") as f:
++                cert = x509.load_pem_x509_certificate(f.read())
++            entry["subject"] = cert.subject.rfc4514_string()
++            entry["fingerprint"] = cert.fingerprint(hashes.SHA256()).hex()
++            entry["not_after"] = cert.not_valid_after_utc.isoformat()
++        except ValueError:
++            entry["error"] = "unparseable certificate"
++        cas.append(entry)
++    return cas
++
++
++def save_ca(config, filename: str, pem: bytes) -> dict:
++    """Validate and store a peer CA certificate. Raises ValueError on bad PEM."""
++    cert = x509.load_pem_x509_certificate(pem)
++
++    filename = _safe_filename(filename)
++    path = os.path.join(truststore_folder(config), filename)
++    with open(path, "wb") as f:
++        f.write(pem)
++
++    logger.info(f"Added federation CA {cert.subject.rfc4514_string()} as {filename}")
++    return {
++        "filename": filename,
++        "subject": cert.subject.rfc4514_string(),
++        "fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
++    }
++
++
++def delete_ca(config, filename: str) -> bool:
++    path = os.path.join(truststore_folder(config), _safe_filename(filename))
++    if os.path.exists(path):
++        os.remove(path)
++        logger.info(f"Removed federation CA {os.path.basename(path)}")
++        return True
++    return False
+-- 
+2.23.0
+

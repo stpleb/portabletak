@@ -238,6 +238,11 @@ function Ensure-Networking([int]$Build) {
                 -Direction Inbound -VMCreatorId $VmCreatorId -Protocol UDP -LocalPorts $udpPorts | Out-Null
             Say 'Allowed TAK client connections through the Windows firewall.'
         }
+        if (-not (Get-NetFirewallHyperVRule -Name 'PortableTAK-Federation' -ErrorAction SilentlyContinue)) {
+            # Federation with other TAK servers (v1 9000, v2 9001).
+            New-NetFirewallHyperVRule -Name 'PortableTAK-Federation' -DisplayName 'PortableTAK (federation)' `
+                -Direction Inbound -VMCreatorId $VmCreatorId -Protocol TCP -LocalPorts @('9000', '9001') | Out-Null
+        }
     } catch { Log "Hyper-V firewall rule: $_" }
     if (-not (Get-NetFirewallRule -Name 'PortableTAK-TAK' -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -Name 'PortableTAK-TAK' -DisplayName 'PortableTAK (TAK clients)' -Direction Inbound `

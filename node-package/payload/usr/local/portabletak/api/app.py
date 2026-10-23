@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import re
 import json
 import subprocess
 import threading
@@ -33,6 +34,7 @@ COMMANDS = {
     "backup": BIN / "portabletak-backup",
     "restore": BIN / "portabletak-restore",
     "factory_reset": BIN / "portabletak-factory-reset",
+    "federation": BIN / "portabletak-federation",
 }
 
 action_lock = threading.Lock()
@@ -148,7 +150,7 @@ def root():
     from fastapi.responses import HTMLResponse
     web = Path("/usr/local/portabletak/web")
     html = (web / "index.html").read_text()
-    for name in ("auth.js", "remote-access.js", "video-feeds.js", "factory-reset.js"):
+    for name in ("auth.js", "remote-access.js", "video-feeds.js", "federation.js", "factory-reset.js"):
         try:
             tag = hashlib.sha256((web / name).read_bytes()).hexdigest()[:12]
         except OSError:
@@ -946,6 +948,11 @@ def video_feeds_script():
     return FileResponse("/usr/local/portabletak/web/video-feeds.js", media_type="text/javascript")
 
 
+@app.get("/federation.js")
+def federation_script():
+    return FileResponse("/usr/local/portabletak/web/federation.js", media_type="text/javascript")
+
+
 # --- Video Feeds: drones push RTSP video without a sign-in (see lib/video_feeds.py) ---
 def _feed_targets():
     """Where a drone sends its video: the address phones use, and Tailscale if set up."""
@@ -1036,6 +1043,202 @@ def remote_access_apply():
 @app.post("/api/remote-access/logout")
 def remote_access_logout():
     return _tailscale("logout", 400)
+
+
+# ---- Federation (links to other TAK servers; needs the federation add-on) ----
+FEDERATION_CONF = Path("/mnt/asgard/portabletak/federation.conf")
+
+
+def _federation_process(action):
+    result = run_command_args("federation", [action], timeout=60)
+    return parse_status(result["output"]).get("PORTABLETAK_FEDERATION", "UNKNOWN")
+
+
+def _federation_restart():
+    """New certificates and edited links take effect when the federation server restarts."""
+    if FEDERATION_CONF.exists() and "enabled" in FEDERATION_CONF.read_text():
+        _federation_process("stop")
+        _federation_process("start")
+
+
+@app.get("/api/federation")
+def federation_status():
+    data = run_users({"action": "federation_status"})
+    enabled = FEDERATION_CONF.exists() and "PORTABLETAK_FEDERATION=enabled" in FEDERATION_CONF.read_text()
+    try:
+        import server_addresses
+        record = server_addresses.current("/mnt/asgard")
+    except Exception:
+        record = {}
+    return {
+        "ok": True,
+        "enabled": enabled,
+        "process": _federation_process("status"),
+        "federates": data.get("federates", []),
+        "cas": data.get("cas", []),
+        "addresses": [a for a in record.get("addresses", []) if a],
+        "ports": {"v1": 9000, "v2": 9001},
+    }
+
+
+@app.post("/api/federation/enable")
+def federation_enable(payload: dict = Body(...)):
+    on = bool(payload.get("enabled"))
+    FEDERATION_CONF.parent.mkdir(parents=True, exist_ok=True)
+    FEDERATION_CONF.write_text("PORTABLETAK_FEDERATION=%s\n" % ("enabled" if on else "disabled"))
+    return {"ok": True, "process": _federation_process("start" if on else "stop")}
+
+
+@app.post("/api/federation/federates")
+def federation_save(payload: dict = Body(...)):
+    allowed = ("name", "address", "port", "protocol_version", "outbound", "enabled",
+               "inbound_groups", "outbound_groups", "reset_pin")
+    result = run_users({"action": "federation_save", **{k: payload[k] for k in allowed if k in payload}})
+    _federation_restart()
+    return result
+
+
+@app.delete("/api/federation/federates/{name}")
+def federation_delete(name: str):
+    result = run_users({"action": "federation_delete", "name": name})
+    _federation_restart()
+    return result
+
+
+@app.post("/api/federation/ca")
+def federation_ca_add(payload: dict = Body(...)):
+    pem = str(payload.get("pem") or "")
+    if len(pem) > 65536:
+        raise HTTPException(status_code=400, detail="certificate_too_large")
+    result = run_users({"action": "federation_ca_add", "pem": pem, "filename": str(payload.get("filename") or "")})
+    _federation_restart()
+    return result
+
+
+@app.delete("/api/federation/ca/{filename}")
+def federation_ca_delete(filename: str):
+    result = run_users({"action": "federation_ca_delete", "filename": filename})
+    _federation_restart()
+    return result
+
+
+def _federation_on():
+    """Turn federation on (writes the setting, starts it; makes the federation certificate)."""
+    FEDERATION_CONF.parent.mkdir(parents=True, exist_ok=True)
+    FEDERATION_CONF.write_text("PORTABLETAK_FEDERATION=enabled\n")
+    state = _federation_process("start")
+    if state != "RUNNING":
+        raise HTTPException(status_code=500, detail="federation_not_running")
+
+
+def _our_server_name():
+    """This server's name (set at first setup), as shown to other servers."""
+    try:
+        import client_packages
+        text = Path("/mnt/asgard/portabletak/cartridge.conf").read_text()
+        found = re.search(r'^PORTABLETAK_INSTANCE_NAME="?([^"\n]*)', text, re.M)
+        return client_packages.server_name(found.group(1) if found else "")
+    except Exception:
+        return "PortableTAK"
+
+
+def _our_addresses():
+    """Addresses another server can use to reach this one: remote (Tailscale) first."""
+    import server_addresses
+    import client_packages
+    record = server_addresses.current("/mnt/asgard")
+    found = []
+    remote = client_packages.remote_address(record)
+    for address in [remote, record.get("advertise")] + list(record.get("addresses") or []):
+        if address and address not in found and not str(address).startswith("10.0.2."):
+            found.append(address)
+    return found[:4]
+
+
+@app.post("/api/federation/invite")
+def federation_invite():
+    import federation_invites
+    _federation_on()
+    me = run_users({"action": "federation_status"})
+    code, expires = federation_invites.create("/mnt/asgard", _our_server_name(), _our_addresses(),
+                                              me["our_ca"], me["our_fingerprint"])
+    return {"ok": True, "code": code, "expires": int(expires), "name": _our_server_name()}
+
+
+@app.get("/api/federation/public-ca")
+def federation_public_ca():
+    """This server's CA certificate (public): lets a server holding an invite check it is
+    talking to the server that made the invite."""
+    data = run_users({"action": "federation_status"})
+    return Response(data.get("our_ca", ""), media_type="application/x-pem-file")
+
+
+@app.post("/api/federation/accept")
+def federation_accept(payload: dict = Body(...)):
+    """Called by a server redeeming one of our invites (no sign-in; the invite secret
+    is the credential, single use, 24 hours)."""
+    import federation_invites
+    if len(json.dumps(payload)) > 32768:
+        raise HTTPException(status_code=413, detail="too_large")
+    try:
+        federation_invites.redeem("/mnt/asgard", payload.get("t"), use=False)
+    except federation_invites.InviteError as error:
+        raise HTTPException(status_code=403, detail=str(error))
+    result = run_users({"action": "federation_accept", "name": str(payload.get("name") or ""),
+                        "ca": str(payload.get("ca") or ""), "cert": str(payload.get("cert") or "")})
+    federation_invites.redeem("/mnt/asgard", payload.get("t"))
+    _federation_on()
+    _federation_restart()
+    return {"ok": True, "name": _our_server_name(), "fingerprint": result.get("our_fingerprint")}
+
+
+@app.post("/api/federation/join")
+def federation_join(payload: dict = Body(...)):
+    import federation_invites
+    try:
+        invite = federation_invites.decode(payload.get("code"))
+    except federation_invites.InviteError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    _federation_on()
+    me = run_users({"action": "federation_status"})
+    try:
+        address, ca_pem, reply = federation_invites.contact(invite, _our_server_name(), me["our_ca"], me["our_cert"])
+    except federation_invites.InviteError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    name = re.sub(r"[^A-Za-z0-9 ._-]", "", str(invite.get("n") or reply.get("name") or "TAK server"))[:60] or "TAK server"
+    run_users({"action": "federation_ca_add", "pem": ca_pem, "filename": name + "-CA.pem"})
+    run_users({"action": "federation_save", "name": name, "address": address, "port": int(invite.get("p") or 9001),
+               "protocol_version": 2, "outbound": True, "enabled": True, "pin": invite.get("f"), "pin_name": name})
+    _federation_restart()
+    return {"ok": True, "name": name, "address": address}
+
+
+@app.post("/api/federation/tak/check")
+def federation_tak_check(payload: dict = Body(...)):
+    return run_users({"action": "federation_fetch_ca", "address": str(payload.get("address") or ""),
+                      "port": payload.get("port") or 9001})
+
+
+@app.post("/api/federation/tak/connect")
+def federation_tak_connect(payload: dict = Body(...)):
+    name = str(payload.get("name") or "TAK Server").strip()[:60]
+    _federation_on()
+    run_users({"action": "federation_ca_add", "pem": str(payload.get("ca") or ""),
+               "filename": re.sub(r"[^A-Za-z0-9._-]", "_", name) + "-CA.pem"})
+    result = run_users({"action": "federation_save", "name": name, "address": str(payload.get("address") or ""),
+                        "port": payload.get("port") or 9001, "protocol_version": 2, "outbound": True,
+                        "enabled": True, "pin": payload.get("server_fingerprint"), "pin_name": name})
+    _federation_restart()
+    return result
+
+
+@app.get("/api/federation/our-ca")
+def federation_our_ca():
+    """This server's CA certificate, for the other server's admin (federation truststore)."""
+    data = run_users({"action": "federation_status"})
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", _our_server_name())
+    return Response(data.get("our_ca", ""), media_type="application/x-pem-file",
+                    headers={"Content-Disposition": 'attachment; filename="%s-federation-CA.pem"' % name})
 
 
 # Sessions are enforced only when PORTABLETAK_MANAGEMENT_AUTH=enforce.

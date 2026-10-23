@@ -1,0 +1,61 @@
+From 2f64e99a7bbeb31407126a77764d4e086ec23334 Mon Sep 17 00:00:00 2001
+From: Francesco Romano <fwromano15@gmail.com>
+Date: Fri, 17 Jul 2026 12:52:14 -0500
+Subject: [PATCH 04/16] cot_parser: allow publishers to route a message to
+ explicit groups
+
+An optional 'groups' list in the message envelope routes the event to those
+group channels instead of the sender's memberships or __ANON__. Used by the
+federation server to deliver inbound federated traffic into a federate's
+configured inbound groups; any other non-user publisher can use it the same
+way.
+---
+ opentakserver/cot_parser/cot_parser.py | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/opentakserver/cot_parser/cot_parser.py b/opentakserver/cot_parser/cot_parser.py
+index 31ce515..6f1a9c8 100644
+--- a/opentakserver/cot_parser/cot_parser.py
++++ b/opentakserver/cot_parser/cot_parser.py
+@@ -1139,7 +1139,7 @@ class CoTController:
+                     ),
+                 )
+ 
+-    def route_cot(self, event, uid: str, user_id: int):
++    def route_cot(self, event, uid: str, user_id: int, groups: list | None = None):
+         if not uid or uid == self.context.app.config.get("OTS_NODE_ID"):
+             # This is a server generated CoT (i.e. ADS-B scheduled job) which was already properly routed
+             return
+@@ -1172,6 +1172,20 @@ class CoTController:
+ 
+                 # CoT messages belonging to Data Sync missions (i.e. <dest mission="mission name" /> are handled by cot_parser
+ 
++        if not destinations and groups:
++            # The publisher routed this message to explicit groups, e.g. the federation
++            # server tagging inbound federated traffic with a federate's inbound groups
++            for group_name in groups:
++                self.rabbit_channel.basic_publish(
++                    exchange="groups",
++                    routing_key=f"{group_name}.{Group.OUT}",
++                    body=json.dumps({"uid": uid, "cot": str(event)}),
++                    properties=pika.BasicProperties(
++                        expiration=self.context.app.config.get("OTS_RABBITMQ_TTL")
++                    ),
++                )
++            return
++
+         if not destinations and not user_id:
+             # Publish all CoT messages received by TCP and that have no destination to the __ANON__ group
+             self.rabbit_channel.basic_publish(
+@@ -1249,7 +1263,7 @@ class CoTController:
+                 self.parse_rbline(event, uid, point_pk, cot_pk)
+                 self.parse_stats(event, uid)
+                 self.generate_mission_change(uid, event)
+-                self.route_cot(event, uid, body.get("user_id"))
++                self.route_cot(event, uid, body.get("user_id"), body.get("groups"))
+                 self.rabbit_channel.basic_ack(delivery_tag=basic_deliver.delivery_tag)
+ 
+                 # EUD went offline
+-- 
+2.23.0
+

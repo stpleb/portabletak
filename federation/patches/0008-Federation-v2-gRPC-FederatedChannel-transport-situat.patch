@@ -1,0 +1,1512 @@
+From 11585dbc3c6849e7d0df50ccb1aa9499687a9db7 Mon Sep 17 00:00:00 2001
+From: Francesco Romano <fwromano15@gmail.com>
+Date: Fri, 17 Jul 2026 14:22:40 -0500
+Subject: [PATCH 08/16] Federation v2: gRPC FederatedChannel transport
+ (situational awareness)
+
+Adds the official FederatedChannel gRPC service (v2, port 9001) alongside v1.
+Both carry the same FederatedEvent and share the CoT mapper, group filtering,
+loop guard, federated-EUD registration, and truststore - only the transport
+differs, so the shared logic was factored into engine.build_outbound_event /
+apply_inbound_event / contact_announcements and is used by both.
+
+- fig.proto: restore the FederatedChannel service definition; generate grpc
+  stubs. OTS serves the SA subset (getIdentity, HealthCheck,
+  ClientEventStream, ServerEventStream); ROL and group-mapping RPCs are
+  declared for wire compatibility but not served.
+- grpc_engine.py: FederationServicer (inbound listener) and GrpcClient
+  (outbound dialer), mutual TLS against the federation truststore, peer
+  identified by client certificate.
+- FederationManager runs both the v1 and v2 listeners; outbound dials route
+  by the federate's protocol_version.
+- New config: OTS_FEDERATION_ENABLE_V2, OTS_FEDERATION_V2_PORT,
+  OTS_FEDERATION_V2_AUTHORITY. grpcio added as a dependency.
+---
+ opentakserver/defaultconfig.py                |  10 +
+ opentakserver/federation/engine.py            | 268 +++++---
+ opentakserver/federation/grpc_engine.py       | 349 ++++++++++
+ opentakserver/federation/proto/fig.proto      |  25 +
+ opentakserver/federation/proto/fig_pb2.py     |   4 +-
+ .../federation/proto/fig_pb2_grpc.py          | 631 ++++++++++++++++++
+ opentakserver/federation/truststore.py        |  33 +
+ pyproject.toml                                |   1 +
+ 8 files changed, 1226 insertions(+), 95 deletions(-)
+ create mode 100644 opentakserver/federation/grpc_engine.py
+ create mode 100644 opentakserver/federation/proto/fig_pb2_grpc.py
+
+diff --git a/opentakserver/defaultconfig.py b/opentakserver/defaultconfig.py
+index 7f69549..cd3e30d 100644
+--- a/opentakserver/defaultconfig.py
++++ b/opentakserver/defaultconfig.py
+@@ -53,6 +53,16 @@ class DefaultConfig:
+         "yes",
+     ]
+     OTS_FEDERATION_V1_PORT = int(os.getenv("OTS_FEDERATION_V1_PORT", 9000))
++    OTS_FEDERATION_ENABLE_V2 = os.getenv("OTS_FEDERATION_ENABLE_V2", "True").lower() in [
++        "true",
++        "1",
++        "yes",
++    ]
++    OTS_FEDERATION_V2_PORT = int(os.getenv("OTS_FEDERATION_V2_PORT", 9001))
++    OTS_FEDERATION_V2_WORKERS = int(os.getenv("OTS_FEDERATION_V2_WORKERS", 16))
++    # gRPC verifies the peer's certificate CN against this authority (TAK
++    # federation trusts by CA, and OTS server certs use CN "opentakserver")
++    OTS_FEDERATION_V2_AUTHORITY = os.getenv("OTS_FEDERATION_V2_AUTHORITY", "opentakserver")
+     OTS_FEDERATION_INTERFACE = os.getenv("OTS_FEDERATION_INTERFACE", "0.0.0.0")
+     OTS_FEDERATION_RECONNECT_SECONDS = int(os.getenv("OTS_FEDERATION_RECONNECT_SECONDS", 30))
+     OTS_FEDERATION_CONTACT_INTERVAL_SECONDS = int(
+diff --git a/opentakserver/federation/engine.py b/opentakserver/federation/engine.py
+index 7c23b8e..44c6a58 100644
+--- a/opentakserver/federation/engine.py
++++ b/opentakserver/federation/engine.py
+@@ -56,6 +56,105 @@ DIALER_SCAN_SECONDS = 5
+ GROUP_CACHE_SECONDS = 30
+ 
+ 
++# ---------------------------------------------------------------------------
++# Transport-agnostic event processing.
++#
++# v1 (framed TLS sockets) and v2 (gRPC streams) differ only in how bytes move;
++# the mapping, group filtering, loop guard, and federated-EUD registration are
++# identical, so they live here and are shared by both engines.
++# ---------------------------------------------------------------------------
++
++
++def build_outbound_event(envelope: dict, federate: dict, directory, node_id: str):
++    """Convert a firehose envelope to a FederatedEvent to send, or None.
++
++    Applies the loop guard (skip our own node), the per-federate outbound group
++    allowlist against the sender's groups, and the excluded-type filter.
++    """
++    uid = envelope.get("uid")
++    cot = envelope.get("cot")
++    if not cot or not uid or uid == node_id:
++        return None
++
++    allowed = set(federate.get("outbound_groups") or [])
++    if not allowed:
++        return None
++
++    groups = directory.sender_groups(uid) & allowed
++    if not groups:
++        return None
++
++    fed_event = cot_to_federated_event(cot)
++    if not fed_event or fed_event.event.type in EXCLUDED_COT_TYPES:
++        return None
++
++    fed_event.federateGroups.extend(sorted(groups))
++    return fed_event
++
++
++def apply_inbound_event(fed_event, federate: dict, directory, bridge, logger, remote_contacts):
++    """Handle one received FederatedEvent (contact and/or SA).
++
++    Registers federated EUDs, converts SA events to CoT, and publishes them to
++    the local cot_parser tagged with the federate's inbound groups. Returns True
++    if an SA event was published. ``remote_contacts`` is the caller's dict of
++    the peer's announced contacts, updated in place.
++    """
++    name = federate["name"]
++
++    if fed_event.HasField("contact"):
++        contact = fed_event.contact
++        if contact.operation == fig_pb2.DELETE:
++            remote_contacts.pop(contact.uid, None)
++            directory.remove_federated_eud(contact.uid)
++        else:
++            remote_contacts[contact.uid] = contact.callsign
++            directory.ensure_federated_eud(contact.uid, contact.callsign, name)
++        logger.debug(
++            f"Federate {name} contact "
++            f"{fig_pb2.CRUD.Name(contact.operation)}: {contact.callsign} ({contact.uid})"
++        )
++
++    if not fed_event.HasField("event"):
++        return False
++
++    inbound_groups = federate.get("inbound_groups") or []
++    if not inbound_groups:
++        return False
++
++    cot = federated_event_to_cot(fed_event)
++    if not cot:
++        return False
++
++    # Attribute the CoT to its originating EUD and make sure that EUD exists
++    # locally so the cot table's foreign key is satisfied and the remote unit
++    # shows up like a federated contact.
++    sender_uid, callsign = sender_identity(fed_event)
++    if sender_uid:
++        directory.ensure_federated_eud(sender_uid, callsign, name)
++
++    bridge.publish_inbound(
++        {
++            "uid": sender_uid or fed_event.event.uid,
++            "cot": cot,
++            "user_id": None,
++            "groups": inbound_groups,
++            "federate": name,
++        }
++    )
++    return True
++
++
++def contact_announcements(current: dict, previously_sent: dict):
++    """Yield (uid, callsign, operation) for contact changes to announce."""
++    for uid, callsign in current.items():
++        if previously_sent.get(uid) != callsign:
++            yield uid, callsign, fig_pb2.CREATE
++    for uid, callsign in list(previously_sent.items()):
++        if uid not in current:
++            yield uid, callsign, fig_pb2.DELETE
++
++
+ class Directory:
+     """Database lookups the engine needs, isolated for testability."""
+ 
+@@ -323,38 +422,19 @@ class FederationConnection:
+     def announce_contacts(self):
+         """Send ContactListEntry create/delete for local EUD presence changes."""
+         current = self.directory.connected_contacts()
+-        for uid, callsign in current.items():
+-            if self._sent_contacts.get(uid) != callsign:
+-                self._send(contact_event(uid, callsign, fig_pb2.CREATE))
+-        for uid, callsign in list(self._sent_contacts.items()):
+-            if uid not in current:
+-                self._send(contact_event(uid, callsign, fig_pb2.DELETE))
++        for uid, callsign, operation in contact_announcements(current, self._sent_contacts):
++            self._send(contact_event(uid, callsign, operation))
+         self._sent_contacts = current
+ 
+     def handle_outbound(self, body: bytes):
+         """Firehose callback: filter by outbound groups, convert, and send."""
+         try:
+-            envelope = json.loads(body)
+-            uid = envelope.get("uid")
+-            cot = envelope.get("cot")
+-            if not cot or not uid or uid == self.node_id:
+-                return
+-
+-            allowed = set(self.federate.get("outbound_groups") or [])
+-            if not allowed:
+-                return
+-
+-            groups = self.directory.sender_groups(uid) & allowed
+-            if not groups:
+-                return
+-
+-            fed_event = cot_to_federated_event(cot)
+-            if not fed_event or fed_event.event.type in EXCLUDED_COT_TYPES:
+-                return
+-
+-            fed_event.federateGroups.extend(sorted(groups))
+-            self._send(fed_event)
+-            self.events_out += 1
++            fed_event = build_outbound_event(
++                json.loads(body), self.federate, self.directory, self.node_id
++            )
++            if fed_event is not None:
++                self._send(fed_event)
++                self.events_out += 1
+         except (OSError, ssl.SSLError):
+             self.close()
+         except Exception as e:
+@@ -364,49 +444,15 @@ class FederationConnection:
+     # ---------------------------------------------------------------- receiving
+ 
+     def handle_frame(self, fed_event: fig_pb2.FederatedEvent):
+-        name = self.federate["name"]
+-
+-        if fed_event.HasField("contact"):
+-            contact = fed_event.contact
+-            if contact.operation == fig_pb2.DELETE:
+-                self.remote_contacts.pop(contact.uid, None)
+-                self.directory.remove_federated_eud(contact.uid)
+-            else:
+-                self.remote_contacts[contact.uid] = contact.callsign
+-                self.directory.ensure_federated_eud(contact.uid, contact.callsign, name)
+-            self.logger.debug(
+-                f"Federate {name} contact "
+-                f"{fig_pb2.CRUD.Name(contact.operation)}: {contact.callsign} ({contact.uid})"
+-            )
+-
+-        if not fed_event.HasField("event"):
+-            return
+-
+-        inbound_groups = self.federate.get("inbound_groups") or []
+-        if not inbound_groups:
+-            return
+-
+-        cot = federated_event_to_cot(fed_event)
+-        if not cot:
+-            return
+-
+-        # Attribute the CoT to its originating EUD and make sure that EUD exists
+-        # locally so the cot table's foreign key is satisfied and the remote unit
+-        # shows up like a federated contact.
+-        sender_uid, callsign = sender_identity(fed_event)
+-        if sender_uid:
+-            self.directory.ensure_federated_eud(sender_uid, callsign, name)
+-
+-        self.bridge.publish_inbound(
+-            {
+-                "uid": sender_uid or fed_event.event.uid,
+-                "cot": cot,
+-                "user_id": None,
+-                "groups": inbound_groups,
+-                "federate": name,
+-            }
+-        )
+-        self.events_in += 1
++        if apply_inbound_event(
++            fed_event,
++            self.federate,
++            self.directory,
++            self.bridge,
++            self.logger,
++            self.remote_contacts,
++        ):
++            self.events_in += 1
+ 
+     def run(self):
+         """Serve the connection; returns when the link dies."""
+@@ -497,6 +543,7 @@ class FederationManager:
+         self._lock = threading.Lock()
+         self._dialing: set[int] = set()
+         self._stop = threading.Event()
++        self._grpc_server = None
+ 
+     # ----------------------------------------------------------------- registry
+ 
+@@ -582,30 +629,10 @@ class FederationManager:
+                 if not config or not config.get("enabled") or not config.get("outbound"):
+                     return
+ 
+-                try:
+-                    raw_socket = socket.create_connection(
+-                        (config["address"], config["port"]), timeout=HANDSHAKE_TIMEOUT_SECONDS
+-                    )
+-                    context = truststore.client_ssl_context(self.config)
+-                    sock = context.wrap_socket(raw_socket, server_hostname=config["address"])
+-                    sock.settimeout(None)
+-
+-                    fingerprint, common_name = truststore.peer_identity(sock)
+-                    if (
+-                        config.get("cert_fingerprint")
+-                        and config["cert_fingerprint"] != fingerprint
+-                    ):
+-                        sock.close()
+-                        raise ssl.SSLError(
+-                            f"Federate '{config['name']}' presented certificate {fingerprint[:12]} "
+-                            f"but {config['cert_fingerprint'][:12]} is pinned"
+-                        )
+-                    self.directory.pin_fingerprint(federate_id, fingerprint, common_name)
+-
+-                    self._run_connection(sock, config)
+-                except (OSError, ssl.SSLError, truststore.NoFederationCAsError) as e:
+-                    self.logger.warning(f"Federation dial to '{config['name']}' failed: {e}")
+-                    self.directory.record_state(federate_id, connected=False, error=str(e))
++                if config.get("protocol_version") == 2:
++                    self._dial_v2(config)
++                else:
++                    self._dial_v1(config)
+ 
+                 interval = config.get("reconnect_interval") or self.config.get(
+                     "OTS_FEDERATION_RECONNECT_SECONDS", 30
+@@ -615,6 +642,39 @@ class FederationManager:
+             with self._lock:
+                 self._dialing.discard(federate_id)
+ 
++    def _dial_v1(self, config: dict):
++        try:
++            raw_socket = socket.create_connection(
++                (config["address"], config["port"]), timeout=HANDSHAKE_TIMEOUT_SECONDS
++            )
++            context = truststore.client_ssl_context(self.config)
++            sock = context.wrap_socket(raw_socket, server_hostname=config["address"])
++            sock.settimeout(None)
++
++            fingerprint, common_name = truststore.peer_identity(sock)
++            if config.get("cert_fingerprint") and config["cert_fingerprint"] != fingerprint:
++                sock.close()
++                raise ssl.SSLError(
++                    f"Federate '{config['name']}' presented certificate {fingerprint[:12]} "
++                    f"but {config['cert_fingerprint'][:12]} is pinned"
++                )
++            self.directory.pin_fingerprint(config["id"], fingerprint, common_name)
++
++            self._run_connection(sock, config)
++        except (OSError, ssl.SSLError, truststore.NoFederationCAsError) as e:
++            self.logger.warning(f"Federation dial to '{config['name']}' failed: {e}")
++            self.directory.record_state(config["id"], connected=False, error=str(e))
++
++    def _dial_v2(self, config: dict):
++        from opentakserver.federation.grpc_engine import GrpcClient
++
++        client = GrpcClient(self, config)
++        self._register(client)
++        try:
++            client.run()
++        finally:
++            self._unregister(client)
++
+     def _dialer_supervisor(self):
+         while not self._stop.is_set():
+             try:
+@@ -655,10 +715,28 @@ class FederationManager:
+         finally:
+             self._unregister(connection)
+ 
++    def _start_v2_server(self):
++        if not self.config.get("OTS_FEDERATION_ENABLE_V2", True):
++            return
++        try:
++            from opentakserver.federation import grpc_engine
++
++            server, port = grpc_engine.build_server(self)
++            server.start()
++            self._grpc_server = server
++            self.logger.info(f"Federation v2 (gRPC) listening on {port}")
++        except truststore.NoFederationCAsError as e:
++            self.logger.warning(f"Federation v2 server not started: {e}")
++        except Exception as e:
++            self.logger.error(f"Could not start federation v2 server: {e}")
++            self.logger.debug(traceback.format_exc())
++
+     def run(self):
+         listener = threading.Thread(target=self._listen, name="fed-listener", daemon=True)
+         listener.start()
+ 
++        self._start_v2_server()
++
+         supervisor = threading.Thread(
+             target=self._dialer_supervisor, name="fed-dialer", daemon=True
+         )
+@@ -672,6 +750,8 @@ class FederationManager:
+ 
+     def stop(self):
+         self._stop.set()
++        if self._grpc_server is not None:
++            self._grpc_server.stop(grace=1)
+         with self._lock:
+             connections = list(self.connections.values())
+         for connection in connections:
+diff --git a/opentakserver/federation/grpc_engine.py b/opentakserver/federation/grpc_engine.py
+new file mode 100644
+index 0000000..40585ac
+--- /dev/null
++++ b/opentakserver/federation/grpc_engine.py
+@@ -0,0 +1,349 @@
++"""Federation v2 (gRPC) engine - situational awareness subset.
++
++v2 carries the same FederatedEvent messages as v1, but over the official TAK
++FederatedChannel gRPC service instead of length-prefixed TLS frames. This
++implements the SA subset:
++
++- getIdentity / HealthCheck housekeeping
++- ClientEventStream: a federate subscribes and we stream our (group-filtered)
++  events to it
++- ServerEventStream: a federate streams its events to us and we route them in
++
++The CoT mapping, group filtering, loop guard, and federated-EUD registration
++are shared with v1 (engine.build_outbound_event / apply_inbound_event), so v2
++is purely a different transport. ROL (mission federation) and group-mapping
++RPCs are declared in the proto for wire compatibility but not served.
++
++Trust uses the same federation truststore as v1: mutual TLS where peer server
++certificates are validated against the peer-CA truststore. gRPC identifies the
++connecting federate from its client certificate.
++"""
++
++import queue
++import threading
++import time
++from concurrent import futures
++
++import grpc
++
++from opentakserver.federation import truststore
++from opentakserver.federation.engine import (
++    apply_inbound_event,
++    build_outbound_event,
++    contact_announcements,
++)
++from opentakserver.federation.mapper import contact_event
++from opentakserver.federation.proto import fig_pb2, fig_pb2_grpc
++
++STREAM_POLL_SECONDS = 1.0
++OUTBOUND_QUEUE_MAX = 1000
++
++
++def _channel_credentials(config):
++    return grpc.ssl_channel_credentials(
++        root_certificates=truststore.truststore_pem(config),
++        private_key=truststore.server_key_pem(config),
++        certificate_chain=truststore.server_cert_pem(config),
++    )
++
++
++def _server_credentials(config):
++    return grpc.ssl_server_credentials(
++        [(truststore.server_key_pem(config), truststore.server_cert_pem(config))],
++        root_certificates=truststore.truststore_pem(config),
++        require_client_auth=True,
++    )
++
++
++def _peer_identity(context):
++    """(fingerprint, common_name) of the connecting federate's certificate."""
++    auth = dict(context.auth_context())
++    pem = auth.get("x509_pem_cert", [b""])[0]
++    fingerprint = truststore.fingerprint_from_pem(pem)
++    cn = auth.get("x509_common_name", [b""])[0]
++    return fingerprint, (cn.decode() if cn else None)
++
++
++def _peer_address(context):
++    # grpc peer() looks like "ipv4:127.0.0.1:54321"
++    peer = context.peer()
++    parts = peer.split(":")
++    return parts[1] if len(parts) >= 2 else peer
++
++
++class FederationServicer(fig_pb2_grpc.FederatedChannelServicer):
++    """Serves inbound federation v2 connections (we are the listener)."""
++
++    def __init__(self, manager):
++        self.manager = manager
++        self.config = manager.config
++        self.logger = manager.logger
++        self.directory = manager.directory
++        self.node_id = manager.config.get("OTS_NODE_ID")
++
++    def _identity_message(self):
++        return fig_pb2.Identity(
++            name=self.node_id,
++            uid=self.node_id,
++            description="OpenTAKServer",
++            type=fig_pb2.Identity.FEDERATION_TAK_SERVER,
++            serverId=self.node_id,
++        )
++
++    def getIdentity(self, request, context):
++        return self._identity_message()
++
++    def HealthCheck(self, request, context):
++        return fig_pb2.ServerHealth(status=fig_pb2.ServerHealth.SERVING)
++
++    def _resolve_federate(self, context):
++        fingerprint, cn = _peer_identity(context)
++        federate = self.directory.find_or_create_inbound(
++            fingerprint, cn, _peer_address(context)
++        )
++        return federate
++
++    def ServerEventStream(self, request_iterator, context):
++        """A federate streams its events to us; route them inbound."""
++        federate = self._resolve_federate(context)
++        name = federate["name"]
++        if not federate.get("enabled"):
++            context.abort(grpc.StatusCode.PERMISSION_DENIED, "federate disabled")
++
++        bridge = self.manager.bridge_factory()
++        remote_contacts = {}
++        count = 0
++        self.logger.info(f"Federation v2 inbound stream from '{name}' opened")
++        self.directory.record_state(federate["id"], connected=True)
++        try:
++            for fed_event in request_iterator:
++                current = self.directory.federate_config(federate["id"]) or federate
++                if apply_inbound_event(
++                    fed_event, current, self.directory, bridge, self.logger, remote_contacts
++                ):
++                    count += 1
++        except Exception as e:  # noqa: BLE001 - report and end the stream cleanly
++            self.logger.debug(f"Federation v2 inbound stream from '{name}' ended: {e}")
++        finally:
++            bridge.close()
++            self.directory.record_state(federate["id"], connected=False)
++            self.logger.info(
++                f"Federation v2 inbound stream from '{name}' closed ({count} events)"
++            )
++        return fig_pb2.Subscription(identity=self._identity_message())
++
++    def ClientEventStream(self, request, context):
++        """A federate subscribes; stream our group-filtered events to it."""
++        federate = self._resolve_federate(context)
++        name = federate["name"]
++        if not federate.get("enabled"):
++            context.abort(grpc.StatusCode.PERMISSION_DENIED, "federate disabled")
++
++        self.logger.info(f"Federation v2 outbound stream to '{name}' opened")
++        yield from _outbound_event_stream(self.manager, federate, context)
++        self.logger.info(f"Federation v2 outbound stream to '{name}' closed")
++
++
++def _outbound_event_stream(manager, federate, context):
++    """Generator of FederatedEvents to send to a subscribed federate.
++
++    Bridges the firehose exchange into a bounded queue on a worker thread and
++    yields converted, group-filtered events plus periodic contact
++    announcements until the peer goes away.
++    """
++    node_id = manager.config.get("OTS_NODE_ID")
++    directory = manager.directory
++    logger = manager.logger
++    outbound = queue.Queue(maxsize=OUTBOUND_QUEUE_MAX)
++    bridge = manager.bridge_factory()
++
++    def pump():
++        def on_body(body):
++            try:
++                outbound.put_nowait(body)
++            except queue.Full:
++                pass  # drop under backpressure; SA is live state
++
++        try:
++            bridge.consume_outbound(on_body)
++        except Exception:  # noqa: BLE001 - bridge closed on teardown
++            pass
++
++    pump_thread = threading.Thread(target=pump, name=f"fedv2-out-{federate['name']}", daemon=True)
++    pump_thread.start()
++
++    sent_contacts = {}
++    last_contacts = 0.0
++    contact_interval = manager.config.get("OTS_FEDERATION_CONTACT_INTERVAL_SECONDS", 30)
++
++    try:
++        while context.is_active():
++            # Contact announcements
++            now = time.monotonic()
++            if now - last_contacts >= contact_interval:
++                last_contacts = now
++                current = directory.connected_contacts()
++                for uid, callsign, operation in contact_announcements(current, sent_contacts):
++                    yield contact_event(uid, callsign, operation)
++                sent_contacts = current
++                federate = directory.federate_config(federate["id"]) or federate
++
++            try:
++                body = outbound.get(timeout=STREAM_POLL_SECONDS)
++            except queue.Empty:
++                continue
++
++            import json
++
++            fed_event = build_outbound_event(json.loads(body), federate, directory, node_id)
++            if fed_event is not None:
++                yield fed_event
++    except Exception as e:  # noqa: BLE001
++        logger.debug(f"Federation v2 outbound stream error for '{federate['name']}': {e}")
++    finally:
++        bridge.close()
++
++
++class GrpcClient:
++    """Dials a federation v2 peer (we are the outgoing connection)."""
++
++    def __init__(self, manager, federate):
++        self.manager = manager
++        self.config = manager.config
++        self.logger = manager.logger
++        self.directory = manager.directory
++        self.node_id = manager.config.get("OTS_NODE_ID")
++        self.federate = federate
++        self._stop = threading.Event()
++
++    def _identity_message(self):
++        return fig_pb2.Identity(
++            name=self.node_id,
++            uid=self.node_id,
++            type=fig_pb2.Identity.FEDERATION_TAK_CLIENT,
++            serverId=self.node_id,
++        )
++
++    def _outbound_generator(self, bridge):
++        outbound = queue.Queue(maxsize=OUTBOUND_QUEUE_MAX)
++
++        def on_body(body):
++            try:
++                outbound.put_nowait(body)
++            except queue.Full:
++                pass
++
++        threading.Thread(
++            target=lambda: self._safe_consume(bridge, on_body),
++            name=f"fedv2c-out-{self.federate['name']}",
++            daemon=True,
++        ).start()
++
++        import json
++
++        sent_contacts = {}
++        last_contacts = 0.0
++        contact_interval = self.config.get("OTS_FEDERATION_CONTACT_INTERVAL_SECONDS", 30)
++
++        while not self._stop.is_set():
++            now = time.monotonic()
++            if now - last_contacts >= contact_interval:
++                last_contacts = now
++                current = self.directory.connected_contacts()
++                for uid, callsign, operation in contact_announcements(current, sent_contacts):
++                    yield contact_event(uid, callsign, operation)
++                sent_contacts = current
++
++            try:
++                body = outbound.get(timeout=STREAM_POLL_SECONDS)
++            except queue.Empty:
++                continue
++
++            config = self.directory.federate_config(self.federate["id"]) or self.federate
++            fed_event = build_outbound_event(json.loads(body), config, self.directory, self.node_id)
++            if fed_event is not None:
++                yield fed_event
++
++    def _safe_consume(self, bridge, on_body):
++        try:
++            bridge.consume_outbound(on_body)
++        except Exception:  # noqa: BLE001
++            pass
++
++    def run(self):
++        config = self.federate
++        target = f"{config['address']}:{config['port']}"
++        authority = self.config.get("OTS_FEDERATION_V2_AUTHORITY", "opentakserver")
++        options = [("grpc.ssl_target_name_override", authority)]
++
++        try:
++            credentials = _channel_credentials(self.config)
++        except truststore.NoFederationCAsError as e:
++            self.logger.warning(f"Federation v2 dial to '{config['name']}' failed: {e}")
++            self.directory.record_state(config["id"], connected=False, error=str(e))
++            return
++
++        channel = grpc.secure_channel(target, credentials, options=options)
++        stub = fig_pb2_grpc.FederatedChannelStub(channel)
++        bridge = self.manager.bridge_factory()
++        remote_contacts = {}
++        name = config["name"]
++
++        try:
++            grpc.channel_ready_future(channel).result(timeout=15)
++            identity = stub.getIdentity(fig_pb2.Empty())
++            self.logger.info(
++                f"Federation v2 link established with '{name}' (peer: {identity.name})"
++            )
++            self.directory.record_state(config["id"], connected=True)
++
++            # Send our events to the peer on a worker thread
++            def send():
++                try:
++                    stub.ServerEventStream(self._outbound_generator(bridge))
++                except grpc.RpcError as e:
++                    self.logger.debug(f"Federation v2 send stream to '{name}' ended: {e.code()}")
++
++            sender = threading.Thread(target=send, name=f"fedv2c-send-{name}", daemon=True)
++            sender.start()
++
++            # Receive the peer's events on this thread
++            subscription = fig_pb2.Subscription(identity=self._identity_message())
++            for fed_event in stub.ClientEventStream(subscription):
++                if self._stop.is_set():
++                    break
++                current = self.directory.federate_config(config["id"]) or config
++                apply_inbound_event(
++                    fed_event, current, self.directory, bridge, self.logger, remote_contacts
++                )
++        except grpc.RpcError as e:
++            self.logger.warning(
++                f"Federation v2 dial to '{name}' failed: {e.code()} {e.details()}"
++            )
++            self.directory.record_state(config["id"], connected=False, error=str(e.code()))
++        except Exception as e:  # noqa: BLE001
++            self.logger.error(f"Federation v2 client error for '{name}': {e}")
++            self.directory.record_state(config["id"], connected=False, error=str(e))
++        finally:
++            self._stop.set()
++            bridge.close()
++            channel.close()
++            self.logger.info(f"Federation v2 link with '{name}' closed")
++
++    def stop(self):
++        self._stop.set()
++
++    # The manager's connection registry closes replaced links via close()
++    close = stop
++
++
++def build_server(manager):
++    """Create (but do not start) the gRPC federation server."""
++    server = grpc.server(
++        futures.ThreadPoolExecutor(max_workers=manager.config.get("OTS_FEDERATION_V2_WORKERS", 16))
++    )
++    fig_pb2_grpc.add_FederatedChannelServicer_to_server(FederationServicer(manager), server)
++    interface = manager.config.get("OTS_FEDERATION_INTERFACE", "0.0.0.0")
++    port = manager.config.get("OTS_FEDERATION_V2_PORT", 9001)
++    server.add_secure_port(f"{interface}:{port}", _server_credentials(manager.config))
++    return server, port
+diff --git a/opentakserver/federation/proto/fig.proto b/opentakserver/federation/proto/fig.proto
+index bdfd253..0640325 100644
+--- a/opentakserver/federation/proto/fig.proto
++++ b/opentakserver/federation/proto/fig.proto
+@@ -19,6 +19,31 @@ option objc_class_prefix = "TAK";
+ 
+ package com.atakmap;
+ 
++// Federation v2 transport. v1 exchanges FederatedEvent as length-prefixed
++// frames over a raw TLS socket and ignores this service; v2 uses these RPCs
++// over gRPC/HTTP2. OpenTAKServer implements the situational-awareness subset:
++// getIdentity, HealthCheck, and the ClientEventStream/ServerEventStream event
++// streams. The ROL (mission federation) and group-mapping RPCs are declared
++// for wire compatibility but not served.
++service FederatedChannel {
++	rpc SendOneEvent(FederatedEvent) returns (Empty) {}
++	rpc BinaryMessageStream(stream BinaryBlob) returns (Empty) {}
++	rpc SendOneBlob(BinaryBlob) returns (Empty) {}
++	rpc getIdentity (Empty) returns (Identity) {}
++	rpc ClientEventStream (Subscription) returns (stream FederatedEvent) {}
++	rpc ServerEventStream (stream FederatedEvent) returns (Subscription) {}
++	rpc HealthCheck (ClientHealth) returns (ServerHealth) {}
++
++	rpc ClientROLStream (Subscription) returns (stream ROL) {}
++	rpc ServerROLStream (stream ROL) returns (Subscription) {}
++
++	rpc ServerFederateGroupsStream (Subscription) returns (stream FederateGroups) {}
++	rpc ClientFederateGroupsStream (stream FederateGroups) returns (Subscription) {}
++
++	rpc GetAuthTokenByX509 (BinaryBlob) returns (FederateTokenResponse) {}
++	rpc Getx509Identity (Empty) returns (BinaryBlob) {}
++}
++
+ enum CRUD { INVALID = 0; CREATE = 1; READ = 2; UPDATE = 3; DELETE = 4; }
+ enum BINARY_TYPES { EMPTY = 0; OTHER = 1; IMAGE = 2; }
+ 
+diff --git a/opentakserver/federation/proto/fig_pb2.py b/opentakserver/federation/proto/fig_pb2.py
+index 5a005b5..e2f04e0 100644
+--- a/opentakserver/federation/proto/fig_pb2.py
++++ b/opentakserver/federation/proto/fig_pb2.py
+@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
+ from opentakserver.federation.proto import binarypayload_pb2 as binarypayload__pb2
+ 
+ 
+-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\tfig.proto\x12\x0b\x63om.atakmap\x1a\x13\x62inarypayload.proto\"\xb1\x02\n\x0e\x46\x65\x64\x65ratedEvent\x12$\n\x05\x65vent\x18\x01 \x01(\x0b\x32\x15.com.atakmap.GeoEvent\x12.\n\x07\x63ontact\x18\x02 \x01(\x0b\x32\x1d.com.atakmap.ContactListEntry\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x03 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x04 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x05 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\xb8\x04\n\x08GeoEvent\x12\x10\n\x08sendTime\x18\x01 \x01(\x03\x12\x11\n\tstartTime\x18\x02 \x01(\x03\x12\x11\n\tstaleTime\x18\x03 \x01(\x03\x12\x0b\n\x03lat\x18\x04 \x01(\x01\x12\x0b\n\x03lon\x18\x05 \x01(\x01\x12\x0b\n\x03hae\x18\x06 \x01(\x01\x12\n\n\x02\x63\x65\x18\x07 \x01(\x01\x12\n\n\x02le\x18\x08 \x01(\x01\x12\x0b\n\x03uid\x18\t \x01(\t\x12\x0c\n\x04type\x18\n \x01(\t\x12\x13\n\x0b\x63oordSource\x18\x0b \x01(\t\x12\r\n\x05other\x18\x0c \x01(\t\x12\x0f\n\x07\x62\x61ttery\x18\r \x01(\x05\x12\x0c\n\x04ploc\x18\x0e \x01(\t\x12\x0c\n\x04palt\x18\x0f \x01(\t\x12\x12\n\nscreenName\x18\x10 \x01(\t\x12\x11\n\tgroupName\x18\x11 \x01(\t\x12\x11\n\tgroupRole\x18\x12 \x01(\t\x12\r\n\x05phone\x18\x13 \x01(\t\x12\r\n\x05speed\x18\x14 \x01(\x01\x12\x0e\n\x06\x63ourse\x18\x15 \x01(\x01\x12\'\n\x06\x62inary\x18\x16 \x01(\x0b\x32\x17.com.atakmap.BinaryBlob\x12\x0f\n\x07ptpUids\x18\x17 \x03(\t\x12\x14\n\x0cptpCallsigns\x18\x18 \x03(\t\x12\x0f\n\x07\x66\x65\x65\x64Uid\x18\x19 \x01(\t\x12\x14\n\x0cmissionNames\x18\x1a \x03(\t\x12\x0e\n\x06\x61\x63\x63\x65ss\x18\x1b \x01(\t\x12\x0e\n\x06\x63\x61veat\x18\x1c \x01(\t\x12\x15\n\rreleaseableTo\x18\x1d \x01(\t\x12\x33\n\x06\x62loads\x18\x1e \x03(\x0b\x32#.gov.tak.cop.proto.v1.BinaryPayload\"\xb0\x02\n\nBinaryBlob\x12\'\n\x04type\x18\x01 \x01(\x0e\x32\x19.com.atakmap.BINARY_TYPES\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\x12\x10\n\x08\x66ilename\x18\x03 \x01(\t\x12\x11\n\ttimestamp\x18\x04 \x01(\x03\x12\x13\n\x0b\x64\x65scription\x18\x05 \x01(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x06 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x07 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x08 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\x8a\x01\n\x10\x43ontactListEntry\x12$\n\toperation\x18\x01 \x01(\x0e\x32\x11.com.atakmap.CRUD\x12\x0b\n\x03uid\x18\x02 \x01(\t\x12\x10\n\x08\x63\x61llsign\x18\x03 \x01(\t\x12\r\n\x05phone\x18\x04 \x01(\t\x12\x0b\n\x03sip\x18\x05 \x01(\t\x12\x15\n\rdirectConnect\x18\x06 \x01(\t\"\x07\n\x05\x45mpty\"\xfe\x01\n\x08Identity\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0b\n\x03uid\x18\x02 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x03 \x01(\t\x12\x32\n\x04type\x18\x04 \x01(\x0e\x32$.com.atakmap.Identity.ConnectionType\x12\x10\n\x08serverId\x18\x05 \x01(\t\"|\n\x0e\x43onnectionType\x12\x19\n\x15\x46\x45\x44\x45RATION_HUB_SERVER\x10\x00\x12\x19\n\x15\x46\x45\x44\x45RATION_HUB_CLIENT\x10\x01\x12\x19\n\x15\x46\x45\x44\x45RATION_TAK_SERVER\x10\x02\x12\x19\n\x15\x46\x45\x44\x45RATION_TAK_CLIENT\x10\x03\"w\n\x0cSubscription\x12\'\n\x08identity\x18\x01 \x01(\x0b\x32\x15.com.atakmap.Identity\x12\x0e\n\x06\x66ilter\x18\x02 \x01(\t\x12.\n\x07version\x18\x03 \x01(\x0b\x32\x1d.com.atakmap.TakServerVersion\"\x83\x01\n\x0c\x43lientHealth\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.com.atakmap.ClientHealth.ServingStatus\":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\"\x96\x01\n\x0cServerHealth\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.com.atakmap.ServerHealth.ServingStatus\"M\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\x12\x11\n\rNOT_CONNECTED\x10\x03\"\x8b\x02\n\x03ROL\x12\x0f\n\x07program\x18\x01 \x01(\t\x12(\n\x07payload\x18\x02 \x03(\x0b\x32\x17.com.atakmap.BinaryBlob\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x03 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x04 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x05 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\xbf\x02\n\x0e\x46\x65\x64\x65rateGroups\x12/\n\x0cstreamUpdate\x18\x01 \x01(\x0b\x32\x19.com.atakmap.ServerHealth\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x02 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x03 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x04 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x31\n\x0cnestedGroups\x18\x05 \x03(\x0b\x32\x1b.com.atakmap.FederateGroups\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"`\n\x10TakServerVersion\x12\r\n\x05major\x18\x01 \x01(\x03\x12\r\n\x05minor\x18\x02 \x01(\x03\x12\r\n\x05patch\x18\x03 \x01(\x03\x12\x0e\n\x06\x62ranch\x18\x04 \x01(\t\x12\x0f\n\x07variant\x18\x05 \x01(\t\"N\n\x12\x46\x65\x64\x65rateProvenance\x12\x1a\n\x12\x66\x65\x64\x65rationServerId\x18\x01 \x01(\t\x12\x1c\n\x14\x66\x65\x64\x65rationServerName\x18\x02 \x01(\t\"4\n\x0c\x46\x65\x64\x65rateHops\x12\x0f\n\x07maxHops\x18\x01 \x01(\x03\x12\x13\n\x0b\x63urrentHops\x18\x02 \x01(\x03\"P\n\x15\x46\x65\x64\x65rateGroupHopLimit\x12\x11\n\tgroupName\x18\x01 \x01(\t\x12\x0f\n\x07maxHops\x18\x02 \x01(\x03\x12\x13\n\x0b\x63urrentHops\x18\x03 \x01(\x03\"o\n\x16\x46\x65\x64\x65rateGroupHopLimits\x12\x32\n\x06limits\x18\x01 \x03(\x0b\x32\".com.atakmap.FederateGroupHopLimit\x12!\n\x19useFederateGroupHopLimits\x18\x02 \x01(\x08\"&\n\x15\x46\x65\x64\x65rateTokenResponse\x12\r\n\x05token\x18\x01 \x01(\t*A\n\x04\x43RUD\x12\x0b\n\x07INVALID\x10\x00\x12\n\n\x06\x43REATE\x10\x01\x12\x08\n\x04READ\x10\x02\x12\n\n\x06UPDATE\x10\x03\x12\n\n\x06\x44\x45LETE\x10\x04*/\n\x0c\x42INARY_TYPES\x12\t\n\x05\x45MPTY\x10\x00\x12\t\n\x05OTHER\x10\x01\x12\t\n\x05IMAGE\x10\x02\x42#\n\x0f\x63om.atakmap.TakB\x08\x46igProtoP\x01\xa2\x02\x03TAKb\x06proto3')
++DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\tfig.proto\x12\x0b\x63om.atakmap\x1a\x13\x62inarypayload.proto\"\xb1\x02\n\x0e\x46\x65\x64\x65ratedEvent\x12$\n\x05\x65vent\x18\x01 \x01(\x0b\x32\x15.com.atakmap.GeoEvent\x12.\n\x07\x63ontact\x18\x02 \x01(\x0b\x32\x1d.com.atakmap.ContactListEntry\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x03 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x04 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x05 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\xb8\x04\n\x08GeoEvent\x12\x10\n\x08sendTime\x18\x01 \x01(\x03\x12\x11\n\tstartTime\x18\x02 \x01(\x03\x12\x11\n\tstaleTime\x18\x03 \x01(\x03\x12\x0b\n\x03lat\x18\x04 \x01(\x01\x12\x0b\n\x03lon\x18\x05 \x01(\x01\x12\x0b\n\x03hae\x18\x06 \x01(\x01\x12\n\n\x02\x63\x65\x18\x07 \x01(\x01\x12\n\n\x02le\x18\x08 \x01(\x01\x12\x0b\n\x03uid\x18\t \x01(\t\x12\x0c\n\x04type\x18\n \x01(\t\x12\x13\n\x0b\x63oordSource\x18\x0b \x01(\t\x12\r\n\x05other\x18\x0c \x01(\t\x12\x0f\n\x07\x62\x61ttery\x18\r \x01(\x05\x12\x0c\n\x04ploc\x18\x0e \x01(\t\x12\x0c\n\x04palt\x18\x0f \x01(\t\x12\x12\n\nscreenName\x18\x10 \x01(\t\x12\x11\n\tgroupName\x18\x11 \x01(\t\x12\x11\n\tgroupRole\x18\x12 \x01(\t\x12\r\n\x05phone\x18\x13 \x01(\t\x12\r\n\x05speed\x18\x14 \x01(\x01\x12\x0e\n\x06\x63ourse\x18\x15 \x01(\x01\x12\'\n\x06\x62inary\x18\x16 \x01(\x0b\x32\x17.com.atakmap.BinaryBlob\x12\x0f\n\x07ptpUids\x18\x17 \x03(\t\x12\x14\n\x0cptpCallsigns\x18\x18 \x03(\t\x12\x0f\n\x07\x66\x65\x65\x64Uid\x18\x19 \x01(\t\x12\x14\n\x0cmissionNames\x18\x1a \x03(\t\x12\x0e\n\x06\x61\x63\x63\x65ss\x18\x1b \x01(\t\x12\x0e\n\x06\x63\x61veat\x18\x1c \x01(\t\x12\x15\n\rreleaseableTo\x18\x1d \x01(\t\x12\x33\n\x06\x62loads\x18\x1e \x03(\x0b\x32#.gov.tak.cop.proto.v1.BinaryPayload\"\xb0\x02\n\nBinaryBlob\x12\'\n\x04type\x18\x01 \x01(\x0e\x32\x19.com.atakmap.BINARY_TYPES\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\x12\x10\n\x08\x66ilename\x18\x03 \x01(\t\x12\x11\n\ttimestamp\x18\x04 \x01(\x03\x12\x13\n\x0b\x64\x65scription\x18\x05 \x01(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x06 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x07 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x08 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\x8a\x01\n\x10\x43ontactListEntry\x12$\n\toperation\x18\x01 \x01(\x0e\x32\x11.com.atakmap.CRUD\x12\x0b\n\x03uid\x18\x02 \x01(\t\x12\x10\n\x08\x63\x61llsign\x18\x03 \x01(\t\x12\r\n\x05phone\x18\x04 \x01(\t\x12\x0b\n\x03sip\x18\x05 \x01(\t\x12\x15\n\rdirectConnect\x18\x06 \x01(\t\"\x07\n\x05\x45mpty\"\xfe\x01\n\x08Identity\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0b\n\x03uid\x18\x02 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x03 \x01(\t\x12\x32\n\x04type\x18\x04 \x01(\x0e\x32$.com.atakmap.Identity.ConnectionType\x12\x10\n\x08serverId\x18\x05 \x01(\t\"|\n\x0e\x43onnectionType\x12\x19\n\x15\x46\x45\x44\x45RATION_HUB_SERVER\x10\x00\x12\x19\n\x15\x46\x45\x44\x45RATION_HUB_CLIENT\x10\x01\x12\x19\n\x15\x46\x45\x44\x45RATION_TAK_SERVER\x10\x02\x12\x19\n\x15\x46\x45\x44\x45RATION_TAK_CLIENT\x10\x03\"w\n\x0cSubscription\x12\'\n\x08identity\x18\x01 \x01(\x0b\x32\x15.com.atakmap.Identity\x12\x0e\n\x06\x66ilter\x18\x02 \x01(\t\x12.\n\x07version\x18\x03 \x01(\x0b\x32\x1d.com.atakmap.TakServerVersion\"\x83\x01\n\x0c\x43lientHealth\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.com.atakmap.ClientHealth.ServingStatus\":\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\"\x96\x01\n\x0cServerHealth\x12\x37\n\x06status\x18\x01 \x01(\x0e\x32\'.com.atakmap.ServerHealth.ServingStatus\"M\n\rServingStatus\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\x12\x11\n\rNOT_CONNECTED\x10\x03\"\x8b\x02\n\x03ROL\x12\x0f\n\x07program\x18\x01 \x01(\t\x12(\n\x07payload\x18\x02 \x03(\x0b\x32\x17.com.atakmap.BinaryBlob\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x03 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x04 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x05 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"\xbf\x02\n\x0e\x46\x65\x64\x65rateGroups\x12/\n\x0cstreamUpdate\x18\x01 \x01(\x0b\x32\x19.com.atakmap.ServerHealth\x12\x16\n\x0e\x66\x65\x64\x65rateGroups\x18\x02 \x03(\t\x12;\n\x12\x66\x65\x64\x65rateProvenance\x18\x03 \x03(\x0b\x32\x1f.com.atakmap.FederateProvenance\x12/\n\x0c\x66\x65\x64\x65rateHops\x18\x04 \x01(\x0b\x32\x19.com.atakmap.FederateHops\x12\x31\n\x0cnestedGroups\x18\x05 \x03(\x0b\x32\x1b.com.atakmap.FederateGroups\x12\x43\n\x16\x66\x65\x64\x65rateGroupHopLimits\x18\x06 \x01(\x0b\x32#.com.atakmap.FederateGroupHopLimits\"`\n\x10TakServerVersion\x12\r\n\x05major\x18\x01 \x01(\x03\x12\r\n\x05minor\x18\x02 \x01(\x03\x12\r\n\x05patch\x18\x03 \x01(\x03\x12\x0e\n\x06\x62ranch\x18\x04 \x01(\t\x12\x0f\n\x07variant\x18\x05 \x01(\t\"N\n\x12\x46\x65\x64\x65rateProvenance\x12\x1a\n\x12\x66\x65\x64\x65rationServerId\x18\x01 \x01(\t\x12\x1c\n\x14\x66\x65\x64\x65rationServerName\x18\x02 \x01(\t\"4\n\x0c\x46\x65\x64\x65rateHops\x12\x0f\n\x07maxHops\x18\x01 \x01(\x03\x12\x13\n\x0b\x63urrentHops\x18\x02 \x01(\x03\"P\n\x15\x46\x65\x64\x65rateGroupHopLimit\x12\x11\n\tgroupName\x18\x01 \x01(\t\x12\x0f\n\x07maxHops\x18\x02 \x01(\x03\x12\x13\n\x0b\x63urrentHops\x18\x03 \x01(\x03\"o\n\x16\x46\x65\x64\x65rateGroupHopLimits\x12\x32\n\x06limits\x18\x01 \x03(\x0b\x32\".com.atakmap.FederateGroupHopLimit\x12!\n\x19useFederateGroupHopLimits\x18\x02 \x01(\x08\"&\n\x15\x46\x65\x64\x65rateTokenResponse\x12\r\n\x05token\x18\x01 \x01(\t*A\n\x04\x43RUD\x12\x0b\n\x07INVALID\x10\x00\x12\n\n\x06\x43REATE\x10\x01\x12\x08\n\x04READ\x10\x02\x12\n\n\x06UPDATE\x10\x03\x12\n\n\x06\x44\x45LETE\x10\x04*/\n\x0c\x42INARY_TYPES\x12\t\n\x05\x45MPTY\x10\x00\x12\t\n\x05OTHER\x10\x01\x12\t\n\x05IMAGE\x10\x02\x32\xd3\x07\n\x10\x46\x65\x64\x65ratedChannel\x12\x41\n\x0cSendOneEvent\x12\x1b.com.atakmap.FederatedEvent\x1a\x12.com.atakmap.Empty\"\x00\x12\x46\n\x13\x42inaryMessageStream\x12\x17.com.atakmap.BinaryBlob\x1a\x12.com.atakmap.Empty\"\x00(\x01\x12<\n\x0bSendOneBlob\x12\x17.com.atakmap.BinaryBlob\x1a\x12.com.atakmap.Empty\"\x00\x12:\n\x0bgetIdentity\x12\x12.com.atakmap.Empty\x1a\x15.com.atakmap.Identity\"\x00\x12O\n\x11\x43lientEventStream\x12\x19.com.atakmap.Subscription\x1a\x1b.com.atakmap.FederatedEvent\"\x00\x30\x01\x12O\n\x11ServerEventStream\x12\x1b.com.atakmap.FederatedEvent\x1a\x19.com.atakmap.Subscription\"\x00(\x01\x12\x45\n\x0bHealthCheck\x12\x19.com.atakmap.ClientHealth\x1a\x19.com.atakmap.ServerHealth\"\x00\x12\x42\n\x0f\x43lientROLStream\x12\x19.com.atakmap.Subscription\x1a\x10.com.atakmap.ROL\"\x00\x30\x01\x12\x42\n\x0fServerROLStream\x12\x10.com.atakmap.ROL\x1a\x19.com.atakmap.Subscription\"\x00(\x01\x12X\n\x1aServerFederateGroupsStream\x12\x19.com.atakmap.Subscription\x1a\x1b.com.atakmap.FederateGroups\"\x00\x30\x01\x12X\n\x1a\x43lientFederateGroupsStream\x12\x1b.com.atakmap.FederateGroups\x1a\x19.com.atakmap.Subscription\"\x00(\x01\x12S\n\x12GetAuthTokenByX509\x12\x17.com.atakmap.BinaryBlob\x1a\".com.atakmap.FederateTokenResponse\"\x00\x12@\n\x0fGetx509Identity\x12\x12.com.atakmap.Empty\x1a\x17.com.atakmap.BinaryBlob\"\x00\x42#\n\x0f\x63om.atakmap.TakB\x08\x46igProtoP\x01\xa2\x02\x03TAKb\x06proto3')
+ 
+ _globals = globals()
+ _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
+@@ -77,4 +77,6 @@ if not _descriptor._USE_C_DESCRIPTORS:
+   _globals['_FEDERATEGROUPHOPLIMITS']._serialized_end=3065
+   _globals['_FEDERATETOKENRESPONSE']._serialized_start=3067
+   _globals['_FEDERATETOKENRESPONSE']._serialized_end=3105
++  _globals['_FEDERATEDCHANNEL']._serialized_start=3224
++  _globals['_FEDERATEDCHANNEL']._serialized_end=4203
+ # @@protoc_insertion_point(module_scope)
+diff --git a/opentakserver/federation/proto/fig_pb2_grpc.py b/opentakserver/federation/proto/fig_pb2_grpc.py
+new file mode 100644
+index 0000000..1f068e3
+--- /dev/null
++++ b/opentakserver/federation/proto/fig_pb2_grpc.py
+@@ -0,0 +1,631 @@
++# Generated by the gRPC Python protocol compiler plugin. DO NOT EDIT!
++"""Client and server classes corresponding to protobuf-defined services."""
++import grpc
++import warnings
++
++from opentakserver.federation.proto import fig_pb2 as fig__pb2
++
++GRPC_GENERATED_VERSION = '1.80.0'
++GRPC_VERSION = grpc.__version__
++_version_not_supported = False
++
++try:
++    from grpc._utilities import first_version_is_lower
++    _version_not_supported = first_version_is_lower(GRPC_VERSION, GRPC_GENERATED_VERSION)
++except ImportError:
++    _version_not_supported = True
++
++if _version_not_supported:
++    raise RuntimeError(
++        f'The grpc package installed is at version {GRPC_VERSION},'
++        + ' but the generated code in fig_pb2_grpc.py depends on'
++        + f' grpcio>={GRPC_GENERATED_VERSION}.'
++        + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
++        + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
++    )
++
++
++class FederatedChannelStub(object):
++    """Federation v2 transport. v1 exchanges FederatedEvent as length-prefixed
++    frames over a raw TLS socket and ignores this service; v2 uses these RPCs
++    over gRPC/HTTP2. OpenTAKServer implements the situational-awareness subset:
++    getIdentity, HealthCheck, and the ClientEventStream/ServerEventStream event
++    streams. The ROL (mission federation) and group-mapping RPCs are declared
++    for wire compatibility but not served.
++    """
++
++    def __init__(self, channel):
++        """Constructor.
++
++        Args:
++            channel: A grpc.Channel.
++        """
++        self.SendOneEvent = channel.unary_unary(
++                '/com.atakmap.FederatedChannel/SendOneEvent',
++                request_serializer=fig__pb2.FederatedEvent.SerializeToString,
++                response_deserializer=fig__pb2.Empty.FromString,
++                _registered_method=True)
++        self.BinaryMessageStream = channel.stream_unary(
++                '/com.atakmap.FederatedChannel/BinaryMessageStream',
++                request_serializer=fig__pb2.BinaryBlob.SerializeToString,
++                response_deserializer=fig__pb2.Empty.FromString,
++                _registered_method=True)
++        self.SendOneBlob = channel.unary_unary(
++                '/com.atakmap.FederatedChannel/SendOneBlob',
++                request_serializer=fig__pb2.BinaryBlob.SerializeToString,
++                response_deserializer=fig__pb2.Empty.FromString,
++                _registered_method=True)
++        self.getIdentity = channel.unary_unary(
++                '/com.atakmap.FederatedChannel/getIdentity',
++                request_serializer=fig__pb2.Empty.SerializeToString,
++                response_deserializer=fig__pb2.Identity.FromString,
++                _registered_method=True)
++        self.ClientEventStream = channel.unary_stream(
++                '/com.atakmap.FederatedChannel/ClientEventStream',
++                request_serializer=fig__pb2.Subscription.SerializeToString,
++                response_deserializer=fig__pb2.FederatedEvent.FromString,
++                _registered_method=True)
++        self.ServerEventStream = channel.stream_unary(
++                '/com.atakmap.FederatedChannel/ServerEventStream',
++                request_serializer=fig__pb2.FederatedEvent.SerializeToString,
++                response_deserializer=fig__pb2.Subscription.FromString,
++                _registered_method=True)
++        self.HealthCheck = channel.unary_unary(
++                '/com.atakmap.FederatedChannel/HealthCheck',
++                request_serializer=fig__pb2.ClientHealth.SerializeToString,
++                response_deserializer=fig__pb2.ServerHealth.FromString,
++                _registered_method=True)
++        self.ClientROLStream = channel.unary_stream(
++                '/com.atakmap.FederatedChannel/ClientROLStream',
++                request_serializer=fig__pb2.Subscription.SerializeToString,
++                response_deserializer=fig__pb2.ROL.FromString,
++                _registered_method=True)
++        self.ServerROLStream = channel.stream_unary(
++                '/com.atakmap.FederatedChannel/ServerROLStream',
++                request_serializer=fig__pb2.ROL.SerializeToString,
++                response_deserializer=fig__pb2.Subscription.FromString,
++                _registered_method=True)
++        self.ServerFederateGroupsStream = channel.unary_stream(
++                '/com.atakmap.FederatedChannel/ServerFederateGroupsStream',
++                request_serializer=fig__pb2.Subscription.SerializeToString,
++                response_deserializer=fig__pb2.FederateGroups.FromString,
++                _registered_method=True)
++        self.ClientFederateGroupsStream = channel.stream_unary(
++                '/com.atakmap.FederatedChannel/ClientFederateGroupsStream',
++                request_serializer=fig__pb2.FederateGroups.SerializeToString,
++                response_deserializer=fig__pb2.Subscription.FromString,
++                _registered_method=True)
++        self.GetAuthTokenByX509 = channel.unary_unary(
++                '/com.atakmap.FederatedChannel/GetAuthTokenByX509',
++                request_serializer=fig__pb2.BinaryBlob.SerializeToString,
++                response_deserializer=fig__pb2.FederateTokenResponse.FromString,
++                _registered_method=True)
++        self.Getx509Identity = channel.unary_unary(
++                '/com.atakmap.FederatedChannel/Getx509Identity',
++                request_serializer=fig__pb2.Empty.SerializeToString,
++                response_deserializer=fig__pb2.BinaryBlob.FromString,
++                _registered_method=True)
++
++
++class FederatedChannelServicer(object):
++    """Federation v2 transport. v1 exchanges FederatedEvent as length-prefixed
++    frames over a raw TLS socket and ignores this service; v2 uses these RPCs
++    over gRPC/HTTP2. OpenTAKServer implements the situational-awareness subset:
++    getIdentity, HealthCheck, and the ClientEventStream/ServerEventStream event
++    streams. The ROL (mission federation) and group-mapping RPCs are declared
++    for wire compatibility but not served.
++    """
++
++    def SendOneEvent(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def BinaryMessageStream(self, request_iterator, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def SendOneBlob(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def getIdentity(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def ClientEventStream(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def ServerEventStream(self, request_iterator, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def HealthCheck(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def ClientROLStream(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def ServerROLStream(self, request_iterator, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def ServerFederateGroupsStream(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def ClientFederateGroupsStream(self, request_iterator, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def GetAuthTokenByX509(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++    def Getx509Identity(self, request, context):
++        """Missing associated documentation comment in .proto file."""
++        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
++        context.set_details('Method not implemented!')
++        raise NotImplementedError('Method not implemented!')
++
++
++def add_FederatedChannelServicer_to_server(servicer, server):
++    rpc_method_handlers = {
++            'SendOneEvent': grpc.unary_unary_rpc_method_handler(
++                    servicer.SendOneEvent,
++                    request_deserializer=fig__pb2.FederatedEvent.FromString,
++                    response_serializer=fig__pb2.Empty.SerializeToString,
++            ),
++            'BinaryMessageStream': grpc.stream_unary_rpc_method_handler(
++                    servicer.BinaryMessageStream,
++                    request_deserializer=fig__pb2.BinaryBlob.FromString,
++                    response_serializer=fig__pb2.Empty.SerializeToString,
++            ),
++            'SendOneBlob': grpc.unary_unary_rpc_method_handler(
++                    servicer.SendOneBlob,
++                    request_deserializer=fig__pb2.BinaryBlob.FromString,
++                    response_serializer=fig__pb2.Empty.SerializeToString,
++            ),
++            'getIdentity': grpc.unary_unary_rpc_method_handler(
++                    servicer.getIdentity,
++                    request_deserializer=fig__pb2.Empty.FromString,
++                    response_serializer=fig__pb2.Identity.SerializeToString,
++            ),
++            'ClientEventStream': grpc.unary_stream_rpc_method_handler(
++                    servicer.ClientEventStream,
++                    request_deserializer=fig__pb2.Subscription.FromString,
++                    response_serializer=fig__pb2.FederatedEvent.SerializeToString,
++            ),
++            'ServerEventStream': grpc.stream_unary_rpc_method_handler(
++                    servicer.ServerEventStream,
++                    request_deserializer=fig__pb2.FederatedEvent.FromString,
++                    response_serializer=fig__pb2.Subscription.SerializeToString,
++            ),
++            'HealthCheck': grpc.unary_unary_rpc_method_handler(
++                    servicer.HealthCheck,
++                    request_deserializer=fig__pb2.ClientHealth.FromString,
++                    response_serializer=fig__pb2.ServerHealth.SerializeToString,
++            ),
++            'ClientROLStream': grpc.unary_stream_rpc_method_handler(
++                    servicer.ClientROLStream,
++                    request_deserializer=fig__pb2.Subscription.FromString,
++                    response_serializer=fig__pb2.ROL.SerializeToString,
++            ),
++            'ServerROLStream': grpc.stream_unary_rpc_method_handler(
++                    servicer.ServerROLStream,
++                    request_deserializer=fig__pb2.ROL.FromString,
++                    response_serializer=fig__pb2.Subscription.SerializeToString,
++            ),
++            'ServerFederateGroupsStream': grpc.unary_stream_rpc_method_handler(
++                    servicer.ServerFederateGroupsStream,
++                    request_deserializer=fig__pb2.Subscription.FromString,
++                    response_serializer=fig__pb2.FederateGroups.SerializeToString,
++            ),
++            'ClientFederateGroupsStream': grpc.stream_unary_rpc_method_handler(
++                    servicer.ClientFederateGroupsStream,
++                    request_deserializer=fig__pb2.FederateGroups.FromString,
++                    response_serializer=fig__pb2.Subscription.SerializeToString,
++            ),
++            'GetAuthTokenByX509': grpc.unary_unary_rpc_method_handler(
++                    servicer.GetAuthTokenByX509,
++                    request_deserializer=fig__pb2.BinaryBlob.FromString,
++                    response_serializer=fig__pb2.FederateTokenResponse.SerializeToString,
++            ),
++            'Getx509Identity': grpc.unary_unary_rpc_method_handler(
++                    servicer.Getx509Identity,
++                    request_deserializer=fig__pb2.Empty.FromString,
++                    response_serializer=fig__pb2.BinaryBlob.SerializeToString,
++            ),
++    }
++    generic_handler = grpc.method_handlers_generic_handler(
++            'com.atakmap.FederatedChannel', rpc_method_handlers)
++    server.add_generic_rpc_handlers((generic_handler,))
++    server.add_registered_method_handlers('com.atakmap.FederatedChannel', rpc_method_handlers)
++
++
++ # This class is part of an EXPERIMENTAL API.
++class FederatedChannel(object):
++    """Federation v2 transport. v1 exchanges FederatedEvent as length-prefixed
++    frames over a raw TLS socket and ignores this service; v2 uses these RPCs
++    over gRPC/HTTP2. OpenTAKServer implements the situational-awareness subset:
++    getIdentity, HealthCheck, and the ClientEventStream/ServerEventStream event
++    streams. The ROL (mission federation) and group-mapping RPCs are declared
++    for wire compatibility but not served.
++    """
++
++    @staticmethod
++    def SendOneEvent(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_unary(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/SendOneEvent',
++            fig__pb2.FederatedEvent.SerializeToString,
++            fig__pb2.Empty.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def BinaryMessageStream(request_iterator,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.stream_unary(
++            request_iterator,
++            target,
++            '/com.atakmap.FederatedChannel/BinaryMessageStream',
++            fig__pb2.BinaryBlob.SerializeToString,
++            fig__pb2.Empty.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def SendOneBlob(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_unary(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/SendOneBlob',
++            fig__pb2.BinaryBlob.SerializeToString,
++            fig__pb2.Empty.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def getIdentity(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_unary(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/getIdentity',
++            fig__pb2.Empty.SerializeToString,
++            fig__pb2.Identity.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def ClientEventStream(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_stream(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/ClientEventStream',
++            fig__pb2.Subscription.SerializeToString,
++            fig__pb2.FederatedEvent.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def ServerEventStream(request_iterator,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.stream_unary(
++            request_iterator,
++            target,
++            '/com.atakmap.FederatedChannel/ServerEventStream',
++            fig__pb2.FederatedEvent.SerializeToString,
++            fig__pb2.Subscription.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def HealthCheck(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_unary(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/HealthCheck',
++            fig__pb2.ClientHealth.SerializeToString,
++            fig__pb2.ServerHealth.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def ClientROLStream(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_stream(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/ClientROLStream',
++            fig__pb2.Subscription.SerializeToString,
++            fig__pb2.ROL.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def ServerROLStream(request_iterator,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.stream_unary(
++            request_iterator,
++            target,
++            '/com.atakmap.FederatedChannel/ServerROLStream',
++            fig__pb2.ROL.SerializeToString,
++            fig__pb2.Subscription.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def ServerFederateGroupsStream(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_stream(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/ServerFederateGroupsStream',
++            fig__pb2.Subscription.SerializeToString,
++            fig__pb2.FederateGroups.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def ClientFederateGroupsStream(request_iterator,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.stream_unary(
++            request_iterator,
++            target,
++            '/com.atakmap.FederatedChannel/ClientFederateGroupsStream',
++            fig__pb2.FederateGroups.SerializeToString,
++            fig__pb2.Subscription.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def GetAuthTokenByX509(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_unary(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/GetAuthTokenByX509',
++            fig__pb2.BinaryBlob.SerializeToString,
++            fig__pb2.FederateTokenResponse.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
++
++    @staticmethod
++    def Getx509Identity(request,
++            target,
++            options=(),
++            channel_credentials=None,
++            call_credentials=None,
++            insecure=False,
++            compression=None,
++            wait_for_ready=None,
++            timeout=None,
++            metadata=None):
++        return grpc.experimental.unary_unary(
++            request,
++            target,
++            '/com.atakmap.FederatedChannel/Getx509Identity',
++            fig__pb2.Empty.SerializeToString,
++            fig__pb2.BinaryBlob.FromString,
++            options,
++            channel_credentials,
++            insecure,
++            call_credentials,
++            compression,
++            wait_for_ready,
++            timeout,
++            metadata,
++            _registered_method=True)
+diff --git a/opentakserver/federation/truststore.py b/opentakserver/federation/truststore.py
+index 105dab5..7a495c4 100644
+--- a/opentakserver/federation/truststore.py
++++ b/opentakserver/federation/truststore.py
+@@ -20,6 +20,7 @@ import ssl
+ 
+ from cryptography import x509
+ from cryptography.hazmat.primitives import hashes
++from cryptography.hazmat.primitives.serialization import Encoding
+ 
+ logger = logging.getLogger("OpenTAKServer")
+ 
+@@ -82,10 +83,42 @@ def client_ssl_context(config) -> ssl.SSLContext:
+     return _load_common(context, config)
+ 
+ 
++def truststore_pem(config) -> bytes:
++    """All trusted peer CA certificates concatenated (for gRPC root_certificates)."""
++    paths = _ca_paths(config)
++    if not paths:
++        raise NoFederationCAsError(truststore_folder(config))
++    blob = b""
++    for path in paths:
++        with open(path, "rb") as f:
++            blob += f.read()
++            if not blob.endswith(b"\n"):
++                blob += b"\n"
++    return blob
++
++
++def server_cert_pem(config) -> bytes:
++    cert, _ = _server_cert_paths(config)
++    with open(cert, "rb") as f:
++        return f.read()
++
++
++def server_key_pem(config) -> bytes:
++    _, key = _server_cert_paths(config)
++    with open(key, "rb") as f:
++        return f.read()
++
++
+ def cert_fingerprint(der: bytes) -> str:
+     return hashlib.sha256(der).hexdigest()
+ 
+ 
++def fingerprint_from_pem(pem: bytes) -> str | None:
++    if not pem:
++        return None
++    return cert_fingerprint(x509.load_pem_x509_certificate(pem).public_bytes(Encoding.DER))
++
++
+ def peer_identity(ssl_socket: ssl.SSLSocket) -> tuple[str | None, str | None]:
+     """Return (sha256 fingerprint, common name) of the peer's certificate."""
+     der = ssl_socket.getpeercert(binary_form=True)
+diff --git a/pyproject.toml b/pyproject.toml
+index a8ebbdc..327c792 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -30,6 +30,7 @@ Flask-Security-Too = {version="5.7.1", extras=["common", "mfa"]}
+ flask-socketio = "5.5.1"
+ flask-sqlalchemy = "3.1.1"
+ gevent = "25.5.1"
++grpcio = "1.82.1"
+ httpx = {version = "0.28.1", extras = ["http2"]}
+ kombu = "5.6.0"
+ lastversion = "*"
+-- 
+2.23.0
+

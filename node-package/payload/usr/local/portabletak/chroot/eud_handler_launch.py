@@ -269,7 +269,10 @@ def main():
             unregister(os.path.join(REGISTRY, name))
     except FileNotFoundError:
         pass
-    install_duplicate_guard(EudHandler)
+    # OpenTAKServer with federation (PR #343) has its own duplicate handling: a
+    # newer connection displaces the older one and close_connection is idempotent.
+    if not hasattr(EudHandler, 'displace'):
+        install_duplicate_guard(EudHandler)
     install_idle_timeout(EudHandler)
     install_latest_positions(EudHandler)
     sys.argv = sys.argv[1:]

@@ -128,6 +128,10 @@ def handle_request(request):
                     db.session.commit()
                 return {"ok": True, "result": "video_feed_added", "name": name}
 
+            if action.startswith("federation_"):
+                import federation_actions
+                return federation_actions.handle(app, db, request)
+
             username = str(
                 request.get("username", "")
             ).strip()

@@ -1,0 +1,3039 @@
+From 911954f9a76cab937be3716a000aed4e961d10b2 Mon Sep 17 00:00:00 2001
+From: Francesco Romano <fwromano15@gmail.com>
+Date: Tue, 21 Jul 2026 15:58:29 -0500
+Subject: [PATCH 11/16] Harden federation interop and EUD reconnects
+
+---
+ FEDERATION.md                                 | 174 +++++-
+ README.md                                     |   4 +-
+ opentakserver/blueprints/ots_api/api.py       |   2 +-
+ .../blueprints/ots_api/federation_api.py      |  31 +-
+ opentakserver/cot_parser/cot_parser.py        |  90 +--
+ opentakserver/cot_parser/disconnect.py        | 115 ++++
+ opentakserver/defaultconfig.py                |   3 +
+ opentakserver/eud_handler/EudHandler.py       | 571 +++++++++++-------
+ opentakserver/eud_handler/EudServer.py        |  43 +-
+ opentakserver/federation/cli.py               |  69 ++-
+ opentakserver/federation/engine.py            | 135 ++++-
+ opentakserver/federation/federation_server.py |   1 -
+ opentakserver/federation/grpc_engine.py       | 130 +++-
+ opentakserver/federation/truststore.py        |  27 +
+ opentakserver/models/EUD.py                   |  14 +-
+ opentakserver/models/Federation.py            |   8 +-
+ opentakserver/models/Team.py                  |   5 +-
+ poetry.lock                                   |  69 ++-
+ tests/test_eud_reliability.py                 | 363 +++++++++++
+ tests/test_federation.py                      | 262 +++++++-
+ 20 files changed, 1672 insertions(+), 444 deletions(-)
+ create mode 100644 opentakserver/cot_parser/disconnect.py
+ create mode 100644 tests/test_eud_reliability.py
+
+diff --git a/FEDERATION.md b/FEDERATION.md
+index 5a7f4c2..589b9f2 100644
+--- a/FEDERATION.md
++++ b/FEDERATION.md
+@@ -1,10 +1,12 @@
+ # Federation
+ 
+-OpenTAKServer implements TAK Server **federation** (v1 and v2): server-to-server
+-exchange of situational awareness with other TAK servers (official TAK Server
+-or another OpenTAKServer), across independent administrative domains. Each
+-side keeps its own users, certificate authority, and admin control, and
+-allowlists what crosses the link.
++OpenTAKServer implements TAK Server **federation** v1 and the situational-
++awareness subset of v2: server-to-server exchange between independent
++administrative domains. Each side keeps its own users, certificate authority,
++and admin control, and allowlists what crosses the link. OpenTAKServer-to-
++OpenTAKServer operation and interoperability with official TAK Server 5.5 are
++live-validated over both transports. Direct-spoke interoperability with
++official TAK Federation Hub 5.7 is also live-validated over both transports.
+ 
+ Two transports, both carrying the official protobuf `FederatedEvent` and both
+ using the same federation truststore and group model:
+@@ -13,13 +15,37 @@ using the same federation truststore and group model:
+   mutually-authenticated TLS socket.
+ - **v2** (port 9001): the official `FederatedChannel` gRPC service over
+   HTTP/2 — `ClientEventStream`/`ServerEventStream` for events, plus
+-  `getIdentity`/`HealthCheck`.
++  `getIdentity`/`HealthCheck`. `getIdentity` is optional on the peer: official
++  TAK Server 5.5 declares it but leaves its server implementation unimplemented.
+ 
+ The protobuf and service definitions are vendored from the TAK Product Center's
+-public TAK Server source (GPLv3, like OpenTAKServer), so an official TAK Server
+-can federate with OpenTAKServer with no changes on its side. Set a federate's
+-`protocol_version` (1 or 2) to choose the transport for an outbound connection;
+-both listeners run at once for inbound.
++public TAK Server source (GPLv3, like OpenTAKServer) and are intended to be wire
++compatible. Set a federate's `protocol_version` (1 or 2) to choose the transport
++for an outbound connection; both listeners run at once for inbound.
++
++## Implemented scope and invariants
++
++This implementation is intentionally bounded to point-to-point situational
++awareness:
++
++- v1 framed TLS and v2 gRPC share the same CoT conversion, group filtering,
++  loop guard, contact registration, and local-UID collision policy.
++- CoT and contact announcements cross a link only when the sender belongs to an
++  allowed outbound group. Empty group lists allow no new contacts or data;
++  contact deletions may still cross so removing access revokes prior presence.
++- Both transports require mutual TLS against the federation CA truststore.
++  v1 pins the peer leaf on its transport connection. Because synchronous
++  Python gRPC does not expose the client-side peer certificate, v2 checks the
++  same leaf pin with a verified TLS/HTTP2 preflight immediately before opening
++  its CA- and authority-verified gRPC channel.
++- An unknown inbound certificate is registered as
++  `<certificate-CN>-<fingerprint-prefix>` with empty groups. A remote UID that
++  already belongs to a local EUD is rejected rather than modifying that EUD.
++- Federation traffic enters through `cot_parser`, not `firehose`, preventing
++  re-federation and multi-hop loops.
++
++Not in this scope: ROL/mission federation, group-mapping RPCs, transitive
++federation through a normal TAK Server, and service-manager/installer wiring.
+ 
+ ## What federates
+ 
+@@ -27,10 +53,10 @@ both listeners run at once for inbound.
+   including point-to-point chat addressed with `<marti><dest/>`
+ - Contact announcements (`ContactListEntry` create/delete for connected EUDs)
+ 
+-Not yet: mission/Data Sync federation and mission packages — these are the ROL
+-(resource operation language) side of v2, which is not implemented. v2 here is
+-the SA subset of the `FederatedChannel` service (the ROL and group-mapping RPCs
+-are declared for wire compatibility but not served).
++Mission/Data Sync federation and mission packages are the ROL (resource
++operation language) side of v2 and are not implemented. v2 here is the SA
++subset of the `FederatedChannel` service; ROL and group-mapping RPCs are
++declared for wire compatibility but are not served.
+ 
+ ## How it works
+ 
+@@ -48,13 +74,46 @@ owns all federation links:
+ 
+ Loop prevention is structural: only EUD handlers publish to `firehose`, and
+ federated traffic enters via `cot_parser`, so an event that arrived over
+-federation is never re-federated. Like TAK Server, point-to-point federation
+-does not forward multi-hop.
++federation is never re-federated. Official TAK Server applies the same boundary:
++its v1 and v2 federate subscriptions reject events already marked as federated.
++Point-to-point federation therefore does not forward multi-hop.
+ 
+-A federate with **empty group lists exchanges nothing** - after trust is
+-established you must assign inbound/outbound groups (use `__ANON__` for the
+-default channel) before data flows. This matches official TAK Server, where
+-traffic starts only after both sides configure federate groups.
++This rules out a normal official server as a transparent federation gateway:
++
++```text
++OTS --federation--> official TAK --federation--> Hub
++      direct link       does not re-federate the received OTS event
++```
++
++If a Hub policy accepts only official TAK Servers, the bounded options are:
++
++1. connect OTS directly to the Hub if the policy owner accepts its verified
++   protocol-compatible implementation;
++2. inject OTS SA/chat into the official server through a controlled local
++   streaming/data-feed bridge, so the official server sees locally originated
++   traffic and can federate it to the Hub; or
++3. make official TAK Server the users' home server for the Hub-connected
++   enclave.
++
++Option 2 is a CoT gateway, not federation-through-federation, and still does
++not add OTS ROL/mission federation.
++
++If the Hub policy owner accepts OTS's CA identity, OTS can instead connect
++directly as a normal Hub spoke. This topology is live-validated:
++
++```text
++OTS A --v1/v2--> official Federation Hub <--v1/v2-- OTS B
++```
++
++The Hub policy graph controls which spoke CAs may exchange traffic. OTS keeps
++its structural loop guard, while the Hub performs the authorized brokering.
++This carries the implemented SA/contact/GeoChat subset; it does not add
++ROL/mission or federated-group-stream support.
++
++A federate with **empty group lists exchanges no new contacts or data** - after
++trust is established you must assign inbound/outbound groups (use `__ANON__`
++for the default channel) before data flows. Contact deletion messages remain
++effective so an administrator can revoke access without leaving stale presence.
+ 
+ ## Trust model
+ 
+@@ -65,9 +124,14 @@ federation port - it does not let their EUD certificates connect to the
+ streaming port, and vice versa.
+ 
+ Federates are identified by the SHA-256 fingerprint of their server
+-certificate. Inbound federates are auto-registered (with empty group lists)
+-on first connection; outbound federates have their fingerprint pinned on
+-first connect and later connections must present the same certificate.
++certificate. Inbound federates are auto-registered with a collision-resistant
++CN/fingerprint name and empty group lists. Outbound federates have their leaf
++fingerprint pinned on first connect and later connections must present the same
++certificate. For v2, a short verified mutual-TLS/HTTP2 handshake obtains and
++checks the leaf identity immediately before the gRPC streams are opened. This
++preflight is a separate TLS connection; the stream itself remains protected by
++the configured CA and authority, but Python gRPC cannot bind the leaf pin to
++that exact socket.
+ 
+ ## Setup
+ 
+@@ -76,6 +140,7 @@ first connect and later connections must present the same certificate.
+    ```yaml
+    OTS_ENABLE_FEDERATION: true
+    OTS_FEDERATION_V1_PORT: 9000
++   OTS_FEDERATION_V2_PORT: 9001
+    ```
+ 
+ 2. **Swap CAs** with the other administrative domain out of band (email, USB).
+@@ -94,6 +159,7 @@ first connect and later connections must present the same certificate.
+      "name": "partner-agency",
+      "address": "tak.partner.example",
+      "port": 9000,
++     "protocol_version": 1,
+      "outbound": true,
+      "inbound_groups": ["__ANON__"],
+      "outbound_groups": ["__ANON__"]
+@@ -103,7 +169,10 @@ first connect and later connections must present the same certificate.
+    For an inbound-only federate, skip this step: the row is auto-created when
+    they connect, then assign groups with the same `POST /api/federation` call.
+ 
+-4. **Run the federation server** process:
++   For v2, use `"protocol_version": 2` and the peer's v2 port (normally 9001).
++
++4. **Run the federation server** process. Installer/service-manager integration
++   is not included in this change, so deployments must start it explicitly:
+ 
+    ```bash
+    federation_server
+@@ -112,10 +181,58 @@ first connect and later connections must present the same certificate.
+ 5. **Verify**: `GET /api/federation` shows `last_connected`/`last_error` per
+    federate.
+ 
+-On the official TAK Server side, this is the standard federation setup: upload
+-OpenTAKServer's `ca.pem` on *Manage Federate Certificate Authorities*, create
+-an outgoing connection to port 9000 with protocol version 1 (or just listen),
+-and assign federate groups.
++The validated official TAK Server setup uploads OpenTAKServer's `ca.pem` on
++*Manage Federate Certificate Authorities*, enables the v1/v2 listener, and
++assigns inbound and outbound federate groups. Only one side needs an outgoing
++connection. Use port 9000 with protocol version 1 or port 9001 with protocol
++version 2. For v2, set `OTS_FEDERATION_V2_AUTHORITY` to the official server
++certificate's DNS name or IP identity.
++
++## Validation
++
++Unit and in-process transport coverage lives in `tests/test_federation.py`.
++The HeartBeat repository's `tools/fed_live_test.py` stands up two complete OTS
++stacks with separate RabbitMQ, Postgres, and CA instances and exercises either
++transport end to end. Each run retains logs plus a `result.json` artifact under
++its printed `/tmp/fed-live-*` workspace.
++
++`tools/fed_official_live_test.py` performs the official interoperability gate.
++It copies an installed official TAK payload into `/tmp`, uses disposable
++databases and containers, exchanges federation CAs, and validates mTLS/pinning,
++SA in both directions, federated-contact registration, addressed GeoChat in
++both directions, non-broadcast DM routing, and loop freedom. It does not modify
++the installed payload, active TAK backend, or persistent official database:
++
++```bash
++cd heartbeat
++python3 tools/fed_official_live_test.py --tak-home /path/to/tak-server
++python3 tools/fed_official_live_test.py --tak-home /path/to/tak-server --v2
++```
++
++On 2026-07-21 both runs passed all 10 checks against official TAK Server
++`5.5-RELEASE-58-HEAD`. The v2 run also exposed and fixed a compatibility detail:
++official 5.5 returns `UNIMPLEMENTED` for the optional `getIdentity` RPC, while
++identity is carried in the stream `Subscription` as used by stock TAK clients.
++
++`tools/fed_hub_live_test.py` performs the official Federation Hub gate with two
++full OTS spokes. It extracts the official Docker distribution below `/tmp`,
++creates disposable Hub/OTS trust and CA policy, activates that policy through
++the official Hub admin API, and exercises the production path without changing
++the downloaded archive or persistent HeartBeat state:
++
++```bash
++cd heartbeat
++python3 tools/fed_hub_live_test.py --hub-bundle ~/Downloads/takserver-fedhub-docker-5.7-RELEASE-43.zip
++python3 tools/fed_hub_live_test.py --hub-bundle ~/Downloads/takserver-fedhub-docker-5.7-RELEASE-43.zip --v2
++```
++
++On 2026-07-21 both runs passed all 12 checks against official Federation Hub
++`5.7-RELEASE-43`: both OTS-to-Hub mTLS/pinned links, SA and addressed GeoChat
++through the Hub in both directions, federated contacts, DM non-broadcast, and
++loop freedom. The v2 run exposed Hub's required health refresh and a Hub 5.7
++compatibility quirk: its unary `HealthCheck` sends `SERVING` without completing
++the RPC. OTS now refreshes the stream on the official cadence and tolerates
++that non-completing response.
+ 
+ ## Configuration reference
+ 
+@@ -125,6 +242,7 @@ and assign federate groups.
+ | `OTS_FEDERATION_V1_PORT` | `9000` | Listening port for federation v1 |
+ | `OTS_FEDERATION_ENABLE_V2` | `True` | Also run the v2 (gRPC) listener |
+ | `OTS_FEDERATION_V2_PORT` | `9001` | Listening port for federation v2 |
++| `OTS_FEDERATION_V2_HEALTH_CHECK_INTERVAL_SECONDS` | `5` | Interval for v2 `HealthCheck(SERVING)` reports required by TAK Server and Federation Hub |
+ | `OTS_FEDERATION_V2_AUTHORITY` | `opentakserver` | Peer cert CN gRPC verifies against (TAK trusts by CA; OTS server certs use CN `opentakserver`) |
+ | `OTS_FEDERATION_INTERFACE` | `0.0.0.0` | Listening interface |
+ | `OTS_FEDERATION_RECONNECT_SECONDS` | `30` | Default outbound reconnect interval |
+diff --git a/README.md b/README.md
+index 189af9c..a37dd06 100644
+--- a/README.md
++++ b/README.md
+@@ -34,8 +34,8 @@ Join us on our [Discord server](https://discord.gg/6uaVHjtfXN)
+ - Mission API
+   - Data Sync plugin
+   - Fire Area Survey plugin
+-- Federation v1 and v2 (server-to-server situational awareness with official
+-  TAK Server or another OpenTAKServer, over framed TLS or gRPC, see
++- Federation v1 and v2 situational awareness (OTS-to-OTS, official TAK Server
++  5.5, and official Federation Hub 5.7 validated over framed TLS and gRPC; see
+   [FEDERATION.md](FEDERATION.md))
+ 
+ ## Planned Features
+diff --git a/opentakserver/blueprints/ots_api/api.py b/opentakserver/blueprints/ots_api/api.py
+index 099bd2d..23165ee 100644
+--- a/opentakserver/blueprints/ots_api/api.py
++++ b/opentakserver/blueprints/ots_api/api.py
+@@ -547,7 +547,7 @@ def get_map_state():
+ 
+         euds = db.session.execute(db.session.query(EUD)).all()
+         for eud in euds:
+-            results["euds"].append(eud[0].to_json())
++            results["euds"].append(eud[0].to_json(include_last_point=True))
+ 
+         markers = db.session.execute(
+             db.session.query(Marker)
+diff --git a/opentakserver/blueprints/ots_api/federation_api.py b/opentakserver/blueprints/ots_api/federation_api.py
+index 2af8c52..4622993 100644
+--- a/opentakserver/blueprints/ots_api/federation_api.py
++++ b/opentakserver/blueprints/ots_api/federation_api.py
+@@ -11,6 +11,7 @@ from flask_security import roles_required
+ from opentakserver.blueprints.ots_api.api import paginate, search
+ from opentakserver.extensions import db, logger
+ from opentakserver.federation import truststore
++from opentakserver.federation.engine import parse_protocol_version
+ from opentakserver.models.Federation import Federation
+ 
+ federation_api_blueprint = Blueprint("federation_api_blueprint", __name__)
+@@ -40,7 +41,7 @@ def get_federation():
+ def add_federation():
+     """Create or update a federate.
+ 
+-    Body: name (required), address, port, outbound, enabled,
++    Body: name (required), address, port, protocol_version, outbound, enabled,
+     reconnect_interval, inbound_groups, outbound_groups.
+ 
+     A federate exchanges no data until inbound_groups/outbound_groups are set.
+@@ -50,9 +51,7 @@ def add_federation():
+ 
+     name = bleach.clean(request.json.get("name"))
+ 
+-    federation = db.session.execute(
+-        db.session.query(Federation).filter_by(name=name)
+-    ).first()
++    federation = db.session.execute(db.session.query(Federation).filter_by(name=name)).first()
+     if federation:
+         federation = federation[0]
+     else:
+@@ -68,6 +67,18 @@ def add_federation():
+             federation.port = int(request.json.get("port"))
+         except (TypeError, ValueError):
+             return jsonify({"success": False, "error": gettext("Invalid port")}), 400
++        if not 1 <= federation.port <= 65535:
++            return jsonify({"success": False, "error": gettext("Invalid port")}), 400
++    if "protocol_version" in request.json:
++        try:
++            federation.protocol_version = parse_protocol_version(
++                request.json.get("protocol_version")
++            )
++        except ValueError:
++            return (
++                jsonify({"success": False, "error": gettext("Invalid protocol_version")}),
++                400,
++            )
+     if "outbound" in request.json:
+         federation.outbound = bool(request.json.get("outbound"))
+     if "enabled" in request.json:
+@@ -86,18 +97,14 @@ def add_federation():
+             groups = request.json.get(field) or []
+             if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
+                 return (
+-                    jsonify(
+-                        {"success": False, "error": gettext("Groups must be a list of names")}
+-                    ),
++                    jsonify({"success": False, "error": gettext("Groups must be a list of names")}),
+                     400,
+                 )
+             setattr(federation, field, [bleach.clean(g) for g in groups])
+ 
+     if federation.outbound and not federation.address:
+         return (
+-            jsonify(
+-                {"success": False, "error": gettext("Outbound federates require an address")}
+-            ),
++            jsonify({"success": False, "error": gettext("Outbound federates require an address")}),
+             400,
+         )
+ 
+@@ -167,7 +174,9 @@ def add_federation_ca():
+         result = truststore.save_ca(app.config, filename, pem)
+     except ValueError as e:
+         return (
+-            jsonify({"success": False, "error": gettext("Invalid certificate: %(error)s", error=str(e))}),
++            jsonify(
++                {"success": False, "error": gettext("Invalid certificate: %(error)s", error=str(e))}
++            ),
+             400,
+         )
+ 
+diff --git a/opentakserver/cot_parser/cot_parser.py b/opentakserver/cot_parser/cot_parser.py
+index 6f1a9c8..792e5f0 100644
+--- a/opentakserver/cot_parser/cot_parser.py
++++ b/opentakserver/cot_parser/cot_parser.py
+@@ -62,6 +62,7 @@ from opentakserver.models.VideoStream import VideoStream
+ from opentakserver.models.WebAuthn import WebAuthn
+ from opentakserver.models.ZMIST import ZMIST
+ from opentakserver.proto import atak_pb2
++from opentakserver.cot_parser.disconnect import process_disconnect
+ 
+ 
+ class CoTController:
+@@ -939,94 +940,7 @@ class CoTController:
+ 
+     def send_disconnect_cot(self, uid: str, user_id: str):
+         self.logger.warning("Sending disconnect cot to {}".format(uid))
+-        if uid:
+-            now = datetime.now(timezone.utc)
+-            stale = datetime.now(timezone.utc) + timedelta(seconds=10)
+-
+-            event = Element(
+-                "event",
+-                {
+-                    "how": "h-g-i-g-o",
+-                    "type": "t-x-d-d",
+-                    "version": "2.0",
+-                    "uid": str(uuid.uuid4()),
+-                    "start": iso8601_string_from_datetime(now),
+-                    "time": iso8601_string_from_datetime(now),
+-                    "stale": iso8601_string_from_datetime(stale),
+-                },
+-            )
+-            point = SubElement(
+-                event,
+-                "point",
+-                {"ce": "9999999", "le": "9999999", "hae": "0", "lat": "0", "lon": "0"},
+-            )
+-            detail = SubElement(event, "detail")
+-            link = SubElement(detail, "link", {"relation": "p-p", "uid": uid, "type": "a-f-G-U-C"})
+-            flow_tags = SubElement(
+-                detail,
+-                "_flow-tags_",
+-                {"TAK-Server-f1a8159ef7804f7a8a32d8efc4b773d0": iso8601_string_from_datetime(now)},
+-            )
+-
+-            message = json.dumps({"uid": uid, "cot": tostring(event).decode("utf-8")})
+-            if self.rabbit_channel and not self.rabbit_channel.is_closed and user_id:
+-                with self.context:
+-                    group_query = db.session.query(GroupUser).filter_by(
+-                        user_id=user_id, direction=Group.OUT, enabled=True
+-                    )
+-                    groups = db.session.execute(group_query).all()
+-                    for group in groups:
+-                        group = group[0]
+-                        self.rabbit_channel.basic_publish(
+-                            exchange="groups",
+-                            routing_key=f"{group.group.name}.{group.direction}",
+-                            body=message,
+-                            properties=pika.BasicProperties(
+-                                expiration=app.config.get("OTS_RABBITMQ_TTL")
+-                            ),
+-                        )
+-
+-                        self.rabbit_channel.queue_bind(
+-                            queue=uid,
+-                            exchange="groups",
+-                            routing_key=f"{group.group.name}.{group.direction}",
+-                        )
+-
+-                        self.logger.debug(
+-                            f"Unbound {uid} from {group.group.name}.{group.direction}"
+-                        )
+-            elif (
+-                self.rabbit_channel
+-                and not self.rabbit_channel.is_closing
+-                and not self.rabbit_channel.is_closed
+-            ):
+-                self.rabbit_channel.basic_publish(
+-                    exchange="groups",
+-                    routing_key=f"__ANON__.{Group.OUT}",
+-                    body=message,
+-                    properties=pika.BasicProperties(expiration=app.config.get("OTS_RABBITMQ_TTL")),
+-                )
+-
+-                self.rabbit_channel.queue_unbind(
+-                    queue=uid, exchange="groups", routing_key=f"__ANON__.{Group.OUT}"
+-                )
+-
+-            with self.context:
+-                missions = db.session.execute(db.session.query(Mission)).all()
+-                for mission in missions:
+-                    self.rabbit_channel.queue_unbind(
+-                        queue=uid,
+-                        exchange="missions",
+-                        routing_key=f"missions.{mission[0].name}",
+-                    )
+-                    self.logger.debug(f"Unbound {uid} from mission.{mission[0].name}")
+-
+-                db.session.execute(
+-                    update(EUD)
+-                    .filter(EUD.uid == uid)
+-                    .values(last_status="Disconnected", last_event_time=now)
+-                )
+-                db.session.commit()
++        return process_disconnect(self, uid, user_id)
+ 
+     def generate_mission_change(self, uid: str, event: BeautifulSoup):
+         destinations = event.find_all("dest")
+diff --git a/opentakserver/cot_parser/disconnect.py b/opentakserver/cot_parser/disconnect.py
+new file mode 100644
+index 0000000..1664275
+--- /dev/null
++++ b/opentakserver/cot_parser/disconnect.py
+@@ -0,0 +1,115 @@
++from datetime import datetime, timedelta, timezone
++from xml.etree.ElementTree import Element, SubElement, tostring
++
++from bs4 import BeautifulSoup
++from sqlalchemy import select
++
++from opentakserver.functions import iso8601_string_from_datetime
++from opentakserver.models.EUD import EUD
++from opentakserver.models.Mission import Mission
++from opentakserver.models.Point import Point
++
++
++def build_disconnect_event(uid, latest_point=None, eud=None, now=None):
++    """Build a stale SA event that expires the EUD's real map track."""
++    now = now or datetime.now(timezone.utc)
++    stale = now - timedelta(seconds=1)
++    lat = lon = 0
++    hae = 0
++    ce = le = 9999999
++    event_type = "a-f-G-U-C"
++    how = "m-g"
++    callsign = getattr(eud, "callsign", None) or uid
++    team_name = "Cyan"
++    team_role = getattr(eud, "team_role", None) or "Team Member"
++
++    if latest_point:
++        lat = latest_point.latitude or 0
++        lon = latest_point.longitude or 0
++        hae = latest_point.hae or 0
++        ce = latest_point.ce or 9999999
++        le = latest_point.le or 9999999
++        if latest_point.cot:
++            event_type = latest_point.cot.type or event_type
++            how = latest_point.cot.how or how
++
++    if eud and eud.team:
++        team_name = eud.team.name or team_name
++
++    event = Element(
++        "event",
++        {
++            "how": how,
++            "type": event_type,
++            "version": "2.0",
++            "uid": uid,
++            "start": iso8601_string_from_datetime(now),
++            "time": iso8601_string_from_datetime(now),
++            "stale": iso8601_string_from_datetime(stale),
++        },
++    )
++    SubElement(
++        event,
++        "point",
++        {
++            "ce": str(ce),
++            "le": str(le),
++            "hae": str(hae),
++            "lat": str(lat),
++            "lon": str(lon),
++        },
++    )
++    detail = SubElement(event, "detail")
++    SubElement(detail, "contact", {"callsign": callsign})
++    SubElement(detail, "__group", {"name": team_name, "role": team_role})
++    SubElement(
++        detail,
++        "_flow-tags_",
++        {"OpenTAKServer": iso8601_string_from_datetime(now)},
++    )
++    return BeautifulSoup(tostring(event).decode("utf-8"), "xml").find("event")
++
++
++def process_disconnect(controller, uid, user_id, now=None):
++    """Expire, route, and persist one EUD disconnect through a CoT controller."""
++    if not uid:
++        return None
++
++    now = now or datetime.now(timezone.utc)
++    with controller.context:
++        latest_point = (
++            controller.db.session.query(Point)
++            .filter(Point.device_uid == uid)
++            .order_by(Point.timestamp.desc(), Point.id.desc())
++            .first()
++        )
++        eud_result = controller.db.session.execute(
++            select(EUD).filter_by(uid=uid)
++        ).first()
++        eud = eud_result[0] if eud_result else None
++        event = build_disconnect_event(uid, latest_point=latest_point, eud=eud, now=now)
++
++        if eud:
++            eud.last_status = "Disconnected"
++            eud.last_event_time = now
++            controller.db.session.commit()
++            controller.socketio.emit(
++                "eud", eud.to_json(include_last_point=True), namespace="/socket.io"
++            )
++
++        missions = controller.db.session.execute(
++            controller.db.session.query(Mission)
++        ).all()
++
++    channel = controller.rabbit_channel
++    if channel and not channel.is_closed:
++        controller.route_cot(event, uid, user_id)
++        for mission in missions:
++            channel.queue_unbind(
++                queue=uid,
++                exchange="missions",
++                routing_key=f"missions.{mission[0].name}",
++            )
++            controller.logger.debug(f"Unbound {uid} from mission.{mission[0].name}")
++
++    return event
+diff --git a/opentakserver/defaultconfig.py b/opentakserver/defaultconfig.py
+index cd3e30d..d52894d 100644
+--- a/opentakserver/defaultconfig.py
++++ b/opentakserver/defaultconfig.py
+@@ -60,6 +60,9 @@ class DefaultConfig:
+     ]
+     OTS_FEDERATION_V2_PORT = int(os.getenv("OTS_FEDERATION_V2_PORT", 9001))
+     OTS_FEDERATION_V2_WORKERS = int(os.getenv("OTS_FEDERATION_V2_WORKERS", 16))
++    OTS_FEDERATION_V2_HEALTH_CHECK_INTERVAL_SECONDS = float(
++        os.getenv("OTS_FEDERATION_V2_HEALTH_CHECK_INTERVAL_SECONDS", 5)
++    )
+     # gRPC verifies the peer's certificate CN against this authority (TAK
+     # federation trusts by CA, and OTS server certs use CN "opentakserver")
+     OTS_FEDERATION_V2_AUTHORITY = os.getenv("OTS_FEDERATION_V2_AUTHORITY", "opentakserver")
+diff --git a/opentakserver/eud_handler/EudHandler.py b/opentakserver/eud_handler/EudHandler.py
+index ddd51e5..933ad2e 100644
+--- a/opentakserver/eud_handler/EudHandler.py
++++ b/opentakserver/eud_handler/EudHandler.py
+@@ -12,7 +12,7 @@ import traceback
+ import uuid
+ from logging.handlers import TimedRotatingFileHandler
+ from socket import socket, SHUT_RDWR
+-from threading import Thread
++from threading import Event, Lock, Thread, current_thread
+ from xml.etree.ElementTree import Element, SubElement, tostring, fromstring, ParseError
+ 
+ import bleach
+@@ -88,9 +88,32 @@ class EudHandler(socketserver.BaseRequestHandler):
+     group_memberships = []
+ 
+     def __init__(self, request: socket, client_address, server):
+-        super().__init__(request, client_address, server)
++        # BaseRequestHandler.__init__ immediately calls setup(), handle(), and
++        # finish(), so every per-connection field must exist before super().
+         self.logger = logging.getLogger()
+         self.socket: socket = request
++        self.shutdown = False
++        self.common_name = None
++        self.user = None
++        self.rabbit_connection = None
++        self.rabbit_channel = None
++        self.iothread = None
++        self.is_consuming = False
++        self.is_authenticated = False
++        self.cached_messages = []
++        self.eud = None
++        self.eud_payload = None
++        self.callsign = None
++        self.uid = None
++        self.bound_queues = []
++        self.phone_number = None
++        self.group_memberships = []
++        self.platform = None
++        self.displaced = False
++        self.socketio_publish_enabled = True
++        self._closed = False
++        self._close_lock = Lock()
++        super().__init__(request, client_address, server)
+ 
+     def handle(self):
+         cot = ""
+@@ -159,6 +182,7 @@ class EudHandler(socketserver.BaseRequestHandler):
+ 
+     def setup(self):
+         self.create_app()
++        self.socketio_publish_enabled = self.app.config.get("OTS_ENABLE_SOCKETIO", True)
+ 
+         # RabbitMQ
+         try:
+@@ -177,7 +201,7 @@ class EudHandler(socketserver.BaseRequestHandler):
+             self.iothread = Thread(
+                 target=self.rabbit_connection.ioloop.start, name=f"IOLOOP_{self.common_name}"
+             )
+-            # self.iothread.daemon = True
++            self.iothread.daemon = True
+             self.iothread.start()
+             self.is_consuming = False
+         except BaseException as e:
+@@ -185,39 +209,110 @@ class EudHandler(socketserver.BaseRequestHandler):
+             return
+ 
+     def finish(self):
+-        print("finish")
++        self.close_connection()
+ 
+-    def close_connection(self):
+-        self.logger.info("{} disconnected".format(self.client_address[0]))
++    def displace(self):
++        """Stop this socket because a newer connection claimed its EUD UID."""
++        self.displaced = True
++        self.shutdown = True
++        try:
++            self.request.shutdown(SHUT_RDWR)
++        except OSError:
++            pass
++        try:
++            self.request.close()
++        except OSError:
++            pass
+ 
+-        self.rabbit_channel.basic_publish(
+-            exchange="cot_parser",
+-            body=json.dumps(
+-                {
+-                    "uid": self.uid,
+-                    "cot": None,
+-                    "disconnected": True,
+-                    "user_id": self.user.id if self.user else None,
+-                }
+-            ),
+-            routing_key="cot_parser",
+-            properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+-        )
++    def close_connection(self):
++        with self._close_lock:
++            if self._closed:
++                return
++            self._closed = True
++            self.shutdown = True
+ 
+-        self.unbind_rabbitmq_queues()
++        owns_identity = not self.displaced
++        release_identity = getattr(self.server, "release_identity", None)
++        if release_identity:
++            owns_identity = owns_identity and release_identity(self, self.uid)
+ 
+-        if (
+-            self.rabbit_channel
+-            and not self.rabbit_channel.is_closing
+-            and not self.rabbit_channel.is_closed
+-        ):
+-            self.rabbit_channel.close()
++        def close_rabbitmq():
++            channel = self.rabbit_channel
++            try:
++                if owns_identity and channel and channel.is_open and self.uid:
++                    channel.basic_publish(
++                        exchange="cot_parser",
++                        body=json.dumps(
++                            {
++                                "uid": self.uid,
++                                "cot": None,
++                                "disconnected": True,
++                                "user_id": self.user.id if self.user else None,
++                            }
++                        ),
++                        routing_key="cot_parser",
++                        properties=pika.BasicProperties(
++                            expiration=self.app.config.get("OTS_RABBITMQ_TTL")
++                        ),
++                    )
++                    self.unbind_rabbitmq_queues(channel=channel)
++            except BaseException as exc:
++                self.logger.warning("RabbitMQ teardown failed for %s: %s", self.uid, exc)
++                self.logger.debug(traceback.format_exc())
++            finally:
++                try:
++                    if channel and channel.is_open:
++                        channel.close()
++                except BaseException:
++                    self.logger.debug(traceback.format_exc())
++                try:
++                    if (
++                        self.rabbit_connection
++                        and not self.rabbit_connection.is_closing
++                        and not self.rabbit_connection.is_closed
++                    ):
++                        self.rabbit_connection.close()
++                except BaseException:
++                    self.logger.debug(traceback.format_exc())
++
++        connection = self.rabbit_connection
++        if connection and self.iothread and self.iothread.is_alive():
++            if current_thread() is self.iothread:
++                close_rabbitmq()
++            else:
++                completed = Event()
++
++                def callback():
++                    try:
++                        close_rabbitmq()
++                    finally:
++                        completed.set()
+ 
+-        if not self.shutdown:
+-            self.shutdown = True
++                try:
++                    connection.ioloop.add_callback_threadsafe(callback)
++                    completed.wait(timeout=2)
++                except BaseException:
++                    self.logger.debug(traceback.format_exc())
++        else:
++            close_rabbitmq()
+ 
++        try:
+             self.request.shutdown(SHUT_RDWR)
++        except OSError:
++            pass
++        try:
+             self.request.close()
++        except OSError:
++            pass
++
++        if self.iothread and self.iothread.is_alive() and current_thread() is not self.iothread:
++            self.iothread.join(timeout=2)
++
++        self.logger.info(
++            "%s disconnected%s",
++            self.client_address[0],
++            " (displaced)" if not owns_identity else "",
++        )
+ 
+     def create_app(self):
+         app = Flask(__name__)
+@@ -272,28 +367,106 @@ class EudHandler(socketserver.BaseRequestHandler):
+         return app
+ 
+     def on_connection_open(self, connection: pika.SelectConnection):
+-        self.rabbit_connection.channel(on_open_callback=self.on_channel_open)
++        connection.channel(on_open_callback=self.on_channel_open)
+ 
+-    def on_channel_open(self, channel: Channel):
+-        self.logger.debug(f"Opening RabbitMQ channel for {self.callsign or self.client_address[0]}")
+-        self.rabbit_channel = channel
+-        self.rabbit_channel.add_on_close_callback(self.on_channel_close)
++    def _call_on_ioloop(self, callback, timeout=5):
++        """Run a RabbitMQ operation on pika's I/O thread and return its result."""
++        if not self.rabbit_connection or not self.iothread or current_thread() is self.iothread:
++            return callback()
+ 
+-        self.rabbit_channel.exchange_declare(
+-            "flask-socketio", durable=False, exchange_type="fanout"
+-        )
++        completed = Event()
++        result = {}
+ 
+-        for message in self.cached_messages:
+-            self.publish_cot(message)
++        def run_callback():
++            try:
++                result["value"] = callback()
++            except BaseException as exc:
++                result["error"] = exc
++            finally:
++                completed.set()
++
++        self.rabbit_connection.ioloop.add_callback_threadsafe(run_callback)
++        if not completed.wait(timeout=timeout):
++            raise TimeoutError("RabbitMQ I/O operation timed out")
++        if "error" in result:
++            raise result["error"]
++        return result.get("value")
++
++    def _queue_bind(self, channel, exchange, routing_key, queue):
++        binding = {"exchange": exchange, "routing_key": routing_key, "queue": queue}
++        channel.queue_bind(exchange=exchange, queue=queue, routing_key=routing_key)
++        if binding not in self.bound_queues:
++            self.bound_queues.append(binding)
++
++    def _ensure_client_routing_bindings(self, channel=None):
++        """Declare queues, bindings, and consumers once an EUD identity is known."""
++        if not self.uid or not self.callsign:
++            return False
++        if self.platform in ("OpenTAK ICU", "Meshtastic", "DMRCOT"):
++            return False
++
++        def configure():
++            active_channel = channel or self.rabbit_channel
++            if not active_channel or not active_channel.is_open:
++                return False
++
++            self.logger.debug(f"Declaring queue for {self.callsign} {self.uid}")
++            active_channel.queue_declare(queue=self.callsign)
++            active_channel.queue_declare(queue=self.uid)
++
++            group_routing_keys = []
++            with self.app.app_context():
++                if self.is_ssl and self.user:
++                    memberships = db.session.execute(
++                        db.session.query(GroupUser).filter_by(
++                            user_id=self.user.id,
++                            direction=Group.OUT,
++                            enabled=True,
++                        )
++                    ).all()
++                    self.group_memberships = [membership[0] for membership in memberships]
++                    group_routing_keys = [
++                        f"{membership.group.name}.OUT" for membership in self.group_memberships
++                    ]
++
++            if not group_routing_keys:
++                group_routing_keys = ["__ANON__.OUT"]
++
++            for routing_key in group_routing_keys:
++                self._queue_bind(active_channel, "groups", routing_key, self.uid)
++
++            self._queue_bind(active_channel, "missions", "missions", self.uid)
++            self._queue_bind(active_channel, "dms", self.uid, self.uid)
++            self._queue_bind(active_channel, "dms", self.callsign, self.callsign)
++
++            if not self.is_consuming:
++                active_channel.basic_consume(
++                    queue=self.callsign,
++                    on_message_callback=self.on_message,
++                    auto_ack=True,
++                )
++                active_channel.basic_consume(
++                    queue=self.uid,
++                    on_message_callback=self.on_message,
++                    auto_ack=True,
++                )
++                self.is_consuming = True
++            return True
+ 
+-        self.cached_messages.clear()
++        return self._call_on_ioloop(configure)
+ 
+-        # Publish the EUD info to flask-socketio for the web UI map
+-        if self.eud:
++    def _publish_socketio_eud(self, data):
++        if not self.socketio_publish_enabled or not data:
++            return
++
++        def publish():
++            channel = self.rabbit_channel
++            if not channel or not channel.is_open:
++                return
+             message = {
+                 "method": "emit",
+                 "event": "eud",
+-                "data": self.eud.to_json(),
++                "data": data,
+                 "namespace": "/socket.io",
+                 "room": None,
+                 "skip_sid": [],
+@@ -301,29 +474,84 @@ class EudHandler(socketserver.BaseRequestHandler):
+                 "binary": False,
+                 "host_id": uuid.uuid4().hex,
+             }
+-            self.rabbit_channel.basic_publish(
++            channel.basic_publish(
+                 "flask-socketio",
+                 "",
+                 json.dumps(message),
+-                properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
++                properties=pika.BasicProperties(
++                    expiration=self.app.config.get("OTS_RABBITMQ_TTL")
++                ),
++            )
++
++        self._call_on_ioloop(publish)
++
++    def on_channel_open(self, channel: Channel):
++        self.logger.debug(f"Opening RabbitMQ channel for {self.callsign or self.client_address[0]}")
++        self.rabbit_channel = channel
++        self.is_consuming = False
++        self.rabbit_channel.add_on_close_callback(self.on_channel_close)
++
++        if self.socketio_publish_enabled:
++            self.rabbit_channel.exchange_declare(
++                exchange="flask-socketio",
++                durable=False,
++                exchange_type="fanout",
++                auto_delete=False,
+             )
+ 
++        if self.uid and self.callsign:
++            try:
++                self._ensure_client_routing_bindings(channel)
++            except BaseException as exc:
++                self.logger.warning("Failed to restore EUD routing for %s: %s", self.uid, exc)
++
++        cached_messages = list(self.cached_messages)
++        self.cached_messages.clear()
++        for message in cached_messages:
++            self.publish_cot(message)
++
++        # Publish the EUD info to flask-socketio for the web UI map
++        if self.eud_payload:
++            self._publish_socketio_eud(self.eud_payload)
++
+     def on_channel_close(self, channel: Channel, error):
+-        self.logger.error(f"RabbitMQ channel closed for {self.callsign}, shut it down")
++        self.logger.error(
++            f"RabbitMQ channel closed for {self.callsign or self.client_address[0]}: {error!r}"
++        )
++        if channel is self.rabbit_channel:
++            self.rabbit_channel = None
++        self.is_consuming = False
++
++        err_text = str(error)
++        if "flask-socketio" in err_text and ("NOT_FOUND" in err_text or "404" in err_text):
++            self.socketio_publish_enabled = False
++
++        if self.shutdown:
++            return
++
+         if (
+             self.rabbit_connection
+             and not self.rabbit_connection.is_closing
+             and not self.rabbit_connection.is_closed
+         ):
+-            self.rabbit_connection.close()
++            try:
++                self.rabbit_connection.channel(on_open_callback=self.on_channel_open)
++                self.logger.warning(
++                    "Attempting RabbitMQ channel recovery for %s",
++                    self.callsign or self.client_address[0],
++                )
++                return
++            except BaseException as exc:
++                self.logger.error("RabbitMQ channel recovery failed: %s", exc)
+ 
+         self.shutdown = True
+-        # self.request.shutdown(socket.SHUT_RDWR)
+-        # self.sock.close()
++        try:
++            self.request.shutdown(SHUT_RDWR)
++        except OSError:
++            pass
+ 
+     def on_close(self, connection, error):
+-        # Stop the ioloop using add_callback_threadsafe because ioloop.stop() isn't threadsafe
+-        connection.ioloop.add_callback_threadsafe(self.rabbit_connection.ioloop.stop)
++        connection.ioloop.stop()
+         self.logger.info("Connection closed for {}: {}".format(self.client_address[0], error))
+ 
+     def on_message(self, unused_channel, basic_deliver, properties, body):
+@@ -459,37 +687,59 @@ class EudHandler(socketserver.BaseRequestHandler):
+         if not event:
+             return
+ 
+-        if not self.rabbit_channel or not self.rabbit_channel.is_open:
++        channel = self.rabbit_channel
++        if not channel or not channel.is_open:
+             self.cached_messages.append(event)
+             self.logger.error("RabbitMQ channel is closed, not publishing cot")
+             return
+ 
+-        # Route all CoTs to the firehose exchange for plugins and users that connect directly to RabbitMQ
+-        self.rabbit_channel.basic_publish(
+-            exchange="firehose",
+-            body=json.dumps({"uid": self.uid, "cot": str(event)}),
+-            routing_key="",
+-            properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+-        )
++        def publish():
++            active_channel = self.rabbit_channel
++            if not active_channel or not active_channel.is_open:
++                raise RuntimeError("RabbitMQ channel is closed")
++
++            body = json.dumps({"uid": self.uid, "cot": str(event)})
++            active_channel.basic_publish(
++                exchange="firehose",
++                body=body,
++                routing_key="",
++                properties=pika.BasicProperties(
++                    expiration=self.app.config.get("OTS_RABBITMQ_TTL")
++                ),
++            )
++            active_channel.basic_publish(
++                exchange="cot_parser",
++                body=json.dumps(
++                    {
++                        "uid": self.uid,
++                        "cot": str(event),
++                        "user_id": self.user.id if self.user else None,
++                    }
++                ),
++                routing_key="cot_parser",
++                properties=pika.BasicProperties(
++                    expiration=self.app.config.get("OTS_RABBITMQ_TTL")
++                ),
++            )
+ 
+-        # Route all cots to the cot_parser direct exchange to be processed by a pool of cot_parser processes
+-        self.rabbit_channel.basic_publish(
+-            exchange="cot_parser",
+-            body=json.dumps(
+-                {"uid": self.uid, "cot": str(event), "user_id": self.user.id if self.user else None}
+-            ),
+-            routing_key="cot_parser",
+-            properties=pika.BasicProperties(expiration=self.app.config.get("OTS_RABBITMQ_TTL")),
+-        )
++        try:
++            self._call_on_ioloop(publish)
++        except BaseException as exc:
++            self.logger.error("CoT publish failed for %s: %s", self.uid, exc)
++            self.cached_messages.append(event)
+ 
+     def parse_device_info(self, event):
+-        link = event.find("link")
+-        fileshare = event.find("fileshare")
+-
+         # EUDs running the Meshtastic and dmrcot plugins can relay messages from their RF networks to the server
+         # so we want to use the UID of the "off grid" EUD, not the relay EUD
+         contact = event.find("contact")
+         takv = event.find("takv")
++        event_type = event.attrs.get("type", "")
++
++        # Shapes and annotations can contain temporary contact identities.  A
++        # connection identity must come from SA or explicit TAK client metadata.
++        if not event_type.startswith("a-") and not takv:
++            return
++
+         if takv or contact:
+             uid = event.attrs.get("uid")
+         else:
+@@ -506,141 +756,21 @@ class EudHandler(socketserver.BaseRequestHandler):
+                 operating_system = takv.attrs["os"] if "os" in takv.attrs else None
+                 platform = takv.attrs["platform"] if "platform" in takv.attrs else None
+                 version = takv.attrs["version"] if "version" in takv.attrs else None
++            self.platform = platform
+ 
+             if "callsign" in contact.attrs:
+                 self.callsign = contact.attrs["callsign"]
+ 
+-                # Declare a RabbitMQ Queue for this uid and join the 'dms' and 'cot' exchanges
+-                if (
+-                    self.rabbit_channel
+-                    and self.rabbit_channel.is_open
+-                    and platform != "OpenTAK ICU"
+-                    and platform != "Meshtastic"
+-                    and platform != "DMRCOT"
+-                ):
+-
+-                    self.logger.debug(f"Declaring queue for {self.callsign} {self.uid}")
+-                    self.rabbit_channel.queue_declare(queue=self.callsign)
+-                    self.rabbit_channel.queue_declare(queue=self.uid)
+-
+-                    with self.app.app_context():
+-                        if self.is_ssl:
+-                            group_memberships = db.session.execute(
+-                                db.session.query(GroupUser).filter_by(
+-                                    user_id=self.user.id, direction=Group.OUT
+-                                )
+-                            ).all()
+-                            if not group_memberships:
+-                                self.logger.debug(
+-                                    f"{self.callsign} doesn't belong to any groups, adding them to the __ANON__ group"
+-                                )
+-                                self.rabbit_channel.queue_bind(
+-                                    exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
+-                                )
+-                                if {
+-                                    "exchange": "groups",
+-                                    "routing_key": "__ANON__.OUT",
+-                                    "queue": self.uid,
+-                                } not in self.bound_queues:
+-                                    self.bound_queues.append(
+-                                        {
+-                                            "exchange": "groups",
+-                                            "routing_key": "__ANON__.OUT",
+-                                            "queue": self.uid,
+-                                        }
+-                                    )
+-
+-                            elif group_memberships and self.is_ssl:
+-                                for membership in group_memberships:
+-                                    membership: GroupUser = membership[0]
+-                                    self.group_memberships.append(membership)
+-
+-                                    if membership.enabled:
+-                                        self.rabbit_channel.queue_bind(
+-                                            exchange="groups",
+-                                            queue=self.uid,
+-                                            routing_key=f"{membership.group.name}.OUT",
+-                                        )
+-
+-                                    if {
+-                                        "exchange": "groups",
+-                                        "routing_key": f"{membership.group.name}.OUT",
+-                                        "queue": self.uid,
+-                                    } not in self.bound_queues:
+-                                        self.bound_queues.append(
+-                                            {
+-                                                "exchange": "groups",
+-                                                "routing_key": f"{membership.group.name}.OUT",
+-                                                "queue": self.uid,
+-                                            }
+-                                        )
+-
+-                        self.rabbit_channel.queue_bind(
+-                            exchange="missions", routing_key="missions", queue=self.uid
+-                        )
+-                        if {
+-                            "exchange": "missions",
+-                            "routing_key": "missions",
+-                            "queue": self.uid,
+-                        } not in self.bound_queues:
+-                            self.bound_queues.append(
+-                                {
+-                                    "exchange": "missions",
+-                                    "routing_key": "missions",
+-                                    "queue": self.uid,
+-                                }
+-                            )
+-
+-                        # The DMs queue also binds by callsign since the <dest> tag in CoT messages can be by callsign instead of UID
+-                        self.rabbit_channel.queue_bind(
+-                            exchange="dms", queue=self.uid, routing_key=self.uid
+-                        )
+-                        self.rabbit_channel.queue_bind(
+-                            exchange="dms", queue=self.callsign, routing_key=self.callsign
+-                        )
+-
+-                        if {
+-                            "exchange": "dms",
+-                            "routing_key": self.uid,
+-                            "queue": self.uid,
+-                        } not in self.bound_queues:
+-                            self.bound_queues.append(
+-                                {"exchange": "dms", "routing_key": self.uid, "queue": self.uid}
+-                            )
+-
+-                        if {
+-                            "exchange": "dms",
+-                            "routing_key": self.callsign,
+-                            "queue": self.callsign,
+-                        } not in self.bound_queues:
+-                            self.bound_queues.append(
+-                                {
+-                                    "exchange": "dms",
+-                                    "routing_key": self.callsign,
+-                                    "queue": self.callsign,
+-                                }
+-                            )
+-
+-                        if not self.is_ssl:
+-                            self.logger.debug(
+-                                f"{self.callsign} is connected via TCP, adding them to the __ANON__ group"
+-                            )
+-                            self.rabbit_channel.queue_bind(
+-                                exchange="groups", queue=self.uid, routing_key="__ANON__.OUT"
+-                            )
+-                            self.bound_queues.append(
+-                                {
+-                                    "exchange": "groups",
+-                                    "routing_key": "__ANON__.OUT",
+-                                    "queue": self.uid,
+-                                }
+-                            )
++                claim_identity = getattr(self.server, "claim_identity", None)
++                if claim_identity:
++                    claim_identity(self, self.uid)
+ 
+-                        self.rabbit_channel.basic_consume(
+-                            queue=self.callsign, on_message_callback=self.on_message, auto_ack=True
+-                        )
+-                        self.rabbit_channel.basic_consume(
+-                            queue=self.uid, on_message_callback=self.on_message, auto_ack=True
++                if self.rabbit_channel and self.rabbit_channel.is_open:
++                    try:
++                        self._ensure_client_routing_bindings()
++                    except BaseException as exc:
++                        self.logger.warning(
++                            "Deferring EUD routing setup for %s: %s", self.uid, exc
+                         )
+ 
+             if "phone" in contact.attrs and contact.attrs["phone"]:
+@@ -734,40 +864,27 @@ class EudHandler(socketserver.BaseRequestHandler):
+                 # If the RabbitMQ channel is open, publish the EUD info to socketio to be displayed on the web UI map.
+                 # Also save the EUD's info for on_channel_open to publish
+                 self.eud = eud
+-                if self.rabbit_channel:
+-                    message = {
+-                        "method": "emit",
+-                        "event": "eud",
+-                        "data": eud.to_json(),
+-                        "namespace": "/socket.io",
+-                        "room": None,
+-                        "skip_sid": None,
+-                        "callback": None,
+-                        "binary": False,
+-                        "host_id": uuid.uuid4().hex,
+-                    }
+-                    self.rabbit_channel.basic_publish(
+-                        exchange="flask-socketio",
+-                        routing_key="",
+-                        body=json.dumps(message).encode(),
+-                        properties=pika.BasicProperties(
+-                            expiration=self.app.config.get("OTS_RABBITMQ_TTL")
+-                        ),
+-                    )
++                self.eud_payload = eud.to_json()
++                if self.rabbit_channel and self.rabbit_channel.is_open:
++                    try:
++                        self._publish_socketio_eud(self.eud_payload)
++                    except BaseException as exc:
++                        self.logger.warning("SocketIO EUD publish failed: %s", exc)
+ 
+-    def unbind_rabbitmq_queues(self):
++    def unbind_rabbitmq_queues(self, channel=None):
++        active_channel = channel or self.rabbit_channel
+         if (
+             self.uid
+-            and self.rabbit_channel
+-            and not self.rabbit_channel.is_closing
+-            and not self.rabbit_channel.is_closed
++            and active_channel
++            and not active_channel.is_closing
++            and not active_channel.is_closed
+         ):
+-            self.rabbit_channel.queue_unbind(
++            active_channel.queue_unbind(
+                 queue=self.uid, exchange="missions", routing_key="missions"
+             )
+-            self.rabbit_channel.queue_unbind(queue=self.uid, exchange="groups")
++            active_channel.queue_unbind(queue=self.uid, exchange="groups")
+ 
+             for bind in self.bound_queues:
+-                self.rabbit_channel.queue_unbind(
++                active_channel.queue_unbind(
+                     exchange=bind["exchange"], queue=bind["queue"], routing_key=bind["routing_key"]
+                 )
+diff --git a/opentakserver/eud_handler/EudServer.py b/opentakserver/eud_handler/EudServer.py
+index 10f7f88..e40ce83 100644
+--- a/opentakserver/eud_handler/EudServer.py
++++ b/opentakserver/eud_handler/EudServer.py
+@@ -1,21 +1,56 @@
+-import socket
+ import socketserver
+-import ssl
++from threading import RLock
+ 
+ 
+-class EudServer(socketserver.ForkingTCPServer):
++class EudServer(socketserver.ThreadingTCPServer):
+     allow_reuse_address = True
+     daemon_threads = True
++    block_on_close = False
++    request_queue_size = 128
+     logger = None
+     port = 8088
+-    max_children = 9999999
+ 
+     def __init__(self, server_address, eud_handler, logger, app_context):
+         self.server_address = server_address
+         self.logger = logger
+         self.app_context = app_context
++        self._identity_lock = RLock()
++        self._identity_handlers = {}
+         super().__init__(server_address, eud_handler)
+ 
++    def claim_identity(self, handler, uid):
++        """Make ``handler`` the sole live connection for an EUD identity.
++
++        EUD queues are named by UID and callsign.  Allowing two consumers for
++        the same identity makes RabbitMQ round-robin messages between the old
++        and new sockets, and the older socket can later unbind the survivor's
++        queues.  Keep the registry in the TCP server process so the newest
++        connection can displace the old one before it starts consuming.
++        """
++        previous = None
++        with self._identity_lock:
++            previous = self._identity_handlers.get(uid)
++            self._identity_handlers[uid] = handler
++
++        if previous is not None and previous is not handler:
++            self.logger.info(
++                "Displacing older connection for %s from %s",
++                uid,
++                previous.client_address,
++            )
++            previous.displace()
++
++    def release_identity(self, handler, uid):
++        """Release an identity and report whether ``handler`` still owned it."""
++        if not uid:
++            return True
++
++        with self._identity_lock:
++            if self._identity_handlers.get(uid) is not handler:
++                return False
++            del self._identity_handlers[uid]
++            return True
++
+     def server_bind(self):
+         super().server_bind()
+ 
+diff --git a/opentakserver/federation/cli.py b/opentakserver/federation/cli.py
+index d368b81..d3f9a71 100644
+--- a/opentakserver/federation/cli.py
++++ b/opentakserver/federation/cli.py
+@@ -18,7 +18,13 @@ import sys
+ from sqlalchemy import select
+ 
+ from opentakserver.federation import truststore
+-from opentakserver.federation.federation_server import app
++
++
++def _get_app():
++    """Load the federation app only when a command needs runtime state."""
++    from opentakserver.federation.federation_server import app
++
++    return app
+ 
+ 
+ def _print(obj, as_json):
+@@ -47,6 +53,7 @@ def cmd_list(args):
+     from opentakserver.extensions import db
+     from opentakserver.models.Federation import Federation
+ 
++    app = _get_app()
+     with app.app_context():
+         rows = db.session.execute(select(Federation).order_by(Federation.name)).all()
+         peers = [row[0].to_json() for row in rows]
+@@ -73,6 +80,7 @@ def cmd_status(args):
+     from opentakserver.extensions import db
+     from opentakserver.models.Federation import Federation
+ 
++    app = _get_app()
+     with app.app_context():
+         rows = db.session.execute(select(Federation).order_by(Federation.name)).all()
+         peers = []
+@@ -118,11 +126,13 @@ def cmd_add(args):
+     from opentakserver.extensions import db
+     from opentakserver.models.Federation import Federation
+ 
++    app = _get_app()
+     with app.app_context():
+-        row = db.session.execute(
++        existing = db.session.execute(
+             select(Federation).filter_by(name=args.name)
+         ).first()
+-        row = row[0] if row else Federation()
++        row = existing[0] if existing else Federation()
++        is_new = existing is None
+         row.name = args.name
+         if row.inbound_groups is None:
+             row.inbound_groups = []
+@@ -131,15 +141,26 @@ def cmd_add(args):
+ 
+         if args.address is not None:
+             row.address = args.address or None
++            row.outbound = bool(row.address)
++        elif is_new:
++            row.outbound = False
+         if args.port is not None:
++            if not 1 <= args.port <= 65535:
++                print("error: --port must be between 1 and 65535", file=sys.stderr)
++                return 2
+             row.port = args.port
+-        row.protocol_version = args.protocol
+-        row.outbound = bool(args.address)
++        if args.protocol is not None:
++            row.protocol_version = args.protocol
++        elif is_new:
++            row.protocol_version = 1
+         if args.enabled is not None:
+             row.enabled = args.enabled
+         elif row.enabled is None:
+             row.enabled = True
+         if args.reconnect is not None:
++            if args.reconnect < 1:
++                print("error: --reconnect must be at least 1 second", file=sys.stderr)
++                return 2
+             row.reconnect_interval = args.reconnect
+ 
+         if args.in_groups is not None:
+@@ -159,7 +180,10 @@ def cmd_add(args):
+         db.session.commit()
+         result = row.to_json()
+ 
+-    _print({"ok": True, "federate": result}, args.json) or print(f"Saved federate '{args.name}'.")
++    if args.json:
++        _print({"ok": True, "federate": result}, True)
++    else:
++        print(f"Saved federate '{args.name}'.")
+     return 0
+ 
+ 
+@@ -167,6 +191,7 @@ def cmd_remove(args):
+     from opentakserver.extensions import db
+     from opentakserver.models.Federation import Federation
+ 
++    app = _get_app()
+     with app.app_context():
+         row = db.session.execute(
+             select(Federation).filter_by(name=args.name)
+@@ -177,7 +202,10 @@ def cmd_remove(args):
+         db.session.delete(row[0])
+         db.session.commit()
+ 
+-    _print({"ok": True}, args.json) or print(f"Removed federate '{args.name}'.")
++    if args.json:
++        _print({"ok": True}, True)
++    else:
++        print(f"Removed federate '{args.name}'.")
+     return 0
+ 
+ 
+@@ -185,6 +213,7 @@ def _set_enabled(name, enabled, as_json):
+     from opentakserver.extensions import db
+     from opentakserver.models.Federation import Federation
+ 
++    app = _get_app()
+     with app.app_context():
+         row = db.session.execute(select(Federation).filter_by(name=name)).first()
+         if not row:
+@@ -193,9 +222,10 @@ def _set_enabled(name, enabled, as_json):
+         row[0].enabled = enabled
+         db.session.commit()
+ 
+-    _print({"ok": True, "enabled": enabled}, as_json) or print(
+-        f"Federate '{name}' {'enabled' if enabled else 'disabled'}."
+-    )
++    if as_json:
++        _print({"ok": True, "enabled": enabled}, True)
++    else:
++        print(f"Federate '{name}' {'enabled' if enabled else 'disabled'}.")
+     return 0
+ 
+ 
+@@ -208,6 +238,7 @@ def cmd_disable(args):
+ 
+ 
+ def cmd_ca_list(args):
++    app = _get_app()
+     with app.app_context():
+         cas = truststore.list_cas(app.config)
+     if args.json:
+@@ -227,19 +258,22 @@ def cmd_ca_import(args):
+         return 1
+     with open(args.file, "rb") as f:
+         pem = f.read()
++    app = _get_app()
+     with app.app_context():
+         try:
+             result = truststore.save_ca(app.config, args.name or os.path.basename(args.file), pem)
+         except ValueError as e:
+             print(f"error: invalid certificate: {e}", file=sys.stderr)
+             return 1
+-    _print({"ok": True, "ca": result}, args.json) or print(
+-        f"Trusted federation CA '{result['filename']}' ({result.get('subject', '')})."
+-    )
++    if args.json:
++        _print({"ok": True, "ca": result}, True)
++    else:
++        print(f"Trusted federation CA '{result['filename']}' ({result.get('subject', '')}).")
+     return 0
+ 
+ 
+ def cmd_ca_export(args):
++    app = _get_app()
+     ca_path = os.path.join(app.config.get("OTS_CA_FOLDER"), "ca.pem")
+     if not os.path.exists(ca_path):
+         print(f"error: CA not found at {ca_path}", file=sys.stderr)
+@@ -249,9 +283,10 @@ def cmd_ca_export(args):
+     if args.out:
+         with open(args.out, "wb") as f:
+             f.write(pem)
+-        _print({"ok": True, "path": args.out}, args.json) or print(
+-            f"Exported this server's CA to {args.out} — hand it to the peer administrator."
+-        )
++        if args.json:
++            _print({"ok": True, "path": args.out}, True)
++        else:
++            print(f"Exported this server's CA to {args.out} — hand it to the peer administrator.")
+     else:
+         sys.stdout.buffer.write(pem)
+     return 0
+@@ -271,7 +306,7 @@ def build_parser():
+     add.add_argument("name")
+     add.add_argument("--host", "--address", dest="address", default=None)
+     add.add_argument("--port", type=int, default=None)
+-    add.add_argument("--protocol", type=int, choices=(1, 2), default=1)
++    add.add_argument("--protocol", type=int, choices=(1, 2), default=None)
+     add.add_argument("--reconnect", type=int, default=None)
+     add.add_argument("--groups", default=None, help="comma-separated, sets both directions")
+     add.add_argument("--in-groups", dest="in_groups", default=None)
+diff --git a/opentakserver/federation/engine.py b/opentakserver/federation/engine.py
+index 44c6a58..b43d2e5 100644
+--- a/opentakserver/federation/engine.py
++++ b/opentakserver/federation/engine.py
+@@ -65,6 +65,27 @@ GROUP_CACHE_SECONDS = 30
+ # ---------------------------------------------------------------------------
+ 
+ 
++def parse_protocol_version(value) -> int:
++    """Return a supported federation transport version or raise ValueError."""
++    if isinstance(value, int) and not isinstance(value, bool) and value in (1, 2):
++        return value
++    if isinstance(value, str) and value in ("1", "2"):
++        return int(value)
++    raise ValueError("protocol_version must be 1 or 2")
++
++
++def verify_peer_fingerprint(federate: dict, fingerprint: str | None) -> None:
++    """Reject a missing or changed peer leaf certificate."""
++    if not fingerprint:
++        raise ssl.SSLError(f"Federate '{federate['name']}' presented no certificate")
++    expected = federate.get("cert_fingerprint")
++    if expected and expected != fingerprint:
++        raise ssl.SSLError(
++            f"Federate '{federate['name']}' presented certificate {fingerprint[:12]} "
++            f"but {expected[:12]} is pinned"
++        )
++
++
+ def build_outbound_event(envelope: dict, federate: dict, directory, node_id: str):
+     """Convert a firehose envelope to a FederatedEvent to send, or None.
+ 
+@@ -101,6 +122,14 @@ def apply_inbound_event(fed_event, federate: dict, directory, bridge, logger, re
+     the peer's announced contacts, updated in place.
+     """
+     name = federate["name"]
++    inbound_groups = federate.get("inbound_groups") or []
++    if not inbound_groups:
++        # Revocations are safe control-plane messages and must still take
++        # effect after an administrator removes this federate's group access.
++        if fed_event.HasField("contact") and fed_event.contact.operation == fig_pb2.DELETE:
++            remote_contacts.pop(fed_event.contact.uid, None)
++            directory.remove_federated_eud(fed_event.contact.uid)
++        return False
+ 
+     if fed_event.HasField("contact"):
+         contact = fed_event.contact
+@@ -108,8 +137,13 @@ def apply_inbound_event(fed_event, federate: dict, directory, bridge, logger, re
+             remote_contacts.pop(contact.uid, None)
+             directory.remove_federated_eud(contact.uid)
+         else:
++            if not directory.ensure_federated_eud(contact.uid, contact.callsign, name):
++                logger.warning(
++                    f"Ignoring federated contact {contact.uid} from '{name}': "
++                    "uid belongs to a local EUD"
++                )
++                return False
+             remote_contacts[contact.uid] = contact.callsign
+-            directory.ensure_federated_eud(contact.uid, contact.callsign, name)
+         logger.debug(
+             f"Federate {name} contact "
+             f"{fig_pb2.CRUD.Name(contact.operation)}: {contact.callsign} ({contact.uid})"
+@@ -118,10 +152,6 @@ def apply_inbound_event(fed_event, federate: dict, directory, bridge, logger, re
+     if not fed_event.HasField("event"):
+         return False
+ 
+-    inbound_groups = federate.get("inbound_groups") or []
+-    if not inbound_groups:
+-        return False
+-
+     cot = federated_event_to_cot(fed_event)
+     if not cot:
+         return False
+@@ -130,8 +160,11 @@ def apply_inbound_event(fed_event, federate: dict, directory, bridge, logger, re
+     # locally so the cot table's foreign key is satisfied and the remote unit
+     # shows up like a federated contact.
+     sender_uid, callsign = sender_identity(fed_event)
+-    if sender_uid:
+-        directory.ensure_federated_eud(sender_uid, callsign, name)
++    if sender_uid and not directory.ensure_federated_eud(sender_uid, callsign, name):
++        logger.warning(
++            f"Ignoring federated event from '{name}': uid {sender_uid} belongs to a local EUD"
++        )
++        return False
+ 
+     bridge.publish_inbound(
+         {
+@@ -163,15 +196,24 @@ class Directory:
+         self.logger = logger
+         self._group_cache = {}
+ 
+-    def connected_contacts(self) -> dict[str, str]:
++    def connected_contacts(self, allowed_groups: list[str] | set[str]) -> dict[str, str]:
++        """Connected local contacts reachable through the outbound allowlist."""
+         from opentakserver.extensions import db
+         from opentakserver.models.EUD import EUD
+ 
++        allowed = set(allowed_groups or [])
++        if not allowed:
++            return {}
++
+         with self.app.app_context():
+             rows = db.session.execute(
+                 db.session.query(EUD).filter_by(last_status="Connected")
+             ).all()
+-            return {row[0].uid: row[0].callsign or row[0].uid for row in rows}
++            contacts = {row[0].uid: row[0].callsign or row[0].uid for row in rows}
++
++        return {
++            uid: callsign for uid, callsign in contacts.items() if self.sender_groups(uid) & allowed
++        }
+ 
+     def sender_groups(self, uid: str) -> set[str]:
+         """Groups the EUD with this uid publishes into (its user's IN groups).
+@@ -203,7 +245,7 @@ class Directory:
+         self._group_cache[uid] = (time.monotonic(), groups)
+         return groups
+ 
+-    def ensure_federated_eud(self, uid: str, callsign: str | None, federate_name: str) -> None:
++    def ensure_federated_eud(self, uid: str, callsign: str | None, federate_name: str) -> bool:
+         """Register a minimal EUD row for a federated entity.
+ 
+         Federated tracks reference EUDs that live on the peer server, but the
+@@ -220,15 +262,18 @@ class Directory:
+             existing = db.session.execute(db.session.query(EUD).filter_by(uid=uid)).first()
+             now = datetime.now(timezone.utc)
+             if existing:
++                if not (existing[0].last_status or "").startswith("Federated ("):
++                    return False
+                 db.session.execute(
+                     update(EUD)
+                     .where(EUD.uid == uid)
+                     .values(last_event_time=now, last_status=f"Federated ({federate_name})")
+                 )
+                 db.session.commit()
+-                return
++                return True
+ 
+-            for attempt_callsign in (callsign, None):
++            attempts = (callsign, None) if callsign else (None,)
++            for attempt_callsign in attempts:
+                 eud = EUD()
+                 eud.uid = uid
+                 eud.callsign = attempt_callsign
+@@ -237,9 +282,29 @@ class Directory:
+                 try:
+                     db.session.add(eud)
+                     db.session.commit()
+-                    return
++                    return True
+                 except IntegrityError:
+-                    db.session.rollback()  # callsign collision or race; retry bare
++                    db.session.rollback()
++                    # Contact and SA streams can register the same remote uid
++                    # concurrently. Reuse the winning federated row, but never
++                    # reinterpret a local EUD as federated.
++                    existing = db.session.execute(db.session.query(EUD).filter_by(uid=uid)).first()
++                    if existing:
++                        if not (existing[0].last_status or "").startswith("Federated ("):
++                            return False
++                        db.session.execute(
++                            update(EUD)
++                            .where(EUD.uid == uid)
++                            .values(
++                                last_event_time=now,
++                                last_status=f"Federated ({federate_name})",
++                            )
++                        )
++                        db.session.commit()
++                        return True
++                    # A unique callsign collision has no uid row; retry without
++                    # the best-effort callsign.
++            return False
+ 
+     def remove_federated_eud(self, uid: str) -> None:
+         from opentakserver.extensions import db
+@@ -247,7 +312,9 @@ class Directory:
+ 
+         with self.app.app_context():
+             db.session.execute(
+-                update(EUD).where(EUD.uid == uid).values(last_status="Disconnected")
++                update(EUD)
++                .where(EUD.uid == uid, EUD.last_status.like("Federated (%"))
++                .values(last_status="Federated (disconnected)")
+             )
+             db.session.commit()
+ 
+@@ -273,6 +340,9 @@ class Directory:
+         from opentakserver.extensions import db
+         from opentakserver.models.Federation import Federation
+ 
++        if not fingerprint:
++            raise ssl.SSLError("federation peer did not present a certificate")
++
+         with self.app.app_context():
+             row = db.session.execute(
+                 db.session.query(Federation).filter_by(cert_fingerprint=fingerprint)
+@@ -281,7 +351,8 @@ class Directory:
+                 return row[0].serialize()
+ 
+             row = Federation()
+-            row.name = common_name or f"federate-{fingerprint[:12]}"
++            base_name = (common_name or "federate")[:242]
++            row.name = f"{base_name}-{fingerprint[:12]}"
+             row.address = address
+             row.outbound = False
+             row.enabled = True
+@@ -290,7 +361,18 @@ class Directory:
+             row.inbound_groups = []
+             row.outbound_groups = []
+             db.session.add(row)
+-            db.session.commit()
++            try:
++                db.session.commit()
++            except IntegrityError:
++                # The two v2 streams can race their first lookup. The winner
++                # creates the row; the loser reuses it after rolling back.
++                db.session.rollback()
++                existing = db.session.execute(
++                    db.session.query(Federation).filter_by(cert_fingerprint=fingerprint)
++                ).first()
++                if existing:
++                    return existing[0].serialize()
++                raise
+             self.logger.info(
+                 f"Registered new inbound federate '{row.name}' ({fingerprint[:12]}) with no "
+                 "groups - assign groups to start the flow of data"
+@@ -421,7 +503,7 @@ class FederationConnection:
+ 
+     def announce_contacts(self):
+         """Send ContactListEntry create/delete for local EUD presence changes."""
+-        current = self.directory.connected_contacts()
++        current = self.directory.connected_contacts(self.federate.get("outbound_groups") or [])
+         for uid, callsign, operation in contact_announcements(current, self._sent_contacts):
+             self._send(contact_event(uid, callsign, operation))
+         self._sent_contacts = current
+@@ -460,9 +542,7 @@ class FederationConnection:
+         self.logger.info(f"Federation link established with '{name}'")
+         self.directory.record_state(self.federate["id"], connected=True)
+ 
+-        consumer = threading.Thread(
+-            target=self._consume, name=f"fed-out-{name}", daemon=True
+-        )
++        consumer = threading.Thread(target=self._consume, name=f"fed-out-{name}", daemon=True)
+         consumer.start()
+ 
+         contact_thread = threading.Thread(
+@@ -652,12 +732,11 @@ class FederationManager:
+             sock.settimeout(None)
+ 
+             fingerprint, common_name = truststore.peer_identity(sock)
+-            if config.get("cert_fingerprint") and config["cert_fingerprint"] != fingerprint:
++            try:
++                verify_peer_fingerprint(config, fingerprint)
++            except ssl.SSLError:
+                 sock.close()
+-                raise ssl.SSLError(
+-                    f"Federate '{config['name']}' presented certificate {fingerprint[:12]} "
+-                    f"but {config['cert_fingerprint'][:12]} is pinned"
+-                )
++                raise
+             self.directory.pin_fingerprint(config["id"], fingerprint, common_name)
+ 
+             self._run_connection(sock, config)
+@@ -680,7 +759,9 @@ class FederationManager:
+             try:
+                 for federate in self.directory.outbound_federates():
+                     with self._lock:
+-                        already = federate["id"] in self._dialing or federate["id"] in self.connections
++                        already = (
++                            federate["id"] in self._dialing or federate["id"] in self.connections
++                        )
+                         if not already:
+                             self._dialing.add(federate["id"])
+                         else:
+diff --git a/opentakserver/federation/federation_server.py b/opentakserver/federation/federation_server.py
+index e6bb161..1d46e53 100644
+--- a/opentakserver/federation/federation_server.py
++++ b/opentakserver/federation/federation_server.py
+@@ -7,7 +7,6 @@ and database access, then serves federation connections until stopped.
+ 
+ import logging
+ import os
+-import platform
+ import sys
+ from logging.handlers import TimedRotatingFileHandler
+ 
+diff --git a/opentakserver/federation/grpc_engine.py b/opentakserver/federation/grpc_engine.py
+index 40585ac..c47aa52 100644
+--- a/opentakserver/federation/grpc_engine.py
++++ b/opentakserver/federation/grpc_engine.py
+@@ -4,7 +4,7 @@ v2 carries the same FederatedEvent messages as v1, but over the official TAK
+ FederatedChannel gRPC service instead of length-prefixed TLS frames. This
+ implements the SA subset:
+ 
+-- getIdentity / HealthCheck housekeeping
++- getIdentity (when the peer serves it) / HealthCheck housekeeping
+ - ClientEventStream: a federate subscribes and we stream our (group-filtered)
+   events to it
+ - ServerEventStream: a federate streams its events to us and we route them in
+@@ -20,6 +20,7 @@ connecting federate from its client certificate.
+ """
+ 
+ import queue
++import ssl
+ import threading
+ import time
+ from concurrent import futures
+@@ -31,12 +32,14 @@ from opentakserver.federation.engine import (
+     apply_inbound_event,
+     build_outbound_event,
+     contact_announcements,
++    verify_peer_fingerprint,
+ )
+ from opentakserver.federation.mapper import contact_event
+ from opentakserver.federation.proto import fig_pb2, fig_pb2_grpc
+ 
+ STREAM_POLL_SECONDS = 1.0
+ OUTBOUND_QUEUE_MAX = 1000
++DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS = 5.0
+ 
+ 
+ def _channel_credentials(config):
+@@ -71,6 +74,70 @@ def _peer_address(context):
+     return parts[1] if len(parts) >= 2 else peer
+ 
+ 
++def _optional_peer_name(stub, fallback):
++    """Return the v2 peer name, tolerating TAK's optional identity RPC."""
++    try:
++        identity = stub.getIdentity(fig_pb2.Empty())
++        return identity.name or fallback, True
++    except grpc.RpcError as e:
++        if e.code() != grpc.StatusCode.UNIMPLEMENTED:
++            raise
++        return fallback, False
++
++
++def _health_check_loop(stub, stop, interval, logger, peer_name):
++    """Keep a v2 event stream alive using the official FIG health contract.
++
++    TAK Server and Federation Hub expire a client event stream when they do
++    not receive a SERVING health report within their configured timeout.  A
++    peer that does not implement the optional RPC remains usable; peers that
++    do implement it receive the same periodic report as a stock TAK client.
++    """
++    interval = float(interval)
++    if interval <= 0:
++        logger.warning(f"Federation v2 health checks disabled for '{peer_name}'")
++        return
++
++    request = fig_pb2.ClientHealth(status=fig_pb2.ClientHealth.SERVING)
++    # Hub 5.7 sends the unary response but does not call onCompleted(). Bound
++    # each call so it cannot occupy this worker forever, while leaving enough
++    # margin to refresh the Hub's default 15-second client timeout.
++    rpc_timeout = max(1.0, min(interval / 2.0, 5.0))
++    while not stop.wait(interval):
++        try:
++            response = stub.HealthCheck(request, timeout=rpc_timeout)
++        except grpc.RpcError as e:
++            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
++                logger.debug(
++                    f"Federation v2 peer '{peer_name}' does not serve optional HealthCheck"
++                )
++                return
++            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
++                # Federation Hub 5.7 updates the stream health and calls
++                # onNext(SERVING), but omits onCompleted() from this unary RPC.
++                # Python therefore reaches its local deadline even though the
++                # heartbeat was accepted. Keep refreshing as stock TAK's
++                # asynchronous client does.
++                logger.debug(
++                    f"Federation v2 health check to '{peer_name}' reached its "
++                    "completion deadline; continuing"
++                )
++                continue
++            else:
++                logger.warning(
++                    f"Federation v2 health check to '{peer_name}' failed: "
++                    f"{e.code()} {e.details()}"
++                )
++                return
++
++        if response.status != fig_pb2.ServerHealth.SERVING:
++            logger.warning(
++                f"Federation v2 peer '{peer_name}' reported unhealthy status "
++                f"{fig_pb2.ServerHealth.ServingStatus.Name(response.status)}"
++            )
++            return
++
++
+ class FederationServicer(fig_pb2_grpc.FederatedChannelServicer):
+     """Serves inbound federation v2 connections (we are the listener)."""
+ 
+@@ -98,9 +165,7 @@ class FederationServicer(fig_pb2_grpc.FederatedChannelServicer):
+ 
+     def _resolve_federate(self, context):
+         fingerprint, cn = _peer_identity(context)
+-        federate = self.directory.find_or_create_inbound(
+-            fingerprint, cn, _peer_address(context)
+-        )
++        federate = self.directory.find_or_create_inbound(fingerprint, cn, _peer_address(context))
+         return federate
+ 
+     def ServerEventStream(self, request_iterator, context):
+@@ -127,9 +192,7 @@ class FederationServicer(fig_pb2_grpc.FederatedChannelServicer):
+         finally:
+             bridge.close()
+             self.directory.record_state(federate["id"], connected=False)
+-            self.logger.info(
+-                f"Federation v2 inbound stream from '{name}' closed ({count} events)"
+-            )
++            self.logger.info(f"Federation v2 inbound stream from '{name}' closed ({count} events)")
+         return fig_pb2.Subscription(identity=self._identity_message())
+ 
+     def ClientEventStream(self, request, context):
+@@ -182,11 +245,11 @@ def _outbound_event_stream(manager, federate, context):
+             now = time.monotonic()
+             if now - last_contacts >= contact_interval:
+                 last_contacts = now
+-                current = directory.connected_contacts()
++                federate = directory.federate_config(federate["id"]) or federate
++                current = directory.connected_contacts(federate.get("outbound_groups") or [])
+                 for uid, callsign, operation in contact_announcements(current, sent_contacts):
+                     yield contact_event(uid, callsign, operation)
+                 sent_contacts = current
+-                federate = directory.federate_config(federate["id"]) or federate
+ 
+             try:
+                 body = outbound.get(timeout=STREAM_POLL_SECONDS)
+@@ -249,7 +312,8 @@ class GrpcClient:
+             now = time.monotonic()
+             if now - last_contacts >= contact_interval:
+                 last_contacts = now
+-                current = self.directory.connected_contacts()
++                config = self.directory.federate_config(self.federate["id"]) or self.federate
++                current = self.directory.connected_contacts(config.get("outbound_groups") or [])
+                 for uid, callsign, operation in contact_announcements(current, sent_contacts):
+                     yield contact_event(uid, callsign, operation)
+                 sent_contacts = current
+@@ -278,7 +342,15 @@ class GrpcClient:
+ 
+         try:
+             credentials = _channel_credentials(self.config)
+-        except truststore.NoFederationCAsError as e:
++            fingerprint, common_name = truststore.probe_grpc_peer_identity(
++                self.config,
++                config["address"],
++                config["port"],
++                authority,
++            )
++            verify_peer_fingerprint(config, fingerprint)
++            self.directory.pin_fingerprint(config["id"], fingerprint, common_name)
++        except (OSError, ssl.SSLError, truststore.NoFederationCAsError) as e:
+             self.logger.warning(f"Federation v2 dial to '{config['name']}' failed: {e}")
+             self.directory.record_state(config["id"], connected=False, error=str(e))
+             return
+@@ -291,9 +363,18 @@ class GrpcClient:
+ 
+         try:
+             grpc.channel_ready_future(channel).result(timeout=15)
+-            identity = stub.getIdentity(fig_pb2.Empty())
++            # Official TAK Server 5.5 declares getIdentity in fig.proto but
++            # leaves the server-side method unimplemented.  Stock TAK clients
++            # do not require it; identity is carried in the stream Subscription
++            # instead.  Keep it as an optional diagnostic RPC so OTS remains
++            # compatible with peers that do implement it.
++            peer_name, serves_identity = _optional_peer_name(stub, name)
++            if not serves_identity:
++                self.logger.debug(
++                    f"Federation v2 peer '{name}' does not serve optional getIdentity"
++                )
+             self.logger.info(
+-                f"Federation v2 link established with '{name}' (peer: {identity.name})"
++                f"Federation v2 link established with '{name}' (peer: {peer_name})"
+             )
+             self.directory.record_state(config["id"], connected=True)
+ 
+@@ -309,7 +390,24 @@ class GrpcClient:
+ 
+             # Receive the peer's events on this thread
+             subscription = fig_pb2.Subscription(identity=self._identity_message())
+-            for fed_event in stub.ClientEventStream(subscription):
++            event_stream = stub.ClientEventStream(subscription)
++            health = threading.Thread(
++                target=_health_check_loop,
++                args=(
++                    stub,
++                    self._stop,
++                    self.config.get(
++                        "OTS_FEDERATION_V2_HEALTH_CHECK_INTERVAL_SECONDS",
++                        DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS,
++                    ),
++                    self.logger,
++                    name,
++                ),
++                name=f"fedv2c-health-{name}",
++                daemon=True,
++            )
++            health.start()
++            for fed_event in event_stream:
+                 if self._stop.is_set():
+                     break
+                 current = self.directory.federate_config(config["id"]) or config
+@@ -317,9 +415,7 @@ class GrpcClient:
+                     fed_event, current, self.directory, bridge, self.logger, remote_contacts
+                 )
+         except grpc.RpcError as e:
+-            self.logger.warning(
+-                f"Federation v2 dial to '{name}' failed: {e.code()} {e.details()}"
+-            )
++            self.logger.warning(f"Federation v2 dial to '{name}' failed: {e.code()} {e.details()}")
+             self.directory.record_state(config["id"], connected=False, error=str(e.code()))
+         except Exception as e:  # noqa: BLE001
+             self.logger.error(f"Federation v2 client error for '{name}': {e}")
+diff --git a/opentakserver/federation/truststore.py b/opentakserver/federation/truststore.py
+index 7a495c4..aa995ec 100644
+--- a/opentakserver/federation/truststore.py
++++ b/opentakserver/federation/truststore.py
+@@ -16,6 +16,7 @@ import hashlib
+ import logging
+ import os
+ import re
++import socket
+ import ssl
+ 
+ from cryptography import x509
+@@ -138,6 +139,32 @@ def peer_identity(ssl_socket: ssl.SSLSocket) -> tuple[str | None, str | None]:
+     return fingerprint, common_name
+ 
+ 
++def probe_grpc_peer_identity(
++    config, address: str, port: int, authority: str, timeout: float = 15
++) -> tuple[str, str | None]:
++    """Verify and identify the certificate used by a federation v2 endpoint.
++
++    Python's synchronous gRPC client does not expose the peer certificate. Do
++    a short mutual-TLS/HTTP2 handshake first, using the same CA, client
++    identity, and target authority as the gRPC channel, so the caller can
++    enforce the per-federate leaf-certificate pin before opening the streams.
++    """
++    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
++    context.check_hostname = True
++    context.set_alpn_protocols(["h2"])
++    _load_common(context, config)
++
++    with socket.create_connection((address, port), timeout=timeout) as raw_socket:
++        with context.wrap_socket(raw_socket, server_hostname=authority) as tls_socket:
++            if tls_socket.selected_alpn_protocol() != "h2":
++                raise ssl.SSLError("federation v2 peer did not negotiate HTTP/2")
++            fingerprint, common_name = peer_identity(tls_socket)
++
++    if not fingerprint:
++        raise ssl.SSLError("federation v2 peer did not present a certificate")
++    return fingerprint, common_name
++
++
+ def _safe_filename(name: str) -> str:
+     name = os.path.basename(name)
+     name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+diff --git a/opentakserver/models/EUD.py b/opentakserver/models/EUD.py
+index 2c4afa0..be28666 100644
+--- a/opentakserver/models/EUD.py
++++ b/opentakserver/models/EUD.py
+@@ -68,10 +68,20 @@ class EUD(db.Model):
+             "team_role": self.team_role,
+         }
+ 
+-    def to_json(self, include_data_packages=True):
++    def to_json(self, include_data_packages=True, include_last_point=False):
+         config_datapackage_hash = None
+         if self.certificate and self.certificate.data_package:
+             config_datapackage_hash = self.certificate.data_package.hash
++        last_point = None
++        if include_last_point:
++            from opentakserver.models.Point import Point
++
++            last_point = (
++                db.session.query(Point)
++                .filter(Point.device_uid == self.uid)
++                .order_by(Point.timestamp.desc(), Point.id.desc())
++                .first()
++            )
+         return {
+             "uid": self.uid,
+             "callsign": self.callsign,
+@@ -85,7 +95,7 @@ class EUD(db.Model):
+             ),
+             "last_status": self.last_status,
+             "username": self.user.username if self.user else None,
+-            "last_point": None,  # Setting to None for now since it can cause a huge overhead when an EUD has lots of points in the DB
++            "last_point": last_point.to_json() if last_point else None,
+             "team": self.team.name if self.team else None,
+             "team_color": self.team.get_team_color() if self.team else None,
+             "team_role": self.team_role,
+diff --git a/opentakserver/models/Federation.py b/opentakserver/models/Federation.py
+index 30c8c55..0a40d92 100644
+--- a/opentakserver/models/Federation.py
++++ b/opentakserver/models/Federation.py
+@@ -15,8 +15,8 @@ class Federation(db.Model):
+     Outbound federates are dialed by the federation server; inbound federates
+     are auto-registered when a server whose CA is in the federation truststore
+     connects. ``inbound_groups``/``outbound_groups`` gate the flow of data in
+-    each direction - a federate with empty group lists exchanges nothing,
+-    matching TAK Server's default posture.
++    each direction - a federate with empty group lists exchanges no new
++    contacts or data (contact revocations can still clear prior presence).
+     """
+ 
+     __tablename__ = "federation"
+@@ -62,8 +62,6 @@ class Federation(db.Model):
+             iso8601_string_from_datetime(self.last_connected) if self.last_connected else None
+         )
+         json["last_disconnected"] = (
+-            iso8601_string_from_datetime(self.last_disconnected)
+-            if self.last_disconnected
+-            else None
++            iso8601_string_from_datetime(self.last_disconnected) if self.last_disconnected else None
+         )
+         return json
+diff --git a/opentakserver/models/Team.py b/opentakserver/models/Team.py
+index db704ac..2708c22 100644
+--- a/opentakserver/models/Team.py
++++ b/opentakserver/models/Team.py
+@@ -34,9 +34,10 @@ class Team(db.Model):
+         "Brown": "#964B00",
+         "Gray": "#808080",
+     }
++    fallback_color = "#808080"
+ 
+     def get_team_color(self):
+-        return self.colors[self.name]
++        return self.colors.get(self.name, self.fallback_color)
+ 
+     def serialize(self):
+         return {
+@@ -48,5 +49,5 @@ class Team(db.Model):
+             "name": self.name,
+             "chatroom": self.chatroom.to_json() if self.chatroom else None,
+             "euds": [eud.to_json() for eud in self.euds] if self.euds else None,
+-            "color": self.colors[self.name],
++            "color": self.colors.get(self.name, self.fallback_color),
+         }
+diff --git a/poetry.lock b/poetry.lock
+index d8a56e7..249a6c4 100644
+--- a/poetry.lock
++++ b/poetry.lock
+@@ -2531,6 +2531,73 @@ files = [
+ docs = ["Sphinx", "furo"]
+ test = ["objgraph", "psutil", "setuptools"]
+ 
++[[package]]
++name = "grpcio"
++version = "1.82.1"
++description = "HTTP/2-based RPC framework"
++optional = false
++python-versions = ">=3.10"
++groups = ["main"]
++files = [
++    {file = "grpcio-1.82.1-cp310-cp310-linux_armv7l.whl", hash = "sha256:91859d1cac5f47caec5fc40e9f827500cdb54ce5b36450dc9a65616b5af49c17"},
++    {file = "grpcio-1.82.1-cp310-cp310-macosx_11_0_universal2.whl", hash = "sha256:c80c9741dcef192f669876a81957cf7713b441c2f0c43631350d75fa49321d31"},
++    {file = "grpcio-1.82.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:b89cff456796d2f0581783726ad017a2c70aff2d27b0f05504c34e2e417f7560"},
++    {file = "grpcio-1.82.1-cp310-cp310-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:d6e8a08f7038ba7a77f71e250804e4aba84fe91d22cfc54ff43c07b7529c4728"},
++    {file = "grpcio-1.82.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:50fd2fe83426b1b1c6cdc4d72d555223b7dddf8ce07c5bac218b13fc6d684c6f"},
++    {file = "grpcio-1.82.1-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:b758540a24d5394a9c578bf9f6126389f474b106ac3d9df1d53de56cb14c9fd9"},
++    {file = "grpcio-1.82.1-cp310-cp310-musllinux_1_2_i686.whl", hash = "sha256:c4ba4aac238f685743575d9d700003ac16537cce26e7c774993134f530652464"},
++    {file = "grpcio-1.82.1-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:ed6fc621d6f366c88a60f0b971d5afd21d441d9aa561ee688de5b7acdb2cf901"},
++    {file = "grpcio-1.82.1-cp310-cp310-win32.whl", hash = "sha256:bd2f45e46fff5b91c10997d0743a987517a7dde67c64c592835c2dcaac66f587"},
++    {file = "grpcio-1.82.1-cp310-cp310-win_amd64.whl", hash = "sha256:5e171d5f0d6a0af78ea7512783f170a44f80c165259d8773e3a354a7f991f2b5"},
++    {file = "grpcio-1.82.1-cp311-cp311-linux_armv7l.whl", hash = "sha256:0ddb18a9a9e1f46692b3567ae4abb3f8d117ce6afea48650f8eca06d8ab5d06f"},
++    {file = "grpcio-1.82.1-cp311-cp311-macosx_11_0_universal2.whl", hash = "sha256:cf855b1af246720f567b0ce5d0724d45dfa4188eecc3296a2a69257b11b9e94b"},
++    {file = "grpcio-1.82.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:ddb30cb13e25bc13cea70ffc69d6d90c49d36ea6c1d4549e6912f70177834cac"},
++    {file = "grpcio-1.82.1-cp311-cp311-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:1e822b2774f719c017cbe700b6e47173b6ae290fb84906f52a5a3c2c60b62e1e"},
++    {file = "grpcio-1.82.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:5dafb1ece8ed45dee7c738f166ec82e19673221ed5ab8967f72858a4685345b2"},
++    {file = "grpcio-1.82.1-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:e06503106e7271e0a49fd5a1ac04747f1e47e87d900476db6fe45bc87ee411f4"},
++    {file = "grpcio-1.82.1-cp311-cp311-musllinux_1_2_i686.whl", hash = "sha256:ff99bc8cafb6a952201c37b995f425e641c93ffa6e072258525feab57290141d"},
++    {file = "grpcio-1.82.1-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:644ae1b94266ac785330f4590a69e52b6a7eb73029043a02209db81c81397d69"},
++    {file = "grpcio-1.82.1-cp311-cp311-win32.whl", hash = "sha256:e203d2e19d471630084a16c815616f8211dff21c268ab3c5f5bf38417832e074"},
++    {file = "grpcio-1.82.1-cp311-cp311-win_amd64.whl", hash = "sha256:0d8299c285fe6cc6a1f56badf8d3bc5078c8d20273ee64bafa3783b4bc29a769"},
++    {file = "grpcio-1.82.1-cp312-cp312-linux_armv7l.whl", hash = "sha256:c09bd5fa0d5b1fbd773ec349fe61441c3e4ebf168c229aa7538a820bdfad6a58"},
++    {file = "grpcio-1.82.1-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:1eae24810720734598e3e6a1a528d5de0f265fe3fc86575e9ecce424b9ec7379"},
++    {file = "grpcio-1.82.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:a6bd5daf5bde7b24d7ad2cbaf8bf9eac620d96222016bb5e7ddde930dec0673f"},
++    {file = "grpcio-1.82.1-cp312-cp312-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:1ecfde669cb687ac020d31ff76debe5dc7a62213335f02262eb6625628da1c03"},
++    {file = "grpcio-1.82.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:011c8badee95734dee8bf05ce3464756a0ac3ebb8d443afd20c0e2b5e4640ad9"},
++    {file = "grpcio-1.82.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:b85f4564926fb23114d239392bdcae200db1e6179629edd7d7ab0ab89c96a197"},
++    {file = "grpcio-1.82.1-cp312-cp312-musllinux_1_2_i686.whl", hash = "sha256:2c0c8270833395644c3fe6b6a806397955a2bc0538000a19a78b90c05a6c16e0"},
++    {file = "grpcio-1.82.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:2ba199205ff46c7778290fe1673c91ac8e7e45678dd5c86e9e56fa33ec8788f6"},
++    {file = "grpcio-1.82.1-cp312-cp312-win32.whl", hash = "sha256:06127691866e295c14e84a1fb86356dd962254f6abd0da4ca4b001eea9e89438"},
++    {file = "grpcio-1.82.1-cp312-cp312-win_amd64.whl", hash = "sha256:1fa3223a3a2e1db74f4c2b255189eb7ea875dfba56e221d252ee3fc7b204778e"},
++    {file = "grpcio-1.82.1-cp313-cp313-linux_armv7l.whl", hash = "sha256:b454a2d97bfab7565683a02345f86bd182ab69fd7c2bdb7414171e7538f266b1"},
++    {file = "grpcio-1.82.1-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:3dde70abfc80b3be11de53ba0d601c439e7fb2afd3583ad1788d1146bec92fdc"},
++    {file = "grpcio-1.82.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:f5523099c98c292ea1ae08e617249db760c56a78f8deae879027fe7d1ffbcbf6"},
++    {file = "grpcio-1.82.1-cp313-cp313-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:5e5c4dc0a59b0f8490a6bdfd6fc8395b9d8ad8a8407c7d67ca7b5bba15c0877f"},
++    {file = "grpcio-1.82.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:c40d94ba820329cc191981bc22fa6f6eed0799c6d921f3c6709521d59d4a2fd7"},
++    {file = "grpcio-1.82.1-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:4c816180e31e273caaec6f8bd86a8392499d5bbb26f41da44e3dce48bde69095"},
++    {file = "grpcio-1.82.1-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:e31fd780b261830720cb70b0fd8f0aa51d49e75a66d7464ad2e31d4b765f2580"},
++    {file = "grpcio-1.82.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:9d76152d7c31d7210d4a106e5d8b64da5bba5d6abf11be30e2f7b0a0c59bbcbf"},
++    {file = "grpcio-1.82.1-cp313-cp313-win32.whl", hash = "sha256:38e9dcb5258226fb3282630b31b16a968df52c8c6ad514af540646e0a4578f8a"},
++    {file = "grpcio-1.82.1-cp313-cp313-win_amd64.whl", hash = "sha256:3dbfb52c36d9511ac2b8e6c94fdde837b393ae520cc321f52a333a2deedf5a90"},
++    {file = "grpcio-1.82.1-cp314-cp314-linux_armv7l.whl", hash = "sha256:35f990f7784c8fd2872644f07f96ebb4d9e48e145a190ab80d0280af91a1bfb2"},
++    {file = "grpcio-1.82.1-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:46536a4a1f4434df3c851b9254ff6fc7df5705b273681a15ca277d5921c178a0"},
++    {file = "grpcio-1.82.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d6650a7c1ebb7921c70e12a385439a8118efb99e669fa9ed31cf25db1843937c"},
++    {file = "grpcio-1.82.1-cp314-cp314-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:b8e110c66df5204c0506d6c8787b35d48b8b699ef5aa366d6c4d67325c67fe9a"},
++    {file = "grpcio-1.82.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:f853eae07235a51a27bb5d6a9a175a59ca55dc9b99edc6ce2f76f07332d333ae"},
++    {file = "grpcio-1.82.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:60b0f2c95337694fc094b77d9f60f50566c84b5677393e342eb98daeee242d98"},
++    {file = "grpcio-1.82.1-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:b064fc444812bdaa9825d33c26f8d732d63ee6a5d78557c1faf92c98687fed27"},
++    {file = "grpcio-1.82.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:7d7ede11d747b4e1bd05e3bc0260e155b65a88735a895a10f6521f19b889511e"},
++    {file = "grpcio-1.82.1-cp314-cp314-win32.whl", hash = "sha256:3d21f19838dc255ecbb79321b15ae9b98fbddff4c3d4aedb0a81bdd7f4ab572a"},
++    {file = "grpcio-1.82.1-cp314-cp314-win_amd64.whl", hash = "sha256:e20f1edbb15f99e3128ec86433f9785fd5a451d8f115e74fe0056134f092a9d5"},
++    {file = "grpcio-1.82.1.tar.gz", hash = "sha256:707b24abd90fcb1e45bcc080577da1dbf9971d107490589b9539af8e1e77b4b5"},
++]
++
++[package.dependencies]
++typing-extensions = ">=4.12,<5.0"
++
++[package.extras]
++protobuf = ["grpcio-tools (>=1.82.1)"]
++
+ [[package]]
+ name = "h11"
+ version = "0.16.0"
+@@ -7084,4 +7151,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
+ [metadata]
+ lock-version = "2.1"
+ python-versions = ">=3.10, <3.15"
+-content-hash = "2c46326fcf86504b2377219f4f6276349da3fd08253dad1dc68b708d7c7061b0"
++content-hash = "9f9405dd1829b7fcca15c2a826ca60ea29442f644f3c4af9ed40857690c0566f"
+diff --git a/tests/test_eud_reliability.py b/tests/test_eud_reliability.py
+new file mode 100644
+index 0000000..dead443
+--- /dev/null
++++ b/tests/test_eud_reliability.py
+@@ -0,0 +1,363 @@
++import datetime
++import logging
++import socketserver
++from contextlib import nullcontext
++from threading import Lock
++from types import SimpleNamespace
++
++from bs4 import BeautifulSoup
++
++from opentakserver.cot_parser.disconnect import (
++    build_disconnect_event,
++    process_disconnect,
++)
++from opentakserver.eud_handler.EudHandler import EudHandler
++from opentakserver.eud_handler.EudServer import EudServer
++from opentakserver.extensions import db
++from opentakserver.models.EUD import EUD
++from opentakserver.models.Team import Team
++
++
++class FakeRequest:
++    def __init__(self):
++        self.closed = False
++
++    def shutdown(self, _how):
++        self.closed = True
++
++    def close(self):
++        self.closed = True
++
++
++class FakeChannel:
++    def __init__(self, publish_error=None):
++        self.is_open = True
++        self.is_closed = False
++        self.is_closing = False
++        self.publish_error = publish_error
++        self.declared = []
++        self.bindings = []
++        self.consumers = []
++        self.published = []
++        self.unbound = []
++
++    def add_on_close_callback(self, callback):
++        self.close_callback = callback
++
++    def exchange_declare(self, **kwargs):
++        self.exchange = kwargs
++
++    def queue_declare(self, queue):
++        self.declared.append(queue)
++
++    def queue_bind(self, exchange, queue, routing_key):
++        self.bindings.append((exchange, queue, routing_key))
++
++    def queue_unbind(self, exchange, queue, routing_key=None):
++        self.unbound.append((exchange, queue, routing_key))
++
++    def basic_consume(self, queue, on_message_callback, auto_ack):
++        self.consumers.append((queue, on_message_callback, auto_ack))
++
++    def basic_publish(self, *args, **kwargs):
++        if self.publish_error:
++            raise self.publish_error
++        self.published.append((args, kwargs))
++
++    def close(self):
++        self.is_open = False
++        self.is_closed = True
++
++
++class FakeConnection:
++    def __init__(self):
++        self.is_closing = False
++        self.is_closed = False
++        self.channel_requests = 0
++
++    def channel(self, on_open_callback):
++        self.channel_requests += 1
++        self.on_open_callback = on_open_callback
++
++
++def make_handler(monkeypatch):
++    def base_init(instance, request, client_address, server):
++        instance.request = request
++        instance.client_address = client_address
++        instance.server = server
++
++    monkeypatch.setattr(socketserver.BaseRequestHandler, "__init__", base_init)
++    server = SimpleNamespace()
++    handler = EudHandler(FakeRequest(), ("127.0.0.1", 12345), server)
++    handler.app = SimpleNamespace(config={"OTS_RABBITMQ_TTL": 60000})
++    handler.app.app_context = nullcontext
++    return handler
++
++
++def make_server():
++    server = object.__new__(EudServer)
++    server.logger = logging.getLogger("test-eud-server")
++    server._identity_lock = Lock()
++    server._identity_handlers = {}
++    return server
++
++
++def test_per_connection_state_is_not_shared(monkeypatch):
++    first = make_handler(monkeypatch)
++    second = make_handler(monkeypatch)
++
++    first.cached_messages.append("one")
++    first.bound_queues.append({"queue": "one"})
++
++    assert second.cached_messages == []
++    assert second.bound_queues == []
++
++
++def test_newest_identity_displaces_old_connection():
++    server = make_server()
++    old = SimpleNamespace(client_address=("10.0.0.1", 1), displaced=False)
++    old.displace = lambda: setattr(old, "displaced", True)
++    new = SimpleNamespace(client_address=("10.0.0.2", 2))
++
++    server.claim_identity(old, "device-1")
++    server.claim_identity(new, "device-1")
++
++    assert old.displaced is True
++    assert server.release_identity(old, "device-1") is False
++    assert server.release_identity(new, "device-1") is True
++
++
++def test_displaced_connection_does_not_publish_disconnect(monkeypatch):
++    handler = make_handler(monkeypatch)
++    handler.uid = "device-1"
++    handler.displaced = True
++    handler.rabbit_channel = FakeChannel()
++    handler._close_lock = Lock()
++
++    handler.close_connection()
++
++    assert handler.rabbit_channel.published == []
++    assert handler.rabbit_channel.unbound == []
++    assert handler.request.closed is True
++
++
++def test_shape_contact_cannot_claim_connection_identity(monkeypatch):
++    handler = make_handler(monkeypatch)
++    shape = BeautifulSoup(
++        '<event type="u-d-r" uid="shape-1"><detail><contact callsign="SHAPE"/></detail></event>',
++        "xml",
++    ).find("event")
++
++    handler.parse_device_info(shape)
++
++    assert handler.uid is None
++    assert handler.callsign is None
++
++
++def test_channel_open_finishes_deferred_routing(monkeypatch):
++    handler = make_handler(monkeypatch)
++    handler.uid = "device-1"
++    handler.callsign = "ALPHA"
++    handler.platform = "ATAK"
++    handler.socketio_publish_enabled = False
++    channel = FakeChannel()
++
++    handler.on_channel_open(channel)
++
++    assert channel.declared == ["ALPHA", "device-1"]
++    assert ("groups", "device-1", "__ANON__.OUT") in channel.bindings
++    assert ("missions", "device-1", "missions") in channel.bindings
++    assert ("dms", "device-1", "device-1") in channel.bindings
++    assert ("dms", "ALPHA", "ALPHA") in channel.bindings
++    assert [consumer[0] for consumer in channel.consumers] == ["ALPHA", "device-1"]
++
++
++def test_closed_channel_requests_recovery(monkeypatch):
++    handler = make_handler(monkeypatch)
++    channel = FakeChannel()
++    connection = FakeConnection()
++    handler.rabbit_channel = channel
++    handler.rabbit_connection = connection
++
++    handler.on_channel_close(channel, RuntimeError("broker reset"))
++
++    assert handler.rabbit_channel is None
++    assert handler.shutdown is False
++    assert connection.channel_requests == 1
++
++
++def test_publish_race_caches_event(monkeypatch):
++    handler = make_handler(monkeypatch)
++    handler.uid = "device-1"
++    handler.rabbit_channel = FakeChannel(publish_error=RuntimeError("channel closed"))
++    event = BeautifulSoup('<event type="a-f-G" uid="device-1"/>', "xml").find("event")
++
++    handler.publish_cot(event)
++
++    assert handler.cached_messages == [event]
++
++
++def test_disconnect_event_expires_original_track_at_last_point():
++    now = datetime.datetime(2026, 7, 21, 12, 0, tzinfo=datetime.timezone.utc)
++    cot = SimpleNamespace(type="a-f-G-U-C", how="m-g")
++    point = SimpleNamespace(
++        latitude=41.1,
++        longitude=-87.2,
++        hae=190.0,
++        ce=4.0,
++        le=7.0,
++        cot=cot,
++    )
++    eud = SimpleNamespace(
++        callsign="ALPHA",
++        team_role="Team Lead",
++        team=SimpleNamespace(name="Blue"),
++    )
++
++    event = build_disconnect_event("device-1", latest_point=point, eud=eud, now=now)
++
++    assert event["uid"] == "device-1"
++    assert event["type"] == "a-f-G-U-C"
++    assert event.find("point")["lat"] == "41.1"
++    assert event.find("point")["lon"] == "-87.2"
++    assert event.find("contact")["callsign"] == "ALPHA"
++    assert event.find("__group")["name"] == "Blue"
++    assert event.find("__group")["role"] == "Team Lead"
++    assert event["stale"] < event["time"]
++
++
++def test_disconnect_controller_routes_stale_sa_and_updates_status():
++    now_point = SimpleNamespace(
++        latitude=41.1,
++        longitude=-87.2,
++        hae=190.0,
++        ce=4.0,
++        le=7.0,
++        cot=SimpleNamespace(type="a-f-G-U-C", how="m-g"),
++    )
++
++    class FakeEud:
++        callsign = "ALPHA"
++        team_role = "Team Member"
++        team = SimpleNamespace(name="Cyan")
++        last_status = "Connected"
++        last_event_time = None
++
++        def to_json(self, include_last_point=False):
++            return {"uid": "device-1", "last_point": include_last_point}
++
++    eud = FakeEud()
++
++    class Query:
++        def __init__(self, model):
++            self.model = model
++
++        def filter(self, *_args):
++            return self
++
++        def order_by(self, *_args):
++            return self
++
++        def first(self):
++            return now_point
++
++    class Result:
++        def __init__(self, value, many=False):
++            self.value = value
++            self.many = many
++
++        def first(self):
++            return (self.value,) if self.value else None
++
++        def all(self):
++            return self.value if self.many else []
++
++    class Session:
++        def __init__(self):
++            self.execute_count = 0
++            self.commits = 0
++
++        def query(self, model):
++            return Query(model)
++
++        def execute(self, _statement):
++            self.execute_count += 1
++            if self.execute_count == 1:
++                return Result(eud)
++            return Result([], many=True)
++
++        def commit(self):
++            self.commits += 1
++
++    session = Session()
++    controller = SimpleNamespace(
++        context=nullcontext(),
++        logger=logging.getLogger("test-cot-controller"),
++        db=SimpleNamespace(session=session),
++        socketio=SimpleNamespace(events=[]),
++    )
++    controller.socketio.emit = (
++        lambda *args, **kwargs: controller.socketio.events.append((args, kwargs))
++    )
++    controller.rabbit_channel = FakeChannel()
++    routed = []
++    controller.route_cot = lambda event, uid, user_id: routed.append(
++        (event, uid, user_id)
++    )
++
++    process_disconnect(controller, "device-1", 7)
++
++    assert eud.last_status == "Disconnected"
++    assert session.commits == 1
++    assert routed[0][0]["uid"] == "device-1"
++    assert routed[0][1:] == ("device-1", 7)
++    assert controller.socketio.events[0][0][0] == "eud"
++
++
++def test_map_json_can_include_only_latest_point(monkeypatch):
++    point = SimpleNamespace(to_json=lambda: {"uid": "point-latest"})
++
++    class Query:
++        def filter(self, *_args):
++            return self
++
++        def order_by(self, *_args):
++            return self
++
++        def first(self):
++            return point
++
++    monkeypatch.setattr(db.session, "query", lambda model: Query())
++    eud = SimpleNamespace(
++        uid="device-1",
++        callsign="ALPHA",
++        certificate=None,
++        device=None,
++        os=None,
++        platform=None,
++        version=None,
++        phone_number=None,
++        last_event_time=None,
++        last_status=None,
++        user=None,
++        team=None,
++        team_role=None,
++        data_packages=None,
++    )
++
++    payload = EUD.to_json(eud, include_last_point=True)
++
++    assert payload["last_point"] == {"uid": "point-latest"}
++
++
++def test_unknown_team_uses_gray_fallback():
++    team = SimpleNamespace(
++        name="Custom Team",
++        colors=Team.colors,
++        fallback_color=Team.fallback_color,
++        chatroom=None,
++        euds=None,
++    )
++
++    assert Team.get_team_color(team) == "#808080"
++    assert Team.to_json(team)["color"] == "#808080"
+diff --git a/tests/test_federation.py b/tests/test_federation.py
+index 6d983f0..d2dcdff 100644
+--- a/tests/test_federation.py
++++ b/tests/test_federation.py
+@@ -28,7 +28,13 @@ from cryptography.x509.oid import NameOID
+ 
+ from opentakserver.federation import mapper, truststore
+ from opentakserver.federation.codec import FrameDecoder, FrameTooLargeError, encode_frame
+-from opentakserver.federation.engine import FederationConnection, FederationManager
++from opentakserver.federation.engine import (
++    FederationConnection,
++    FederationManager,
++    apply_inbound_event,
++    parse_protocol_version,
++    verify_peer_fingerprint,
++)
+ from opentakserver.federation.proto import fig_pb2, fig_pb2_grpc
+ 
+ SA_COT = (
+@@ -254,19 +260,28 @@ def test_ssl_context_requires_a_ca(tmp_path):
+ class FakeDirectory:
+     """In-memory stand-in for the engine's database lookups."""
+ 
+-    def __init__(self, federates=None, contacts=None, groups=None):
++    def __init__(self, federates=None, contacts=None, groups=None, local_euds=None):
+         self.federates = {federate["id"]: dict(federate) for federate in (federates or [])}
+         self.contacts = contacts or {}
+         self.groups = groups or {}
++        self.local_euds = set(local_euds or [])
+         self.states = []
+         self.auto_registered = []
+         self.federated_euds = {}
+ 
+-    def connected_contacts(self):
+-        return dict(self.contacts)
++    def connected_contacts(self, allowed_groups):
++        allowed = set(allowed_groups or [])
++        return {
++            uid: callsign
++            for uid, callsign in self.contacts.items()
++            if self.sender_groups(uid) & allowed
++        }
+ 
+     def ensure_federated_eud(self, uid, callsign, federate_name):
++        if uid in self.local_euds:
++            return False
+         self.federated_euds[uid] = callsign
++        return True
+ 
+     def remove_federated_eud(self, uid):
+         self.federated_euds.pop(uid, None)
+@@ -286,12 +301,11 @@ class FakeDirectory:
+ 
+     def find_or_create_inbound(self, fingerprint, common_name, address):
+         for federate in self.federates.values():
+-            if federate.get("cert_fingerprint") in (None, fingerprint):
+-                federate["cert_fingerprint"] = fingerprint
++            if federate.get("cert_fingerprint") == fingerprint:
+                 return federate
+         federate = {
+             "id": len(self.federates) + 100,
+-            "name": common_name or "unknown",
++            "name": f"{common_name or 'federate'}-{fingerprint[:12]}",
+             "enabled": True,
+             "outbound": False,
+             "inbound_groups": [],
+@@ -340,6 +354,14 @@ class FakeBridge:
+         self._closed.set()
+ 
+ 
++class CaptureSocket:
++    def __init__(self):
++        self.frames = []
++
++    def sendall(self, frame):
++        self.frames.append(frame)
++
++
+ def _wait_for(predicate, timeout=5, message="condition"):
+     deadline = time.monotonic() + timeout
+     while not predicate():
+@@ -364,6 +386,208 @@ def _make_manager(config, directory, bridge_factory):
+     return manager
+ 
+ 
++def test_contacts_follow_outbound_group_policy_and_revoke_access():
++    directory = FakeDirectory(
++        contacts={"uid-shared": "SHARED", "uid-secret": "SECRET"},
++        groups={"uid-shared": {"Cyan"}, "uid-secret": {"Secret"}},
++    )
++    federate = {
++        "id": 1,
++        "name": "partner",
++        "outbound_groups": ["Cyan"],
++    }
++    sock = CaptureSocket()
++    connection = FederationConnection(
++        sock,
++        federate,
++        directory,
++        FakeBridge(),
++        {"OTS_NODE_ID": "node-a"},
++        logging.getLogger("OpenTAKServer"),
++    )
++
++    connection.announce_contacts()
++    connection.federate["outbound_groups"] = []
++    connection.announce_contacts()
++
++    decoded = FrameDecoder().feed(b"".join(sock.frames))
++    assert [(event.contact.uid, event.contact.operation) for event in decoded] == [
++        ("uid-shared", fig_pb2.CREATE),
++        ("uid-shared", fig_pb2.DELETE),
++    ]
++
++
++def test_empty_inbound_groups_block_contacts_but_allow_revocation():
++    directory = FakeDirectory()
++    bridge = FakeBridge()
++    federate = {"name": "partner", "inbound_groups": []}
++    remote_contacts = {}
++
++    created = mapper.contact_event("uid-remote", "REMOTE")
++    assert not apply_inbound_event(
++        created,
++        federate,
++        directory,
++        bridge,
++        logging.getLogger("OpenTAKServer"),
++        remote_contacts,
++    )
++    assert not directory.federated_euds
++    assert not remote_contacts
++
++    directory.federated_euds["uid-remote"] = "REMOTE"
++    remote_contacts["uid-remote"] = "REMOTE"
++    deleted = mapper.contact_event("uid-remote", "REMOTE", fig_pb2.DELETE)
++    assert not apply_inbound_event(
++        deleted,
++        federate,
++        directory,
++        bridge,
++        logging.getLogger("OpenTAKServer"),
++        remote_contacts,
++    )
++    assert not directory.federated_euds
++    assert not remote_contacts
++
++
++def test_federated_event_cannot_take_over_a_local_uid():
++    directory = FakeDirectory(local_euds={"ANDROID-deadbeef"})
++    bridge = FakeBridge()
++
++    accepted = apply_inbound_event(
++        mapper.cot_to_federated_event(SA_COT),
++        {"name": "partner", "inbound_groups": ["Cyan"]},
++        directory,
++        bridge,
++        logging.getLogger("OpenTAKServer"),
++        {},
++    )
++
++    assert not accepted
++    assert not bridge.inbound
++    assert not directory.federated_euds
++
++
++def test_peer_fingerprint_pin_rejects_missing_or_changed_leaf():
++    federate = {"name": "partner", "cert_fingerprint": "a" * 64}
++    verify_peer_fingerprint(federate, "a" * 64)
++    with pytest.raises(ssl.SSLError):
++        verify_peer_fingerprint(federate, None)
++    with pytest.raises(ssl.SSLError):
++        verify_peer_fingerprint(federate, "b" * 64)
++
++
++def test_protocol_version_accepts_only_v1_or_v2():
++    assert parse_protocol_version(1) == 1
++    assert parse_protocol_version("2") == 2
++    for value in (None, "grpc", False, True, 1.0, 1.5, 0, 3):
++        with pytest.raises(ValueError):
++            parse_protocol_version(value)
++
++
++def test_federation_cli_group_only_update_does_not_supply_transport_defaults():
++    from opentakserver.federation.cli import build_parser
++
++    args = build_parser().parse_args(["add", "hub", "--groups", "Cyan"])
++
++    assert args.address is None
++    assert args.port is None
++    assert args.protocol is None
++
++
++def test_v2_identity_rpc_is_optional_for_official_tak():
++    """TAK 5.5 declares getIdentity but its server returns UNIMPLEMENTED."""
++    import grpc
++
++    from opentakserver.federation.grpc_engine import _optional_peer_name
++
++    class Unimplemented(grpc.RpcError):
++        def code(self):
++            return grpc.StatusCode.UNIMPLEMENTED
++
++    class OfficialTakStub:
++        def getIdentity(self, request):
++            raise Unimplemented()
++
++    assert _optional_peer_name(OfficialTakStub(), "official-tak") == (
++        "official-tak",
++        False,
++    )
++
++    class Denied(grpc.RpcError):
++        def code(self):
++            return grpc.StatusCode.PERMISSION_DENIED
++
++    class RejectedStub:
++        def getIdentity(self, request):
++            raise Denied()
++
++    with pytest.raises(Denied):
++        _optional_peer_name(RejectedStub(), "rejected")
++
++
++def test_v2_health_check_reports_serving_periodically():
++    from opentakserver.federation.grpc_engine import _health_check_loop
++
++    stop = threading.Event()
++
++    class OfficialHubStub:
++        requests = []
++
++        def HealthCheck(self, request, timeout):
++            self.requests.append((request, timeout))
++            stop.set()
++            return fig_pb2.ServerHealth(status=fig_pb2.ServerHealth.SERVING)
++
++    stub = OfficialHubStub()
++    worker = threading.Thread(
++        target=_health_check_loop,
++        args=(stub, stop, 0.01, logging.getLogger("OpenTAKServer"), "official-hub"),
++    )
++    worker.start()
++    worker.join(timeout=1)
++
++    assert not worker.is_alive()
++    assert len(stub.requests) == 1
++    assert stub.requests[0][0].status == fig_pb2.ClientHealth.SERVING
++    assert stub.requests[0][1] == 1.0
++
++
++def test_v2_health_check_tolerates_hub_57_noncompleting_response():
++    import grpc
++
++    from opentakserver.federation.grpc_engine import _health_check_loop
++
++    stop = threading.Event()
++
++    class HubDeadline(grpc.RpcError):
++        def code(self):
++            return grpc.StatusCode.DEADLINE_EXCEEDED
++
++        def details(self):
++            return "Stream removed (Deadline Exceeded)"
++
++    class OfficialHub57Stub:
++        calls = 0
++
++        def HealthCheck(self, request, timeout):
++            self.calls += 1
++            if self.calls == 2:
++                stop.set()
++            raise HubDeadline()
++
++    stub = OfficialHub57Stub()
++    worker = threading.Thread(
++        target=_health_check_loop,
++        args=(stub, stop, 0.01, logging.getLogger("OpenTAKServer"), "official-hub"),
++    )
++    worker.start()
++    worker.join(timeout=1)
++
++    assert not worker.is_alive()
++    assert stub.calls == 2
++
++
+ # -------------------------------------------------------------- integration
+ 
+ 
+@@ -394,7 +618,9 @@ def federated_pair(tmp_path):
+                 "outbound": False,
+                 "inbound_groups": ["__ANON__"],
+                 "outbound_groups": ["__ANON__"],
+-                "cert_fingerprint": None,
++                "cert_fingerprint": truststore.cert_fingerprint(
++                    cert_b.public_bytes(serialization.Encoding.DER)
++                ),
+             }
+         ],
+         contacts={"uid-a1": "ALPHA"},
+@@ -484,7 +710,9 @@ def test_federation_end_to_end(federated_pair):
+     assert 'callsign="HAVOC13"' in envelope["cot"]
+ 
+     # And the reverse direction
+-    pair.bridges_a[0].inject({"uid": "ANDROID-cafef00d", "cot": SA_COT.replace("deadbeef", "cafef00d")})
++    pair.bridges_a[0].inject(
++        {"uid": "ANDROID-cafef00d", "cot": SA_COT.replace("deadbeef", "cafef00d")}
++    )
+     _wait_for(lambda: pair.bridges_b[0].inbound, message="SA event on B")
+     assert pair.bridges_b[0].inbound[0]["uid"] == "ANDROID-cafef00d"
+ 
+@@ -615,7 +843,9 @@ def test_federation_v2_grpc_inbound(tmp_path):
+                 "outbound": False,
+                 "inbound_groups": ["__ANON__"],
+                 "outbound_groups": ["__ANON__"],
+-                "cert_fingerprint": None,
++                "cert_fingerprint": truststore.cert_fingerprint(
++                    cert_a.public_bytes(serialization.Encoding.DER)
++                ),
+             }
+         ]
+     )
+@@ -632,6 +862,17 @@ def test_federation_v2_grpc_inbound(tmp_path):
+         options=[("grpc.ssl_target_name_override", "opentakserver")],
+     )
+     try:
++        fingerprint, common_name = truststore.probe_grpc_peer_identity(
++            client_cfg,
++            "127.0.0.1",
++            port,
++            "opentakserver",
++        )
++        assert fingerprint == truststore.cert_fingerprint(
++            cert_b.public_bytes(serialization.Encoding.DER)
++        )
++        assert common_name == "opentakserver"
++
+         stub = fig_pb2_grpc.FederatedChannelStub(channel)
+ 
+         identity = stub.getIdentity(fig_pb2.Empty())
+@@ -659,7 +900,6 @@ def test_federation_v2_rejects_untrusted_client(tmp_path):
+ 
+     from opentakserver.federation import grpc_engine
+ 
+-    _, ca_b = _make_ca("Enclave B CA")
+     ca_b_key, ca_b = _make_ca("Enclave B CA")
+     key_b, cert_b = _make_cert("opentakserver", ca_b_key, ca_b)
+     folder_b = _write_identity(tmp_path, "b", key_b, cert_b, ca_b)
+-- 
+2.23.0
+

@@ -1,0 +1,38 @@
+From 54fc636e8ca6444c59b9c39f4f8f59afbd07a56a Mon Sep 17 00:00:00 2001
+From: Francesco Romano <fwromano15@gmail.com>
+Date: Fri, 17 Jul 2026 13:10:25 -0500
+Subject: [PATCH 06/16] Re-parent federation migration onto current migration
+ head
+
+The previous parent 6a7929c07690 already had a descendant
+(00442761c803), producing two alembic heads and breaking
+'flask db upgrade'. Caught by live two-server validation.
+---
+ .../versions/b4c2e91a7d55_added_federation_table.py           | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py b/opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py
+index 422c285..a81f043 100644
+--- a/opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py
++++ b/opentakserver/migrations/versions/b4c2e91a7d55_added_federation_table.py
+@@ -1,7 +1,7 @@
+ """Added federation table
+ 
+ Revision ID: b4c2e91a7d55
+-Revises: 6a7929c07690
++Revises: 00442761c803
+ Create Date: 2026-07-17 20:15:00.000000
+ 
+ """
+@@ -11,7 +11,7 @@ from alembic import op
+ 
+ # revision identifiers, used by Alembic.
+ revision = "b4c2e91a7d55"
+-down_revision = "6a7929c07690"
++down_revision = "00442761c803"
+ branch_labels = None
+ depends_on = None
+ 
+-- 
+2.23.0
+
