@@ -1,7 +1,7 @@
 From 5f84b4e86e342ae28a3fb95cfe84893b45a5f7bf Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Tue, 21 Jul 2026 16:11:23 -0500
-Subject: [PATCH 12/16] Document threaded EUD soak validation
+Subject: [PATCH 12/18] Document threaded EUD soak validation
 
 ---
  FEDERATION.md | 20 ++++++++++++++++++++

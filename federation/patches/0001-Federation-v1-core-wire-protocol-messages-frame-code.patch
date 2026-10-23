@@ -1,7 +1,7 @@
 From 2187b4eab1874352b39fb8b040089f0dbb4f29e6 Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Fri, 17 Jul 2026 12:52:14 -0500
-Subject: [PATCH 01/16] Federation v1 core: wire protocol messages, frame
+Subject: [PATCH 01/18] Federation v1 core: wire protocol messages, frame
  codec, CoT mapper, truststore
 
 - Vendor the federation protobuf definitions (fig.proto, binarypayload.proto)

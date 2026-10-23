@@ -9,7 +9,7 @@ PKG="$1"; VERSION="$2"; OUT="$3"
 K="${PORTABLETAK_SIGNING_DIR:-$HOME/.portabletak-signing}"
 OPENSSL="${OPENSSL:-/opt/homebrew/opt/openssl@3/bin/openssl}"
 [ -f "$K/release.key.pem" ] || { echo "signing key missing in $K" >&2; exit 1; }
-echo "$VERSION" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}$' || { echo "version must be YYYY.MM.DD" >&2; exit 1; }
+echo "$VERSION" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$' || { echo "version must be YYYY.MM.DD or YYYY.MM.DD.N" >&2; exit 1; }
 mkdir -p "$OUT"
 cp "$PKG" "$OUT/node-package.tar.gz"
 SUM="$(shasum -a 256 "$OUT/node-package.tar.gz" | cut -d' ' -f1)"

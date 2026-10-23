@@ -1,7 +1,7 @@
 From 32bae785db0c258201b1e97257ccaa541c85ae02 Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Wed, 22 Jul 2026 16:30:28 -0500
-Subject: [PATCH 14/16] Repair legacy Socket.IO exchange during OTS upgrade
+Subject: [PATCH 14/18] Repair legacy Socket.IO exchange during OTS upgrade
 
 ---
  opentakserver/app.py      |  3 +-

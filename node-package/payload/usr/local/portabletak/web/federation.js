@@ -30,6 +30,18 @@
   };
   const msg = e => ERRORS[e] || String(e);
   const pretty = fp => ((fp || '').toUpperCase().match(/.{2}/g) || []).join(':');
+  const DIRECTIONS = [['both', 'Share both ways'], ['send', 'Send only (they see us, we do not see them)'],
+                      ['receive', 'Receive only (we see them, they do not see us)']];
+  function directionSelect(value) {
+    const sel = el('select', 'margin:3px 0;max-width:100%');
+    DIRECTIONS.forEach(([v, t]) => { const o = el('option', '', t); o.value = v; sel.appendChild(o); });
+    sel.value = value || 'both';
+    return sel;
+  }
+  const directionOf = f => {
+    const i = (f.inbound_groups || []).length, o = (f.outbound_groups || []).length;
+    return i && o ? 'both' : (o ? 'send' : (i ? 'receive' : 'none'));
+  };
   const btn = (text, primary) => { const b = el('button', 'margin:4px 8px 4px 0', text); if (primary) b.className = 'primary'; return b; };
 
   function build() {
@@ -99,16 +111,18 @@
       code.placeholder = 'Paste the invite code (PTFED1.…)';
       const file = el('input'); file.type = 'file'; file.accept = '.txt';
       file.onchange = async () => { if (file.files[0]) code.value = (await file.files[0].text()).trim(); };
+      const dir = directionSelect('both');
       const go = btn('Join', true);
       go.onclick = async () => {
         go.disabled = true; status.textContent = 'Joining (about 30 seconds)...';
-        const r = await call('/join', 'POST', {code: code.value});
+        const r = await call('/join', 'POST', {code: code.value, direction: dir.value});
         go.disabled = false;
         status.textContent = r.ok ? 'Joined ' + r.data.name + '. The link turns green within a minute.' : msg(why(r.data));
         if (r.ok) { panel.style.display = 'none'; refresh(); }
       };
       show([el('div', 'font-weight:600', 'Join a server with an invite'),
-            el('div', small, 'Paste the code from the other server\'s admin, or open the invite file:'), code, file, go]);
+            el('div', small, 'Paste the code from the other server\'s admin, or open the invite file:'), code, file,
+            el('div', small, 'Sharing (you can change this later):'), dir, el('div'), go]);
     };
 
     bTak.onclick = () => {
@@ -116,6 +130,7 @@
       const name = el('input', 'width:100%;margin:3px 0'); name.placeholder = 'Name, e.g. HQ TAK Server';
       const address = el('input', 'width:100%;margin:3px 0'); address.placeholder = 'Address, e.g. tak.example.org or 100.x.y.z';
       const port = el('input', 'width:100%;margin:3px 0'); port.placeholder = 'Federation port (9001)'; port.inputMode = 'numeric';
+      const dir = directionSelect('both');
       const check = btn('Check', true);
       const result = el('div', 'margin-top:8px');
       check.onclick = async () => {
@@ -134,7 +149,7 @@
         trust.onclick = async () => {
           trust.disabled = true; status.textContent = 'Connecting...';
           const c = await call('/tak/connect', 'POST', {name: name.value.trim() || 'TAK Server', address: address.value.trim(), port: p,
-            ca: d.ca, server_fingerprint: d.server_fingerprint});
+            ca: d.ca, server_fingerprint: d.server_fingerprint, direction: dir.value});
           trust.disabled = false;
           if (!c.ok) { status.textContent = msg(why(c.data)); return; }
           await refresh();
@@ -144,7 +159,7 @@
       };
       show([el('div', 'font-weight:600', 'Connect to an official TAK Server'),
             el('div', small, 'PortableTAK reads the TAK Server\'s certificate itself; no files needed from its admin.'),
-            name, address, port, check, result]);
+            name, address, port, el('div', small, 'Sharing (you can change this later):'), dir, el('div'), check, result]);
     };
 
     // ---- linked servers --------------------------------------------------------
@@ -156,6 +171,72 @@
       if (up) return ['#3fb950', 'Connected'];
       return f.last_error ? ['#f85149', 'Not connected: ' + f.last_error] : ['#d29922', 'Waiting to connect'];
     };
+
+    // One linked server: [this server] <- -> [other server]; tap an arrow to change
+    // what flows that way (green = on). Pause/Resume and Delete on the right.
+    function save(f, changes) {
+      return call('/federates', 'POST', Object.assign({name: f.name, address: f.address || '', port: f.port,
+        protocol_version: f.protocol_version, outbound: f.outbound, enabled: f.enabled,
+        inbound_groups: (f.inbound_groups || []).length ? f.inbound_groups : [],
+        outbound_groups: (f.outbound_groups || []).length ? f.outbound_groups : []}, changes));
+    }
+    function badge(text, color) {
+      return el('span', 'display:inline-block;margin-top:4px;padding:1px 8px;border-radius:6px;font-size:0.8em;font-weight:600;' +
+        'color:white;background:' + color, text);
+    }
+    function linkRow(f, ours) {
+      const row = el('div', 'display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px;margin:8px 0;' +
+        'border-radius:10px;background:rgba(255,255,255,0.04)');
+      const [color, text] = linkState(f);
+      const receiving = (f.inbound_groups || []).length > 0, sending = (f.outbound_groups || []).length > 0;
+      const side = (name, sub) => { const b = el('div', 'text-align:center;min-width:120px'); b.append(el('div', 'font-weight:700', name), sub); return b; };
+      const left = side(ours, badge(d0.process === 'RUNNING' ? 'this server' : 'federation off', d0.process === 'RUNNING' ? '#2d6cdf' : '#6e7681'));
+      const right = side(f.name, badge(f.enabled ? text.split(':')[0] : 'paused', color));
+      const middle = el('div', 'text-align:center;flex:1;min-width:200px');
+      const arrows = el('div', 'font-size:1.8em;line-height:1;user-select:none');
+      const arrow = (glyph, on, label) => {
+        const a = el('span', 'cursor:pointer;padding:0 8px;color:' + (on ? '#3fb950' : '#8b949e'), glyph);
+        a.title = label; return a;
+      };
+      const inArrow = arrow('\u2190', receiving, 'Receive from ' + f.name);
+      const outArrow = arrow('\u2192', sending, 'Send to ' + f.name);
+      arrows.append(inArrow, outArrow);
+      const flow = receiving && sending ? 'Data flows both ways.' :
+        receiving ? "Data flows into '" + ours + "' from '" + f.name + "'." :
+        sending ? "Data flows from '" + ours + "' into '" + f.name + "'." : 'Not sharing yet.';
+      middle.append(arrows, el('div', small, pending(f) ? 'This server connected to yours.' : 'Tap an arrow to change data flow.'),
+        el('div', 'margin-top:4px;font-weight:600', flow));
+      if (f.last_error && f.enabled && !text.startsWith('Connected')) middle.append(el('div', small + ';color:#f0b429', text));
+      const toggle = async (which) => {
+        const nextIn = which === 'in' ? !receiving : receiving, nextOut = which === 'out' ? !sending : sending;
+        if (!nextIn && !nextOut) { status.textContent = 'At least one direction stays on; use Pause to stop sharing.'; return; }
+        const r = await save(f, {inbound_groups: nextIn ? ((f.inbound_groups || []).length ? f.inbound_groups : 'everyone') : [],
+                                 outbound_groups: nextOut ? ((f.outbound_groups || []).length ? f.outbound_groups : 'everyone') : []});
+        status.textContent = r.ok ? '' : msg(why(r.data)); refresh();
+      };
+      inArrow.onclick = () => toggle('in');
+      outArrow.onclick = () => toggle('out');
+      const buttons = el('div', 'display:flex;flex-direction:column;gap:6px;align-items:stretch');
+      if (pending(f)) {
+        const allow = btn('Allow sharing', true);
+        allow.onclick = async () => { await save(f, {inbound_groups: 'everyone', outbound_groups: 'everyone', enabled: true}); refresh(); };
+        buttons.append(allow);
+      } else {
+        const pause = btn(f.enabled ? 'Pause' : 'Resume');
+        pause.onclick = async () => { await save(f, {enabled: !f.enabled}); refresh(); };
+        buttons.append(pause);
+      }
+      const del = btn('Delete'); del.className = 'danger';
+      del.onclick = async () => { if (confirm('Stop sharing with ' + f.name + ' and remove it?')) { await call('/federates/' + encodeURIComponent(f.name), 'DELETE'); refresh(); } };
+      const reset = el('a', 'font-size:0.8em;opacity:0.7;cursor:pointer;text-align:center', 'Forget its certificate');
+      reset.title = 'Use only if the other server got a new certificate';
+      reset.onclick = async () => { await save(f, {reset_pin: true}); refresh(); };
+      buttons.append(del, reset);
+      row.append(left, middle, right, buttons);
+      if (f.outbound) row.append(el('div', 'flex-basis:100%;' + small + ';text-align:center', 'Connects to ' + f.address + ':' + f.port));
+      return row;
+    }
+    let d0 = {};
 
     // ---- advanced ---------------------------------------------------------------
     const adv = el('details', 'margin-top:14px;' + small);
@@ -200,7 +281,7 @@
       const r = await call('');
       const d = r.data || {};
       if (!r.ok) { status.textContent = msg(why(d)); return; }
-      me = d;
+      me = d; d0 = d;
       state.textContent = d.enabled ? 'Federation is ON' : 'Federation is OFF (it turns on by itself when you invite, join or connect)';
       toggle.textContent = d.enabled ? 'Turn off' : 'Turn on';
       toggle.onclick = async () => { await call('/enable', 'POST', {enabled: !d.enabled}); refresh(); };
@@ -215,30 +296,7 @@
       });
       list.innerHTML = '';
       if (!(d.federates || []).length) list.appendChild(el('div', 'opacity:0.75', 'None yet. Use the buttons above.'));
-      (d.federates || []).forEach(f => {
-        const [color, text] = linkState(f);
-        const line = el('div', 'display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);flex-wrap:wrap');
-        line.append(el('span', 'width:10px;height:10px;border-radius:50%;background:' + color),
-          el('span', 'font-weight:600', f.name),
-          el('span', small, f.outbound ? (f.address + ':' + f.port) : 'connects to this server'),
-          el('span', 'flex:1;' + small, text));
-        if (pending(f)) {
-          const allow = btn('Allow sharing', true);
-          allow.onclick = async () => { await call('/federates', 'POST', {name: f.name, outbound: false, protocol_version: f.protocol_version, enabled: true}); refresh(); };
-          line.append(allow);
-        }
-        const reset = el('button', '', 'Forget its certificate');
-        reset.title = 'Use only if the other server got a new certificate';
-        reset.onclick = async () => {
-          await call('/federates', 'POST', {name: f.name, address: f.address || '', port: f.port, protocol_version: f.protocol_version,
-            outbound: f.outbound, enabled: f.enabled, inbound_groups: f.inbound_groups, outbound_groups: f.outbound_groups, reset_pin: true});
-          refresh();
-        };
-        const del = el('button', '', 'Remove');
-        del.onclick = async () => { if (confirm('Stop sharing with ' + f.name + '?')) { await call('/federates/' + encodeURIComponent(f.name), 'DELETE'); refresh(); } };
-        line.append(reset, del);
-        list.appendChild(line);
-      });
+      (d.federates || []).forEach(f => list.appendChild(linkRow(f, d.name || 'This server')));
     }
 
     details.addEventListener('toggle', () => { if (details.open) refresh(); });

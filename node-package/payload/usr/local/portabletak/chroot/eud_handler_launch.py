@@ -26,6 +26,7 @@ Usage (inside the cartridge chroot):
     python eud_handler_launch.py /asgard/opentak/venv/bin/eud_handler [args...]
 """
 import hashlib
+import json
 import os
 import re
 import sys
@@ -239,6 +240,56 @@ def install_latest_positions(handler_class, positions=latest_positions):
     return True
 
 
+FILE_HOST_PLACEHOLDER = 'PORTABLETAK-FEDERATION-HOST'
+TAILSCALE_ADDRESSES = '/asgard/config/tailscale/addresses'
+
+
+def phone_host(handler, tailscale_file=TAILSCALE_ADDRESSES):
+    """The server address this phone uses: the local end of its connection. Phones
+    reaching the drive through its own Tailscale arrive from 127.0.0.1, so they get
+    the drive's Tailscale address instead."""
+    try:
+        local = handler.request.getsockname()[0]
+    except (OSError, AttributeError, IndexError):
+        return None
+    if local.startswith('::ffff:'):
+        local = local[7:]
+    if local in ('127.0.0.1', '::1'):
+        try:
+            with open(tailscale_file) as stream:
+                for line in stream:
+                    if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', line.strip()):
+                        return line.strip()
+        except OSError:
+            pass
+        return None
+    return '[%s]' % local if ':' in local else local
+
+
+def install_federation_file_host(handler_class, host=phone_host):
+    """Federated data packages are served by this server; their file-share CoT carries
+    a placeholder host, filled in per phone with the address that phone uses."""
+    original = handler_class.on_message
+    if getattr(original, '_portabletak_file_host', False):
+        return
+
+    def on_message(self, unused_channel, basic_deliver, properties, body):
+        raw = body if isinstance(body, (bytes, bytearray)) else str(body).encode()
+        if FILE_HOST_PLACEHOLDER.encode() in raw:
+            try:
+                data = json.loads(raw)
+                address = host(self)
+                if address and isinstance(data.get('cot'), str):
+                    data['cot'] = data['cot'].replace(FILE_HOST_PLACEHOLDER, address)
+                    body = json.dumps(data).encode()
+            except (ValueError, TypeError):
+                pass
+        return original(self, unused_channel, basic_deliver, properties, body)
+
+    on_message._portabletak_file_host = True
+    handler_class.on_message = on_message
+
+
 def install_case_insensitive_users(datastore_class):
     """Usernames are case-insensitive in PortableTAK (phone keyboards capitalize the
     first letter: an iPhone enrolled as "Qrtest" for the user "qrtest" must connect)."""
@@ -274,6 +325,7 @@ def main():
     if not hasattr(EudHandler, 'displace'):
         install_duplicate_guard(EudHandler)
     install_idle_timeout(EudHandler)
+    install_federation_file_host(EudHandler)
     install_latest_positions(EudHandler)
     sys.argv = sys.argv[1:]
     from opentakserver.eud_handler.eud_handler import main as eud_main

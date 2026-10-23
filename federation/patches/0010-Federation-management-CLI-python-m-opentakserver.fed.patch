@@ -1,7 +1,7 @@
 From 55e1c20e49f901adcafbdf3cb7f43efb94ca95b5 Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Tue, 21 Jul 2026 11:50:08 -0500
-Subject: [PATCH 10/16] Federation management CLI (python -m
+Subject: [PATCH 10/18] Federation management CLI (python -m
  opentakserver.federation.cli)
 
 A scriptable front end over the Federation model and the federation

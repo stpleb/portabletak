@@ -1,7 +1,7 @@
 From 11585dbc3c6849e7d0df50ccb1aa9499687a9db7 Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Fri, 17 Jul 2026 14:22:40 -0500
-Subject: [PATCH 08/16] Federation v2: gRPC FederatedChannel transport
+Subject: [PATCH 08/18] Federation v2: gRPC FederatedChannel transport
  (situational awareness)
 
 Adds the official FederatedChannel gRPC service (v2, port 9001) alongside v1.

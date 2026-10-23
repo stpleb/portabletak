@@ -1,0 +1,66 @@
+From 68ef64cdeb8c3ef2b68df8c69609e1e0a460c4ba Mon Sep 17 00:00:00 2001
+From: pt <pt@local>
+Date: Fri, 23 Oct 2026 08:43:57 -0500
+Subject: [PATCH 18/18] PortableTAK: file push waits for its file-share CoT;
+ sender retries
+
+---
+ opentakserver/federation/files.py | 21 ++++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/opentakserver/federation/files.py b/opentakserver/federation/files.py
+index d56b167..d2f84f4 100644
+--- a/opentakserver/federation/files.py
++++ b/opentakserver/federation/files.py
+@@ -217,7 +217,7 @@ class FileRelay:
+                 elif job == "pull" and not self.have(info["sha256"]):
+                     self._pull(federate, info)
+                 elif job == "push":
+-                    self._push(federate, info)
++                    self._push(federate, info, info.get("attempt", 1))
+             except Exception as e:  # noqa: BLE001
+                 self.logger.warning(f"Federation file {job} for {info['sha256'][:12]} failed: {e}")
+                 self.logger.debug(traceback.format_exc())
+@@ -249,7 +249,7 @@ class FileRelay:
+         if self.store(info["sha256"], info["filename"], stream, info["sender_uid"], federate["name"]):
+             self._release(info["sha256"])
+ 
+-    def _push(self, federate, info):
++    def _push(self, federate, info, attempt=1):
+         channel = self.channels.get(federate["id"])
+         path = self._upload_path(info["sha256"])
+         if channel is None or not os.path.exists(path):
+@@ -267,7 +267,12 @@ class FileRelay:
+ 
+         call = channel.stream_unary("/%s/Put" % SERVICE, request_serializer=_identity, response_deserializer=_identity)
+         reply = json.loads(call(chunks(), timeout=600))
+-        if not reply.get("ok"):
++        if reply.get("ok"):
++            self.logger.info(f"Data package {info['sha256'][:12]} sent to '{federate['name']}'")
++        elif reply.get("error") == "not_expected" and attempt < 4:
++            threading.Timer(5 * attempt, lambda: self._work.put(("push", federate, info))).start()
++            info["attempt"] = attempt + 1
++        else:
+             self.logger.warning(f"'{federate['name']}' did not take file {info['sha256'][:12]}: {reply.get('error')}")
+ 
+     # ---------------------------------------------------------------- service
+@@ -312,8 +317,14 @@ class FileRelay:
+             except (StopIteration, ValueError):
+                 return json.dumps({"ok": False, "error": "bad_request"}).encode()
+             sha256 = str(meta.get("sha256") or "").lower()
+-            with self._lock:
+-                expected = any(p[1]["id"] == (federate or {}).get("id") for p in self.pending.get(sha256, []))
++            # The file can overtake its file-share CoT on the other stream: wait briefly.
++            expected = False
++            for _ in range(30):
++                with self._lock:
++                    expected = any(p[1]["id"] == (federate or {}).get("id") for p in self.pending.get(sha256, []))
++                if expected or not federate:
++                    break
++                time.sleep(0.5)
+             if not federate or not federate.get("enabled") or not federate.get("inbound_groups") or not expected:
+                 return json.dumps({"ok": False, "error": "not_expected"}).encode()
+             if self.have(sha256) or self.store(sha256, meta.get("filename"), request_iterator,
+-- 
+2.23.0
+

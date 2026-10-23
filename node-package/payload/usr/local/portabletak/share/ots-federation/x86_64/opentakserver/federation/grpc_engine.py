@@ -258,9 +258,14 @@ def _outbound_event_stream(manager, federate, context):
 
             import json
 
-            fed_event = build_outbound_event(json.loads(body), federate, directory, node_id)
+            from opentakserver.federation import files
+
+            envelope = json.loads(body)
+            fed_event = build_outbound_event(envelope, federate, directory, node_id)
             if fed_event is not None:
                 yield fed_event
+                if files.RELAY is not None:
+                    files.RELAY.outbound(federate, envelope.get("cot") or "")
     except Exception as e:  # noqa: BLE001
         logger.debug(f"Federation v2 outbound stream error for '{federate['name']}': {e}")
     finally:
@@ -324,9 +329,14 @@ class GrpcClient:
                 continue
 
             config = self.directory.federate_config(self.federate["id"]) or self.federate
-            fed_event = build_outbound_event(json.loads(body), config, self.directory, self.node_id)
+            envelope = json.loads(body)
+            fed_event = build_outbound_event(envelope, config, self.directory, self.node_id)
             if fed_event is not None:
                 yield fed_event
+                from opentakserver.federation import files
+
+                if files.RELAY is not None:
+                    files.RELAY.outbound(config, envelope.get("cot") or "")
 
     def _safe_consume(self, bridge, on_body):
         try:
@@ -380,6 +390,10 @@ class GrpcClient:
                 f"Federation v2 link established with '{name}' (peer: {peer_name})"
             )
             self.directory.record_state(config["id"], connected=True)
+            from opentakserver.federation import files
+
+            if files.RELAY is not None:
+                files.RELAY.channels[config["id"]] = channel   # PortableTAK: file transfers ride this link
 
             # Send our events to the peer on a worker thread
             def send():
@@ -424,6 +438,10 @@ class GrpcClient:
             self.logger.error(f"Federation v2 client error for '{name}': {e}")
             self.directory.record_state(config["id"], connected=False, error=str(e))
         finally:
+            from opentakserver.federation import files
+
+            if files.RELAY is not None and files.RELAY.channels.get(config["id"]) is channel:
+                files.RELAY.channels.pop(config["id"], None)
             self._stop.set()
             bridge.close()
             channel.close()
@@ -442,6 +460,10 @@ def build_server(manager):
         futures.ThreadPoolExecutor(max_workers=manager.config.get("OTS_FEDERATION_V2_WORKERS", 16))
     )
     fig_pb2_grpc.add_FederatedChannelServicer_to_server(FederationServicer(manager), server)
+    from opentakserver.federation import files
+
+    if files.RELAY is not None:   # PortableTAK: data packages for file shares
+        server.add_generic_rpc_handlers((files.RELAY.generic_handler(manager.directory),))
     interface = manager.config.get("OTS_FEDERATION_INTERFACE", "0.0.0.0")
     port = manager.config.get("OTS_FEDERATION_V2_PORT", 9001)
     server.add_secure_port(f"{interface}:{port}", _server_credentials(manager.config))

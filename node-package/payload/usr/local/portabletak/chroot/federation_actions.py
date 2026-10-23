@@ -105,6 +105,14 @@ def handle(app, db, request):
             port = int(request.get("port") or (9001 if protocol == 2 else 9000))
             inbound_groups = _groups(request.get("inbound_groups"))
             outbound_groups = _groups(request.get("outbound_groups"))
+            # direction: both | send (we send, receive nothing) | receive (the reverse)
+            direction = request.get("direction")
+            if direction == "send":
+                inbound_groups = []
+            elif direction == "receive":
+                outbound_groups = []
+            elif direction not in (None, "both"):
+                return _fail("invalid_direction")
         except (TypeError, ValueError) as error:
             return _fail(str(error) if str(error).startswith("invalid") else "invalid_number")
         if protocol not in (1, 2) or not 1 <= port <= 65535:

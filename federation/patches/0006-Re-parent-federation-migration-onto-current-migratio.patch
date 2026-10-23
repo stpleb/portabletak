@@ -1,7 +1,7 @@
 From 54fc636e8ca6444c59b9c39f4f8f59afbd07a56a Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Fri, 17 Jul 2026 13:10:25 -0500
-Subject: [PATCH 06/16] Re-parent federation migration onto current migration
+Subject: [PATCH 06/18] Re-parent federation migration onto current migration
  head
 
 The previous parent 6a7929c07690 already had a descendant

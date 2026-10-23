@@ -166,15 +166,19 @@ def apply_inbound_event(fed_event, federate: dict, directory, bridge, logger, re
         )
         return False
 
-    bridge.publish_inbound(
-        {
-            "uid": sender_uid or fed_event.event.uid,
-            "cot": cot,
-            "user_id": None,
-            "groups": inbound_groups,
-            "federate": name,
-        }
-    )
+    envelope = {
+        "uid": sender_uid or fed_event.event.uid,
+        "cot": cot,
+        "user_id": None,
+        "groups": inbound_groups,
+        "federate": name,
+    }
+    from opentakserver.federation import files
+
+    # PortableTAK: a file share waits until its data package has crossed the link.
+    if files.RELAY is not None and files.RELAY.hold(envelope, federate):
+        return True
+    bridge.publish_inbound(envelope)
     return True
 
 
@@ -335,6 +339,19 @@ class Directory:
                 db.session.query(Federation).filter_by(outbound=True, enabled=True)
             ).all()
             return [row[0].serialize() for row in rows]
+
+    def federate_by_fingerprint(self, fingerprint: str | None):
+        """The federate pinned to this certificate fingerprint, or None (PortableTAK file relay)."""
+        from opentakserver.extensions import db
+        from opentakserver.models.Federation import Federation
+
+        if not fingerprint:
+            return None
+        with self.app.app_context():
+            row = db.session.execute(
+                db.session.query(Federation).filter_by(cert_fingerprint=fingerprint)
+            ).first()
+            return row[0].serialize() if row else None
 
     def find_or_create_inbound(self, fingerprint: str, common_name: str | None, address: str):
         from opentakserver.extensions import db
@@ -619,6 +636,10 @@ class FederationManager:
         self.logger = logger
         self.directory = Directory(app, logger)
         self.bridge_factory = bridge_factory or (lambda: RabbitBridge(self.config, logger))
+        from opentakserver.federation import files
+
+        if files.RELAY is None:   # PortableTAK: carries data packages over v2 links
+            files.RELAY = files.FileRelay(app, logger, self.bridge_factory, self.config)
         self.connections: dict[int, FederationConnection] = {}
         self._lock = threading.Lock()
         self._dialing: set[int] = set()

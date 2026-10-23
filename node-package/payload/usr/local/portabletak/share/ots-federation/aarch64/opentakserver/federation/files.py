@@ -1,0 +1,343 @@
+"""PortableTAK: carry data packages across federation (v2 links).
+
+When a phone sends a data package to someone on another server, ATAK uploads the
+file to its own server and sends a file-share CoT (``<fileshare senderUrl=...>``)
+pointing at that server, which the other server's phones cannot use. This relay
+moves the file itself across the federation link and lets the receiving server
+serve it:
+
+* The receiving server holds the file-share CoT until the file has arrived.
+* The file travels over the existing mutually authenticated gRPC link (port 9001)
+  through a small extra service, ``/portabletak.FederationFiles/{Get,Put}``.
+  Whichever server dialed the link moves it: the receiver pulls (Get) or the
+  sender pushes (Put).
+* The receiving server stores it as one of its own data packages (checked against
+  its SHA-256) and releases the CoT with the download URL pointing at itself; the
+  host part is a placeholder that PortableTAK's EUD handler fills in per phone
+  with the address that phone uses.
+
+Only files offered over a link can be fetched through it, only in the directions
+the link shares, and up to ``OTS_FEDERATION_MAX_FILE_BYTES``. v1 links pass the
+file-share CoT through unchanged.
+"""
+
+import datetime
+import hashlib
+import json
+import os
+import queue
+import re
+import threading
+import time
+import traceback
+
+import grpc
+
+PLACEHOLDER_HOST = "PORTABLETAK-FEDERATION-HOST"
+SERVICE = "portabletak.FederationFiles"
+CHUNK = 256 * 1024
+PENDING_SECONDS = 600
+
+FILESHARE = re.compile(r"<fileshare\b[^>]*>", re.S)
+
+
+def _attr(tag: str, name: str) -> str | None:
+    match = re.search(r'\b%s="([^"]*)"' % name, tag)
+    return match.group(1) if match else None
+
+
+def fileshare_info(cot: str) -> dict | None:
+    """The file-share fields of a CoT, or None when it is not a file share."""
+    if not cot or "<fileshare" not in cot:
+        return None
+    tag = FILESHARE.search(cot)
+    if not tag:
+        return None
+    tag = tag.group(0)
+    sha256 = (_attr(tag, "sha256") or "").lower()
+    url = _attr(tag, "senderUrl") or ""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        match = re.search(r"hash=([0-9a-fA-F]{64})", url)
+        sha256 = match.group(1).lower() if match else ""
+    if not sha256:
+        return None
+    try:
+        size = int(_attr(tag, "sizeInBytes") or 0)
+    except ValueError:
+        size = 0
+    return {
+        "sha256": sha256,
+        "filename": _attr(tag, "filename") or (sha256 + ".zip"),
+        "size": size,
+        "sender_uid": _attr(tag, "senderUid"),
+        "url": url,
+    }
+
+
+def rewrite_sender_url(cot: str, sha256: str, port: int) -> str:
+    """Point the file share at this server (host filled in per phone by the EUD handler)."""
+    url = "https://%s:%d/Marti/sync/content?hash=%s" % (PLACEHOLDER_HOST, port, sha256)
+    return re.sub(r'(<fileshare\b[^>]*\bsenderUrl=")[^"]*(")', lambda m: m.group(1) + url + m.group(2), cot, count=1)
+
+
+def _identity(data):
+    return data
+
+
+class FileRelay:
+    """Moves file-share data packages across v2 federation links (one per server)."""
+
+    def __init__(self, app, logger, bridge_factory, config=None):
+        self.app = app
+        self.logger = logger
+        self.bridge_factory = bridge_factory
+        self.config = config or app.config
+        self.max_bytes = int(self.config.get("OTS_FEDERATION_MAX_FILE_BYTES", 200 * 1024 * 1024))
+        self.port = int(self.config.get("OTS_MARTI_HTTPS_PORT", 8443))
+        self.channels = {}          # federate id -> gRPC channel we dialed
+        self.offered = {}           # federate id -> {sha256}: files we offered over that link
+        self.pending = {}           # sha256 -> [(envelope, federate dict, time)]
+        self._lock = threading.Lock()
+        self._work = queue.Queue()
+        self._bridge = None
+        threading.Thread(target=self._worker, name="fed-files", daemon=True).start()
+
+    # ---------------------------------------------------------------- storage
+    def _upload_path(self, sha256):
+        return os.path.join(self.app.config.get("UPLOAD_FOLDER"), sha256 + ".zip")
+
+    def have(self, sha256) -> bool:
+        from opentakserver.extensions import db
+        from opentakserver.models.DataPackage import DataPackage
+
+        with self.app.app_context():
+            row = db.session.execute(db.select(DataPackage).filter_by(hash=sha256)).first()
+        return bool(row) and os.path.exists(self._upload_path(sha256))
+
+    def store(self, sha256, filename, chunks, sender_uid, federate_name) -> bool:
+        """Write a received file (iterable of bytes) as a data package. True when stored."""
+        from opentakserver.extensions import db
+        from opentakserver.models.DataPackage import DataPackage
+        from opentakserver.models.EUD import EUD
+
+        folder = self.app.config.get("UPLOAD_FOLDER")
+        os.makedirs(folder, exist_ok=True)
+        tmp = os.path.join(folder, ".%s.part" % sha256)
+        digest, size = hashlib.sha256(), 0
+        try:
+            with open(tmp, "wb") as out:
+                for chunk in chunks:
+                    size += len(chunk)
+                    if size > self.max_bytes:
+                        raise ValueError("file larger than OTS_FEDERATION_MAX_FILE_BYTES")
+                    digest.update(chunk)
+                    out.write(chunk)
+            if digest.hexdigest() != sha256:
+                raise ValueError("SHA-256 does not match")
+            os.replace(tmp, self._upload_path(sha256))
+        except Exception as e:  # noqa: BLE001
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            self.logger.warning(f"Federated data package {sha256[:12]} from '{federate_name}' refused: {e}")
+            return False
+
+        name = os.path.basename(filename or "") or sha256 + ".zip"
+        with self.app.app_context():
+            if not db.session.execute(db.select(DataPackage).filter_by(hash=sha256)).first():
+                base, ext = os.path.splitext(name)
+                if db.session.execute(db.select(DataPackage).filter_by(filename=name)).first():
+                    name = "%s (%s)%s" % (base, sha256[:6], ext or ".zip")
+                creator = None
+                if sender_uid and db.session.execute(db.select(EUD).filter_by(uid=sender_uid)).first():
+                    creator = sender_uid
+                package = DataPackage()
+                package.filename = name[:255]
+                package.hash = sha256
+                package.creator_uid = creator
+                package.submission_time = datetime.datetime.now(datetime.timezone.utc)
+                package.keywords = ("federation:%s" % federate_name)[:255]
+                package.mime_type = "application/zip"
+                package.size = size
+                db.session.add(package)
+                db.session.commit()
+        self.logger.info(f"Federated data package '{name}' ({size} bytes) received from '{federate_name}'")
+        return True
+
+    # ---------------------------------------------------------------- outbound
+    def outbound(self, federate: dict, cot: str):
+        """A file-share CoT just went to a federate: remember the offer, push if we dialed."""
+        info = fileshare_info(cot)
+        if not info or int(federate.get("protocol_version") or 1) != 2:
+            return
+        with self._lock:
+            self.offered.setdefault(federate["id"], set()).add(info["sha256"])
+            dialed = federate["id"] in self.channels
+        if dialed:
+            self._work.put(("push", federate, info))
+
+    # ---------------------------------------------------------------- inbound
+    def hold(self, envelope: dict, federate: dict) -> bool:
+        """Called for every inbound CoT. True when this relay took it (file share on v2)."""
+        info = fileshare_info(envelope.get("cot") or "")
+        if not info or int(federate.get("protocol_version") or 1) != 2:
+            return False
+        with self._lock:
+            self.pending.setdefault(info["sha256"], []).append((envelope, federate, time.monotonic()))
+            dialed = federate["id"] in self.channels
+        self._work.put(("check", federate, info))
+        if dialed:
+            self._work.put(("pull", federate, info))
+        return True
+
+    def _release(self, sha256):
+        with self._lock:
+            waiting = self.pending.pop(sha256, [])
+        if not waiting:
+            return
+        if self._bridge is None:
+            self._bridge = self.bridge_factory()
+        for envelope, federate, _ in waiting:
+            envelope = dict(envelope, cot=rewrite_sender_url(envelope["cot"], sha256, self.port))
+            self._bridge.publish_inbound(envelope)
+            self.logger.info(f"Released file share {sha256[:12]} from '{federate['name']}'")
+
+    # ---------------------------------------------------------------- worker
+    def _worker(self):
+        while True:
+            try:
+                job, federate, info = self._work.get(timeout=30)
+            except queue.Empty:
+                self._expire()
+                continue
+            try:
+                if job == "release":
+                    self._release(info["sha256"])
+                elif job == "check" and self.have(info["sha256"]):
+                    self._release(info["sha256"])
+                elif job == "pull" and not self.have(info["sha256"]):
+                    self._pull(federate, info)
+                elif job == "push":
+                    self._push(federate, info, info.get("attempt", 1))
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning(f"Federation file {job} for {info['sha256'][:12]} failed: {e}")
+                self.logger.debug(traceback.format_exc())
+                try:
+                    self._bridge = None
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _expire(self):
+        now = time.monotonic()
+        with self._lock:
+            for sha256 in list(self.pending):
+                kept = [p for p in self.pending[sha256] if now - p[2] < PENDING_SECONDS]
+                if kept:
+                    self.pending[sha256] = kept
+                else:
+                    del self.pending[sha256]
+                    self.logger.warning(f"Federated file share {sha256[:12]} dropped: the file never arrived")
+
+    def _pull(self, federate, info):
+        channel = self.channels.get(federate["id"])
+        if channel is None:
+            return
+        call = channel.unary_stream("/%s/Get" % SERVICE, request_serializer=_identity, response_deserializer=_identity)
+        stream = call(json.dumps({"sha256": info["sha256"]}).encode(), timeout=600)
+        meta = json.loads(next(stream))
+        if not meta.get("ok"):
+            raise RuntimeError(meta.get("error") or "refused")
+        if self.store(info["sha256"], info["filename"], stream, info["sender_uid"], federate["name"]):
+            self._release(info["sha256"])
+
+    def _push(self, federate, info, attempt=1):
+        channel = self.channels.get(federate["id"])
+        path = self._upload_path(info["sha256"])
+        if channel is None or not os.path.exists(path):
+            return
+
+        def chunks():
+            yield json.dumps({"sha256": info["sha256"], "filename": info["filename"],
+                              "sender_uid": info["sender_uid"]}).encode()
+            with open(path, "rb") as source:
+                while True:
+                    data = source.read(CHUNK)
+                    if not data:
+                        return
+                    yield data
+
+        call = channel.stream_unary("/%s/Put" % SERVICE, request_serializer=_identity, response_deserializer=_identity)
+        reply = json.loads(call(chunks(), timeout=600))
+        if reply.get("ok"):
+            self.logger.info(f"Data package {info['sha256'][:12]} sent to '{federate['name']}'")
+        elif reply.get("error") == "not_expected" and attempt < 4:
+            threading.Timer(5 * attempt, lambda: self._work.put(("push", federate, info))).start()
+            info["attempt"] = attempt + 1
+        else:
+            self.logger.warning(f"'{federate['name']}' did not take file {info['sha256'][:12]}: {reply.get('error')}")
+
+    # ---------------------------------------------------------------- service
+    def generic_handler(self, directory):
+        """gRPC handler for the listener: peers pull offered files and push file shares."""
+        from opentakserver.federation import truststore
+
+        def peer_federate(context):
+            certs = (context.auth_context() or {}).get("x509_pem_cert") or []
+            if not certs:
+                return None
+            fingerprint = truststore.fingerprint_from_pem(certs[0])
+            return directory.federate_by_fingerprint(fingerprint)
+
+        def get(request, context):
+            federate = peer_federate(context)
+            try:
+                sha256 = json.loads(request).get("sha256", "")
+            except ValueError:
+                sha256 = ""
+            with self._lock:
+                offered = federate is not None and sha256 in self.offered.get(federate["id"], set())
+            if not federate or not federate.get("enabled") or not federate.get("outbound_groups") or not offered:
+                yield json.dumps({"ok": False, "error": "not_offered"}).encode()
+                return
+            path = self._upload_path(sha256)
+            if not os.path.exists(path):
+                yield json.dumps({"ok": False, "error": "missing"}).encode()
+                return
+            yield json.dumps({"ok": True, "size": os.path.getsize(path)}).encode()
+            with open(path, "rb") as source:
+                while True:
+                    data = source.read(CHUNK)
+                    if not data:
+                        return
+                    yield data
+
+        def put(request_iterator, context):
+            federate = peer_federate(context)
+            try:
+                meta = json.loads(next(request_iterator))
+            except (StopIteration, ValueError):
+                return json.dumps({"ok": False, "error": "bad_request"}).encode()
+            sha256 = str(meta.get("sha256") or "").lower()
+            # The file can overtake its file-share CoT on the other stream: wait briefly.
+            expected = False
+            for _ in range(30):
+                with self._lock:
+                    expected = any(p[1]["id"] == (federate or {}).get("id") for p in self.pending.get(sha256, []))
+                if expected or not federate:
+                    break
+                time.sleep(0.5)
+            if not federate or not federate.get("enabled") or not federate.get("inbound_groups") or not expected:
+                return json.dumps({"ok": False, "error": "not_expected"}).encode()
+            if self.have(sha256) or self.store(sha256, meta.get("filename"), request_iterator,
+                                               meta.get("sender_uid"), federate["name"]):
+                self._work.put(("release", federate, {"sha256": sha256}))   # publish on the worker thread
+                return json.dumps({"ok": True}).encode()
+            return json.dumps({"ok": False, "error": "refused"}).encode()
+
+        return grpc.method_handlers_generic_handler(SERVICE, {
+            "Get": grpc.unary_stream_rpc_method_handler(get, request_deserializer=_identity, response_serializer=_identity),
+            "Put": grpc.stream_unary_rpc_method_handler(put, request_deserializer=_identity, response_serializer=_identity),
+        })
+
+
+# Set by the federation manager at startup; None when the relay is not running.
+RELAY: FileRelay | None = None

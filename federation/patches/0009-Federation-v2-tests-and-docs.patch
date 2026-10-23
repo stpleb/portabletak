@@ -1,7 +1,7 @@
 From 33983adb9155346ff7da1b58ed441c12f24ca048 Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Fri, 17 Jul 2026 14:22:40 -0500
-Subject: [PATCH 09/16] Federation v2 tests and docs
+Subject: [PATCH 09/18] Federation v2 tests and docs
 
 In-process gRPC integration tests over mutual TLS (getIdentity/HealthCheck +
 inbound SA routing + federated-EUD registration, and untrusted-CA rejection).

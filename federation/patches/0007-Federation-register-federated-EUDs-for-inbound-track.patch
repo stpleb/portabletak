@@ -1,7 +1,7 @@
 From 474ae114bb3fe58b74cdbd66c191229564c1c7bf Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Fri, 17 Jul 2026 14:03:18 -0500
-Subject: [PATCH 07/16] Federation: register federated EUDs for inbound tracks;
+Subject: [PATCH 07/18] Federation: register federated EUDs for inbound tracks;
  fixes from live validation
 
 Validated end-to-end between two live OTS stacks (real eud_handler /

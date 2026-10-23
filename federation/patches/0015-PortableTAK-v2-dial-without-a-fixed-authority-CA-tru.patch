@@ -1,7 +1,7 @@
 From 77dc71237898db3050db66b27618b6ba53871d81 Mon Sep 17 00:00:00 2001
 From: pt <pt@local>
 Date: Thu, 22 Oct 2026 23:51:05 -0500
-Subject: [PATCH 15/16] PortableTAK: v2 dial without a fixed authority (CA
+Subject: [PATCH 15/18] PortableTAK: v2 dial without a fixed authority (CA
  trust + leaf pin, peer cert name)
 
 ---

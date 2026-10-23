@@ -1,7 +1,7 @@
 From 911954f9a76cab937be3716a000aed4e961d10b2 Mon Sep 17 00:00:00 2001
 From: Francesco Romano <fwromano15@gmail.com>
 Date: Tue, 21 Jul 2026 15:58:29 -0500
-Subject: [PATCH 11/16] Harden federation interop and EUD reconnects
+Subject: [PATCH 11/18] Harden federation interop and EUD reconnects
 
 ---
  FEDERATION.md                                 | 174 +++++-

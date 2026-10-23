@@ -1,0 +1,519 @@
+From 3c186497911280ce4a1047ec87d402d924937bf6 Mon Sep 17 00:00:00 2001
+From: pt <pt@local>
+Date: Fri, 23 Oct 2026 08:40:04 -0500
+Subject: [PATCH 17/18] PortableTAK: carry data packages for file shares across
+ v2 federation links
+
+---
+ opentakserver/federation/engine.py      |  39 ++-
+ opentakserver/federation/files.py       | 332 ++++++++++++++++++++++++
+ opentakserver/federation/grpc_engine.py |  26 +-
+ tests/test_portabletak_files.py         |  24 ++
+ 4 files changed, 410 insertions(+), 11 deletions(-)
+ create mode 100644 opentakserver/federation/files.py
+ create mode 100644 tests/test_portabletak_files.py
+
+diff --git a/opentakserver/federation/engine.py b/opentakserver/federation/engine.py
+index b43d2e5..022ad3e 100644
+--- a/opentakserver/federation/engine.py
++++ b/opentakserver/federation/engine.py
+@@ -166,15 +166,19 @@ def apply_inbound_event(fed_event, federate: dict, directory, bridge, logger, re
+         )
+         return False
+ 
+-    bridge.publish_inbound(
+-        {
+-            "uid": sender_uid or fed_event.event.uid,
+-            "cot": cot,
+-            "user_id": None,
+-            "groups": inbound_groups,
+-            "federate": name,
+-        }
+-    )
++    envelope = {
++        "uid": sender_uid or fed_event.event.uid,
++        "cot": cot,
++        "user_id": None,
++        "groups": inbound_groups,
++        "federate": name,
++    }
++    from opentakserver.federation import files
++
++    # PortableTAK: a file share waits until its data package has crossed the link.
++    if files.RELAY is not None and files.RELAY.hold(envelope, federate):
++        return True
++    bridge.publish_inbound(envelope)
+     return True
+ 
+ 
+@@ -336,6 +340,19 @@ class Directory:
+             ).all()
+             return [row[0].serialize() for row in rows]
+ 
++    def federate_by_fingerprint(self, fingerprint: str | None):
++        """The federate pinned to this certificate fingerprint, or None (PortableTAK file relay)."""
++        from opentakserver.extensions import db
++        from opentakserver.models.Federation import Federation
++
++        if not fingerprint:
++            return None
++        with self.app.app_context():
++            row = db.session.execute(
++                db.session.query(Federation).filter_by(cert_fingerprint=fingerprint)
++            ).first()
++            return row[0].serialize() if row else None
++
+     def find_or_create_inbound(self, fingerprint: str, common_name: str | None, address: str):
+         from opentakserver.extensions import db
+         from opentakserver.models.Federation import Federation
+@@ -619,6 +636,10 @@ class FederationManager:
+         self.logger = logger
+         self.directory = Directory(app, logger)
+         self.bridge_factory = bridge_factory or (lambda: RabbitBridge(self.config, logger))
++        from opentakserver.federation import files
++
++        if files.RELAY is None:   # PortableTAK: carries data packages over v2 links
++            files.RELAY = files.FileRelay(app, logger, self.bridge_factory, self.config)
+         self.connections: dict[int, FederationConnection] = {}
+         self._lock = threading.Lock()
+         self._dialing: set[int] = set()
+diff --git a/opentakserver/federation/files.py b/opentakserver/federation/files.py
+new file mode 100644
+index 0000000..d56b167
+--- /dev/null
++++ b/opentakserver/federation/files.py
+@@ -0,0 +1,332 @@
++"""PortableTAK: carry data packages across federation (v2 links).
++
++When a phone sends a data package to someone on another server, ATAK uploads the
++file to its own server and sends a file-share CoT (``<fileshare senderUrl=...>``)
++pointing at that server, which the other server's phones cannot use. This relay
++moves the file itself across the federation link and lets the receiving server
++serve it:
++
++* The receiving server holds the file-share CoT until the file has arrived.
++* The file travels over the existing mutually authenticated gRPC link (port 9001)
++  through a small extra service, ``/portabletak.FederationFiles/{Get,Put}``.
++  Whichever server dialed the link moves it: the receiver pulls (Get) or the
++  sender pushes (Put).
++* The receiving server stores it as one of its own data packages (checked against
++  its SHA-256) and releases the CoT with the download URL pointing at itself; the
++  host part is a placeholder that PortableTAK's EUD handler fills in per phone
++  with the address that phone uses.
++
++Only files offered over a link can be fetched through it, only in the directions
++the link shares, and up to ``OTS_FEDERATION_MAX_FILE_BYTES``. v1 links pass the
++file-share CoT through unchanged.
++"""
++
++import datetime
++import hashlib
++import json
++import os
++import queue
++import re
++import threading
++import time
++import traceback
++
++import grpc
++
++PLACEHOLDER_HOST = "PORTABLETAK-FEDERATION-HOST"
++SERVICE = "portabletak.FederationFiles"
++CHUNK = 256 * 1024
++PENDING_SECONDS = 600
++
++FILESHARE = re.compile(r"<fileshare\b[^>]*>", re.S)
++
++
++def _attr(tag: str, name: str) -> str | None:
++    match = re.search(r'\b%s="([^"]*)"' % name, tag)
++    return match.group(1) if match else None
++
++
++def fileshare_info(cot: str) -> dict | None:
++    """The file-share fields of a CoT, or None when it is not a file share."""
++    if not cot or "<fileshare" not in cot:
++        return None
++    tag = FILESHARE.search(cot)
++    if not tag:
++        return None
++    tag = tag.group(0)
++    sha256 = (_attr(tag, "sha256") or "").lower()
++    url = _attr(tag, "senderUrl") or ""
++    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
++        match = re.search(r"hash=([0-9a-fA-F]{64})", url)
++        sha256 = match.group(1).lower() if match else ""
++    if not sha256:
++        return None
++    try:
++        size = int(_attr(tag, "sizeInBytes") or 0)
++    except ValueError:
++        size = 0
++    return {
++        "sha256": sha256,
++        "filename": _attr(tag, "filename") or (sha256 + ".zip"),
++        "size": size,
++        "sender_uid": _attr(tag, "senderUid"),
++        "url": url,
++    }
++
++
++def rewrite_sender_url(cot: str, sha256: str, port: int) -> str:
++    """Point the file share at this server (host filled in per phone by the EUD handler)."""
++    url = "https://%s:%d/Marti/sync/content?hash=%s" % (PLACEHOLDER_HOST, port, sha256)
++    return re.sub(r'(<fileshare\b[^>]*\bsenderUrl=")[^"]*(")', lambda m: m.group(1) + url + m.group(2), cot, count=1)
++
++
++def _identity(data):
++    return data
++
++
++class FileRelay:
++    """Moves file-share data packages across v2 federation links (one per server)."""
++
++    def __init__(self, app, logger, bridge_factory, config=None):
++        self.app = app
++        self.logger = logger
++        self.bridge_factory = bridge_factory
++        self.config = config or app.config
++        self.max_bytes = int(self.config.get("OTS_FEDERATION_MAX_FILE_BYTES", 200 * 1024 * 1024))
++        self.port = int(self.config.get("OTS_MARTI_HTTPS_PORT", 8443))
++        self.channels = {}          # federate id -> gRPC channel we dialed
++        self.offered = {}           # federate id -> {sha256}: files we offered over that link
++        self.pending = {}           # sha256 -> [(envelope, federate dict, time)]
++        self._lock = threading.Lock()
++        self._work = queue.Queue()
++        self._bridge = None
++        threading.Thread(target=self._worker, name="fed-files", daemon=True).start()
++
++    # ---------------------------------------------------------------- storage
++    def _upload_path(self, sha256):
++        return os.path.join(self.app.config.get("UPLOAD_FOLDER"), sha256 + ".zip")
++
++    def have(self, sha256) -> bool:
++        from opentakserver.extensions import db
++        from opentakserver.models.DataPackage import DataPackage
++
++        with self.app.app_context():
++            row = db.session.execute(db.select(DataPackage).filter_by(hash=sha256)).first()
++        return bool(row) and os.path.exists(self._upload_path(sha256))
++
++    def store(self, sha256, filename, chunks, sender_uid, federate_name) -> bool:
++        """Write a received file (iterable of bytes) as a data package. True when stored."""
++        from opentakserver.extensions import db
++        from opentakserver.models.DataPackage import DataPackage
++        from opentakserver.models.EUD import EUD
++
++        folder = self.app.config.get("UPLOAD_FOLDER")
++        os.makedirs(folder, exist_ok=True)
++        tmp = os.path.join(folder, ".%s.part" % sha256)
++        digest, size = hashlib.sha256(), 0
++        try:
++            with open(tmp, "wb") as out:
++                for chunk in chunks:
++                    size += len(chunk)
++                    if size > self.max_bytes:
++                        raise ValueError("file larger than OTS_FEDERATION_MAX_FILE_BYTES")
++                    digest.update(chunk)
++                    out.write(chunk)
++            if digest.hexdigest() != sha256:
++                raise ValueError("SHA-256 does not match")
++            os.replace(tmp, self._upload_path(sha256))
++        except Exception as e:  # noqa: BLE001
++            if os.path.exists(tmp):
++                os.unlink(tmp)
++            self.logger.warning(f"Federated data package {sha256[:12]} from '{federate_name}' refused: {e}")
++            return False
++
++        name = os.path.basename(filename or "") or sha256 + ".zip"
++        with self.app.app_context():
++            if not db.session.execute(db.select(DataPackage).filter_by(hash=sha256)).first():
++                base, ext = os.path.splitext(name)
++                if db.session.execute(db.select(DataPackage).filter_by(filename=name)).first():
++                    name = "%s (%s)%s" % (base, sha256[:6], ext or ".zip")
++                creator = None
++                if sender_uid and db.session.execute(db.select(EUD).filter_by(uid=sender_uid)).first():
++                    creator = sender_uid
++                package = DataPackage()
++                package.filename = name[:255]
++                package.hash = sha256
++                package.creator_uid = creator
++                package.submission_time = datetime.datetime.now(datetime.timezone.utc)
++                package.keywords = ("federation:%s" % federate_name)[:255]
++                package.mime_type = "application/zip"
++                package.size = size
++                db.session.add(package)
++                db.session.commit()
++        self.logger.info(f"Federated data package '{name}' ({size} bytes) received from '{federate_name}'")
++        return True
++
++    # ---------------------------------------------------------------- outbound
++    def outbound(self, federate: dict, cot: str):
++        """A file-share CoT just went to a federate: remember the offer, push if we dialed."""
++        info = fileshare_info(cot)
++        if not info or int(federate.get("protocol_version") or 1) != 2:
++            return
++        with self._lock:
++            self.offered.setdefault(federate["id"], set()).add(info["sha256"])
++            dialed = federate["id"] in self.channels
++        if dialed:
++            self._work.put(("push", federate, info))
++
++    # ---------------------------------------------------------------- inbound
++    def hold(self, envelope: dict, federate: dict) -> bool:
++        """Called for every inbound CoT. True when this relay took it (file share on v2)."""
++        info = fileshare_info(envelope.get("cot") or "")
++        if not info or int(federate.get("protocol_version") or 1) != 2:
++            return False
++        with self._lock:
++            self.pending.setdefault(info["sha256"], []).append((envelope, federate, time.monotonic()))
++            dialed = federate["id"] in self.channels
++        self._work.put(("check", federate, info))
++        if dialed:
++            self._work.put(("pull", federate, info))
++        return True
++
++    def _release(self, sha256):
++        with self._lock:
++            waiting = self.pending.pop(sha256, [])
++        if not waiting:
++            return
++        if self._bridge is None:
++            self._bridge = self.bridge_factory()
++        for envelope, federate, _ in waiting:
++            envelope = dict(envelope, cot=rewrite_sender_url(envelope["cot"], sha256, self.port))
++            self._bridge.publish_inbound(envelope)
++            self.logger.info(f"Released file share {sha256[:12]} from '{federate['name']}'")
++
++    # ---------------------------------------------------------------- worker
++    def _worker(self):
++        while True:
++            try:
++                job, federate, info = self._work.get(timeout=30)
++            except queue.Empty:
++                self._expire()
++                continue
++            try:
++                if job == "release":
++                    self._release(info["sha256"])
++                elif job == "check" and self.have(info["sha256"]):
++                    self._release(info["sha256"])
++                elif job == "pull" and not self.have(info["sha256"]):
++                    self._pull(federate, info)
++                elif job == "push":
++                    self._push(federate, info)
++            except Exception as e:  # noqa: BLE001
++                self.logger.warning(f"Federation file {job} for {info['sha256'][:12]} failed: {e}")
++                self.logger.debug(traceback.format_exc())
++                try:
++                    self._bridge = None
++                except Exception:  # noqa: BLE001
++                    pass
++
++    def _expire(self):
++        now = time.monotonic()
++        with self._lock:
++            for sha256 in list(self.pending):
++                kept = [p for p in self.pending[sha256] if now - p[2] < PENDING_SECONDS]
++                if kept:
++                    self.pending[sha256] = kept
++                else:
++                    del self.pending[sha256]
++                    self.logger.warning(f"Federated file share {sha256[:12]} dropped: the file never arrived")
++
++    def _pull(self, federate, info):
++        channel = self.channels.get(federate["id"])
++        if channel is None:
++            return
++        call = channel.unary_stream("/%s/Get" % SERVICE, request_serializer=_identity, response_deserializer=_identity)
++        stream = call(json.dumps({"sha256": info["sha256"]}).encode(), timeout=600)
++        meta = json.loads(next(stream))
++        if not meta.get("ok"):
++            raise RuntimeError(meta.get("error") or "refused")
++        if self.store(info["sha256"], info["filename"], stream, info["sender_uid"], federate["name"]):
++            self._release(info["sha256"])
++
++    def _push(self, federate, info):
++        channel = self.channels.get(federate["id"])
++        path = self._upload_path(info["sha256"])
++        if channel is None or not os.path.exists(path):
++            return
++
++        def chunks():
++            yield json.dumps({"sha256": info["sha256"], "filename": info["filename"],
++                              "sender_uid": info["sender_uid"]}).encode()
++            with open(path, "rb") as source:
++                while True:
++                    data = source.read(CHUNK)
++                    if not data:
++                        return
++                    yield data
++
++        call = channel.stream_unary("/%s/Put" % SERVICE, request_serializer=_identity, response_deserializer=_identity)
++        reply = json.loads(call(chunks(), timeout=600))
++        if not reply.get("ok"):
++            self.logger.warning(f"'{federate['name']}' did not take file {info['sha256'][:12]}: {reply.get('error')}")
++
++    # ---------------------------------------------------------------- service
++    def generic_handler(self, directory):
++        """gRPC handler for the listener: peers pull offered files and push file shares."""
++        from opentakserver.federation import truststore
++
++        def peer_federate(context):
++            certs = (context.auth_context() or {}).get("x509_pem_cert") or []
++            if not certs:
++                return None
++            fingerprint = truststore.fingerprint_from_pem(certs[0])
++            return directory.federate_by_fingerprint(fingerprint)
++
++        def get(request, context):
++            federate = peer_federate(context)
++            try:
++                sha256 = json.loads(request).get("sha256", "")
++            except ValueError:
++                sha256 = ""
++            with self._lock:
++                offered = federate is not None and sha256 in self.offered.get(federate["id"], set())
++            if not federate or not federate.get("enabled") or not federate.get("outbound_groups") or not offered:
++                yield json.dumps({"ok": False, "error": "not_offered"}).encode()
++                return
++            path = self._upload_path(sha256)
++            if not os.path.exists(path):
++                yield json.dumps({"ok": False, "error": "missing"}).encode()
++                return
++            yield json.dumps({"ok": True, "size": os.path.getsize(path)}).encode()
++            with open(path, "rb") as source:
++                while True:
++                    data = source.read(CHUNK)
++                    if not data:
++                        return
++                    yield data
++
++        def put(request_iterator, context):
++            federate = peer_federate(context)
++            try:
++                meta = json.loads(next(request_iterator))
++            except (StopIteration, ValueError):
++                return json.dumps({"ok": False, "error": "bad_request"}).encode()
++            sha256 = str(meta.get("sha256") or "").lower()
++            with self._lock:
++                expected = any(p[1]["id"] == (federate or {}).get("id") for p in self.pending.get(sha256, []))
++            if not federate or not federate.get("enabled") or not federate.get("inbound_groups") or not expected:
++                return json.dumps({"ok": False, "error": "not_expected"}).encode()
++            if self.have(sha256) or self.store(sha256, meta.get("filename"), request_iterator,
++                                               meta.get("sender_uid"), federate["name"]):
++                self._work.put(("release", federate, {"sha256": sha256}))   # publish on the worker thread
++                return json.dumps({"ok": True}).encode()
++            return json.dumps({"ok": False, "error": "refused"}).encode()
++
++        return grpc.method_handlers_generic_handler(SERVICE, {
++            "Get": grpc.unary_stream_rpc_method_handler(get, request_deserializer=_identity, response_serializer=_identity),
++            "Put": grpc.stream_unary_rpc_method_handler(put, request_deserializer=_identity, response_serializer=_identity),
++        })
++
++
++# Set by the federation manager at startup; None when the relay is not running.
++RELAY: FileRelay | None = None
+diff --git a/opentakserver/federation/grpc_engine.py b/opentakserver/federation/grpc_engine.py
+index d8f55a5..dd22ba7 100644
+--- a/opentakserver/federation/grpc_engine.py
++++ b/opentakserver/federation/grpc_engine.py
+@@ -258,9 +258,14 @@ def _outbound_event_stream(manager, federate, context):
+ 
+             import json
+ 
+-            fed_event = build_outbound_event(json.loads(body), federate, directory, node_id)
++            from opentakserver.federation import files
++
++            envelope = json.loads(body)
++            fed_event = build_outbound_event(envelope, federate, directory, node_id)
+             if fed_event is not None:
+                 yield fed_event
++                if files.RELAY is not None:
++                    files.RELAY.outbound(federate, envelope.get("cot") or "")
+     except Exception as e:  # noqa: BLE001
+         logger.debug(f"Federation v2 outbound stream error for '{federate['name']}': {e}")
+     finally:
+@@ -324,9 +329,14 @@ class GrpcClient:
+                 continue
+ 
+             config = self.directory.federate_config(self.federate["id"]) or self.federate
+-            fed_event = build_outbound_event(json.loads(body), config, self.directory, self.node_id)
++            envelope = json.loads(body)
++            fed_event = build_outbound_event(envelope, config, self.directory, self.node_id)
+             if fed_event is not None:
+                 yield fed_event
++                from opentakserver.federation import files
++
++                if files.RELAY is not None:
++                    files.RELAY.outbound(config, envelope.get("cot") or "")
+ 
+     def _safe_consume(self, bridge, on_body):
+         try:
+@@ -380,6 +390,10 @@ class GrpcClient:
+                 f"Federation v2 link established with '{name}' (peer: {peer_name})"
+             )
+             self.directory.record_state(config["id"], connected=True)
++            from opentakserver.federation import files
++
++            if files.RELAY is not None:
++                files.RELAY.channels[config["id"]] = channel   # PortableTAK: file transfers ride this link
+ 
+             # Send our events to the peer on a worker thread
+             def send():
+@@ -424,6 +438,10 @@ class GrpcClient:
+             self.logger.error(f"Federation v2 client error for '{name}': {e}")
+             self.directory.record_state(config["id"], connected=False, error=str(e))
+         finally:
++            from opentakserver.federation import files
++
++            if files.RELAY is not None and files.RELAY.channels.get(config["id"]) is channel:
++                files.RELAY.channels.pop(config["id"], None)
+             self._stop.set()
+             bridge.close()
+             channel.close()
+@@ -442,6 +460,10 @@ def build_server(manager):
+         futures.ThreadPoolExecutor(max_workers=manager.config.get("OTS_FEDERATION_V2_WORKERS", 16))
+     )
+     fig_pb2_grpc.add_FederatedChannelServicer_to_server(FederationServicer(manager), server)
++    from opentakserver.federation import files
++
++    if files.RELAY is not None:   # PortableTAK: data packages for file shares
++        server.add_generic_rpc_handlers((files.RELAY.generic_handler(manager.directory),))
+     interface = manager.config.get("OTS_FEDERATION_INTERFACE", "0.0.0.0")
+     port = manager.config.get("OTS_FEDERATION_V2_PORT", 9001)
+     server.add_secure_port(f"{interface}:{port}", _server_credentials(manager.config))
+diff --git a/tests/test_portabletak_files.py b/tests/test_portabletak_files.py
+new file mode 100644
+index 0000000..0639594
+--- /dev/null
++++ b/tests/test_portabletak_files.py
+@@ -0,0 +1,24 @@
++from opentakserver.federation import files
++
++SHA = "b" * 64
++COT = ('<event uid="u"><detail><fileshare filename="route.zip" name="Route" sha256="%s" sizeInBytes="1234" '
++       'senderUid="ANDROID-1" senderCallsign="ALPHA" senderUrl="https://10.0.0.5:8443/Marti/sync/content?hash=%s"/>'
++       '<marti><dest callsign="BRAVO"/></marti></detail></event>') % (SHA, SHA)
++
++
++def test_fileshare_info():
++    info = files.fileshare_info(COT)
++    assert info["sha256"] == SHA and info["filename"] == "route.zip" and info["size"] == 1234
++    assert info["sender_uid"] == "ANDROID-1"
++    assert files.fileshare_info('<event uid="p"><point/></event>') is None
++
++
++def test_hash_from_url_when_attribute_missing():
++    cot = COT.replace('sha256="%s" ' % SHA, "")
++    assert files.fileshare_info(cot)["sha256"] == SHA
++
++
++def test_rewrite_points_at_this_server():
++    out = files.rewrite_sender_url(COT, SHA, 8443)
++    assert "https://%s:8443/Marti/sync/content?hash=%s" % (files.PLACEHOLDER_HOST, SHA) in out
++    assert "10.0.0.5" not in out and '<dest callsign="BRAVO"/>' in out
+-- 
+2.23.0
+

@@ -1078,6 +1078,7 @@ def federation_status():
         "cas": data.get("cas", []),
         "addresses": [a for a in record.get("addresses", []) if a],
         "ports": {"v1": 9000, "v2": 9001},
+        "name": _our_server_name(),
     }
 
 
@@ -1092,7 +1093,7 @@ def federation_enable(payload: dict = Body(...)):
 @app.post("/api/federation/federates")
 def federation_save(payload: dict = Body(...)):
     allowed = ("name", "address", "port", "protocol_version", "outbound", "enabled",
-               "inbound_groups", "outbound_groups", "reset_pin")
+               "inbound_groups", "outbound_groups", "reset_pin", "direction")
     result = run_users({"action": "federation_save", **{k: payload[k] for k in allowed if k in payload}})
     _federation_restart()
     return result
@@ -1208,7 +1209,8 @@ def federation_join(payload: dict = Body(...)):
     name = re.sub(r"[^A-Za-z0-9 ._-]", "", str(invite.get("n") or reply.get("name") or "TAK server"))[:60] or "TAK server"
     run_users({"action": "federation_ca_add", "pem": ca_pem, "filename": name + "-CA.pem"})
     run_users({"action": "federation_save", "name": name, "address": address, "port": int(invite.get("p") or 9001),
-               "protocol_version": 2, "outbound": True, "enabled": True, "pin": invite.get("f"), "pin_name": name})
+               "protocol_version": 2, "outbound": True, "enabled": True, "pin": invite.get("f"), "pin_name": name,
+               "direction": payload.get("direction") or "both"})
     _federation_restart()
     return {"ok": True, "name": name, "address": address}
 
@@ -1227,7 +1229,8 @@ def federation_tak_connect(payload: dict = Body(...)):
                "filename": re.sub(r"[^A-Za-z0-9._-]", "_", name) + "-CA.pem"})
     result = run_users({"action": "federation_save", "name": name, "address": str(payload.get("address") or ""),
                         "port": payload.get("port") or 9001, "protocol_version": 2, "outbound": True,
-                        "enabled": True, "pin": payload.get("server_fingerprint"), "pin_name": name})
+                        "enabled": True, "pin": payload.get("server_fingerprint"), "pin_name": name,
+                        "direction": payload.get("direction") or "both"})
     _federation_restart()
     return result
 

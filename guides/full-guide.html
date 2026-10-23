@@ -236,7 +236,10 @@ one command to paste. Step by step: <b>PortableTAK Skydio X10D Guide</b> (Setup 
 <h2>8. Linking servers (federation)</h2>
 <p>Federation shares positions, markers, alerts and chat between two TAK servers, so each team sees the other on
 its map. It works with another PortableTAK, OpenTAKServer with PortableTAK's federation add-on, and the official
-TAK Server (tak.gov). Data packages and missions are not shared. Dashboard &rarr; <b>Federation</b>.</p>
+TAK Server (tak.gov). Dashboard &rarr; <b>Federation</b>.</p>
+<p><b>Data packages</b> an ATAK user sends to someone on the other server also cross between PortableTAK servers:
+the file moves over the federation link and the receiving phone downloads it from its own server. Not yet with an
+official TAK Server, and Data Sync missions are not shared.</p>
 <h3>Two PortableTAK servers: one code</h3>
 <ol>
 <li>On the first server: <b>Invite a server</b>. Copy the code (or download the invite file) and send it to the
@@ -255,6 +258,10 @@ then <b>Trust and connect</b>.</li>
 under <i>Federation &gt; Manage Federate Certificate Authorities</i>, then, once PortableTAK has connected, the groups to
 allow for its federate (users without a group are <code>__ANON__</code>).</li>
 </ol>
+<h3>Choosing what flows</h3>
+<p>Each linked server shows this server, two arrows and the other server. Tap <b>&rarr;</b> to send to it or stop
+sending, <b>&larr;</b> to receive from it or stop receiving (green = on); the line underneath says which way data flows.
+<b>Pause</b> stops a link without deleting it.</p>
 <h3>Good to know</h3>
 <ul>
 <li>A server that connects to yours without an invite appears as <i>not sharing yet</i>: press <b>Allow sharing</b> only
