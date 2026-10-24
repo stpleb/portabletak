@@ -61,12 +61,12 @@ the node the same way. That includes a drive whose Start Here files were refresh
 <ol>
 <li>Plug the drive into a <b>blue USB&nbsp;3 port</b> on a running node. It starts by itself in 3–5 minutes, and also
 after every reboot or power loss.</li>
-<li>Connect a phone or laptop to the node's Wi-Fi and open <code>https://10.41.254.1:8444</code>
+<li>Connect a phone or laptop to the node's Wi-Fi and open <code>https://10.41.250.10:8444</code>
 (or scan the QR code on the drive). Accept the certificate warning (Advanced → Continue).</li>
 <li>Sign in as <code>administrator</code>.</li>
 </ol>
-<p><b>Addresses on a node:</b> phones on the node's own Wi-Fi use <code>10.41.254.1</code>. Devices elsewhere on the
-mesh use <code>10.41.250.10</code>. Both are in every client package.</p>
+<p><b>Addresses on a node:</b> <code>10.41.250.10</code> works on every node, from the node's own Wi-Fi and from anywhere on the
+mesh. Older CicadaTAK nodes also answer at <code>10.41.254.1</code> on their own Wi-Fi. Client packages and QR codes pick the right one.</p>
 <p><b>Internet sharing:</b> if the node's Ethernet port has internet, the node shares it with its Wi-Fi clients
 automatically and stops when the uplink goes away (phones then use cellular for internet).</p>
 <p><b>Unplugging:</b> press <b>Safe Remove</b> in the dashboard and wait for "safe to remove". Pulling the drive or
@@ -184,7 +184,7 @@ Choose <b>Advanced</b> → <b>Proceed</b> (Chrome) or <b>Show Details</b> → <b
 </ol>
 <div class="box">If the page does not load: the Tailscale app must be <b>on</b> (check it shows <i>Connected</i>), the server
 must have internet, and the address must start with <code>https://</code> and end with <code>:8444</code>.
-On the server's own Wi-Fi you can also use <code>https://10.41.254.1:8444</code> (node).</div>
+On the server's own Wi-Fi you can also use <code>https://10.41.250.10:8444</code> (node).</div>
 
 <h3>If remote access does not work</h3>
 <table>
@@ -220,7 +220,7 @@ example <code>skydio1</code>. One name per aircraft.</li>
 <li>Connect the controller's Wi-Fi to the same network as the server (the node's Wi-Fi, or the Wi-Fi the Windows/Mac computer uses).</li>
 <li>Menu (three lines, top left) → <b>Sharing</b> → <b>RTSP</b> → <b>External</b>.</li>
 <li>Stream name: the feed name (e.g. <code>skydio1</code>). IP address: the server's address shown in the card
-(node Wi-Fi: <code>10.41.254.1</code>). Port: <b>8554</b>.</li>
+(node: <code>10.41.250.10</code>). Port: <b>8554</b>.</li>
 <li><b>Start Stream</b>. The video starts once the aircraft takes off; the card shows <b>Live</b>.</li>
 </ol>
 <h3>Step 3: watch it</h3>
@@ -290,7 +290,7 @@ and cannot be undone. Set the drive up again with PortableTAK Setup afterwards.<
 <table>
 <tr><th style="width:32%">Problem</th><th>What to do</th></tr>
 <tr><td>Phone says "host unreachable" or never connects</td><td>Check the phone is on the node's Wi-Fi (or the same network as the Windows computer).
-Use the right address (node Wi-Fi: 10.41.254.1). On Android, set the Wi-Fi to DHCP (not static); if it still fails,
+Use the right address (node: 10.41.250.10). On Android, set the Wi-Fi to DHCP (not static); if it still fails,
 forget and rejoin the network. Over cellular, the Tailscale app must be on.</td></tr>
 <tr><td>Connection red only on cellular</td><td>Remote Access must be enabled and finished, the node/computer needs internet, and the phone's Tailscale app must be connected.</td></tr>
 <tr><td>Another device shows grey or disappears</td><td>Make sure each device has a different callsign. Grey can also mean that device lost its connection; it returns when it reconnects.</td></tr>

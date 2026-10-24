@@ -20,9 +20,20 @@ cd "$W"
 COPYFILE_DISABLE=1 tar --uid 0 --gid 0 --uname root --gname root --exclude='__pycache__' --exclude='.DS_Store' --exclude='._*' -czf "$NODE" host-installer-20260929
 rm -rf start-here/.portabletak/node
 node-loader/sign-node-package.sh "$NODE" "$V" start-here/.portabletak/node
-(cd wsl-host && for A in amd64 arm64; do docker run --rm --privileged --platform linux/$A -v "$W/clean-base-downloads:/base-arm64:ro" -v "$W/clean-base-downloads-amd64:/base-amd64:ro" -v "$W/host-installer-20260929/payload:/payload:ro" -v "$W/tailscale:/tailscale:ro" -v "$PWD:/work:ro" -v "$PWD/out:/out" ubuntu:24.04 /work/build-wsl-distro.sh $A 2>&1 | grep -E "PT_WSL|rror" | tail -1; done)
+# Every image must really be rebuilt: a failed step must stop the release, never reuse an old image.
+(cd wsl-host && for A in amd64 arm64; do
+    rm -f out/portabletak-wsl-$A.tar.gz out/portabletak-wsl-$A.tar.gz.sha256
+    for TRY in 1 2; do
+        docker run --rm --privileged --platform linux/$A -v "$W/clean-base-downloads:/base-arm64:ro" -v "$W/clean-base-downloads-amd64:/base-amd64:ro" -v "$W/host-installer-20260929/payload:/payload:ro" -v "$W/tailscale:/tailscale:ro" -v "$PWD:/work:ro" -v "$PWD/out:/out" ubuntu:24.04 /work/build-wsl-distro.sh $A > out/build-$A.log 2>&1
+        grep "PT_WSL_DISTRO=" out/build-$A.log && [ -f out/portabletak-wsl-$A.tar.gz ] && break
+        echo "WSL $A build attempt $TRY failed (see wsl-host/out/build-$A.log)"
+        [ "$TRY" = 2 ] && exit 1
+    done
+done)
 cp wsl-host/out/portabletak-wsl-*.tar.gz* start-here/.portabletak/wsl/
-(cd mac-vm && docker run --rm --privileged --platform linux/arm64 -v "$W/wsl-host/out:/wsl:ro" -v "$PWD:/work:ro" -v "$PWD/out:/out" portabletak-setup:2 /work/build-vm.sh 2>&1 | tail -1 && cd out && rm -f vm.qcow2 && /opt/homebrew/bin/qemu-img convert -c -O qcow2 vm.raw vm.qcow2)
+(cd mac-vm && rm -f out/vm.raw out/vm.qcow2 && docker run --rm --privileged --platform linux/arm64 -v "$W/wsl-host/out:/wsl:ro" -v "$PWD:/work:ro" -v "$PWD/out:/out" portabletak-setup:2 /work/build-vm.sh > out/build.log 2>&1
+ grep "PT_VM_BUILT" out/build.log || { echo "Mac VM build failed (see mac-vm/out/build.log)"; exit 1; }
+ cd out && /opt/homebrew/bin/qemu-img convert -c -O qcow2 vm.raw vm.qcow2)
 cp mac-vm/out/vm.qcow2 mac-vm/out/vmlinuz mac-vm/out/initrd.img start-here/.portabletak/mac/
 shasum -a 256 start-here/.portabletak/mac/vm.qcow2 | cut -d' ' -f1 > start-here/.portabletak/mac/vm.sha256
 (cd win-setup && ./build-bundle.sh 2>&1 | tail -1 | cut -c1-16)

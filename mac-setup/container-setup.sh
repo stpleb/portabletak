@@ -156,7 +156,7 @@ mcopy -Q -i "$START" /tmp/empty ::/.metadata_never_index && mattrib -i "$START" 
 mmd -i "$START" ::/.fseventsd && mcopy -Q -i "$START" /tmp/empty ::/.fseventsd/no_log && mattrib -i "$START" +h ::/.fseventsd
 python3 - "$START" <<'PY2' || fail start_here_qr
 import subprocess, sys, qrcode
-img = qrcode.make('https://10.41.254.1:8444/', box_size=12, border=4)
+img = qrcode.make('https://10.41.250.10:8444/', box_size=12, border=4)
 img.save('/tmp/qr.png')
 subprocess.run(['mcopy', '-Q', '-i', sys.argv[1], '/tmp/qr.png',
                 '::/Scan to open the dashboard (node).png'], check=True)

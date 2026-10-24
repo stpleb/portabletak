@@ -22,7 +22,7 @@ and self-contained on the drive. Main users: Windows laptop with Wi-Fi, ATAK pho
 | Federation work | `work/federation` (`ots/` = OpenTAKServer clone, branch `pt-fed`; `patches/`; `build-overlay.sh`; `wheels/`; `e2e/` test harness; `takserver/` TAK Server 5.8 test image) |
 | Build outputs / releases staging | `outputs/` (Setup zips, node package tarballs, runbook, this handoff) |
 | GitHub repo (private) | `stpleb/portabletak`, local clone `/Users/STPLEB/Documents/portabletak`; push with `work/sync-repo.sh "message"` |
-| Releases | github.com/stpleb/portabletak/releases (latest **v2026.10.23.3**) |
+| Releases | github.com/stpleb/portabletak/releases (latest **v2026.10.24**) |
 | Release signing key (PRIVATE, never commit/print) | `~/.portabletak-signing/` (`release.key.pem`, key id `c24087f4f016955e`). Owner should keep a backup. |
 | Field extension project (owner's) | `~/Desktop/Field Ext` (GitHub `stpleb/openmanet-field-extension`) |
 | Memory notes | `~/.claude/projects/-Users-STPLEB/memory/` (portabletak-project.md etc.) |
@@ -54,7 +54,9 @@ and self-contained on the drive. Main users: Windows laptop with Wi-Fi, ATAK pho
 5. ~~Field extension repo~~ - committed and pushed (stpleb/openmanet-field-extension main, 7462f4b "SD image: optional PortableTAK loader").
 6. ~~Contribute to OpenTAKServer~~ - owner decided not to (2026-10-23). Do not raise it again.
 7. **Skydio X10D field test** (Device TLS Package, Video Feeds, phone hotspot bridge) - waiting on the drone.
-8. Later / on hold: licensing (on hold), Node02 charge-port repair then update, Windows on ARM untested, phone USB-tether uplink untested, Mac QR one-network limit, OpenTAKServer weekly watch (scheduled task "opentakserver-upstream-watch", Mondays 9 AM; press Run now once).
+8. ~~Node update from a refreshed Start Here~~ - done in 2026.10.23.4 (start-time sync + loader reads Start Here). ~~Test leftovers~~ - deleted.
+9. Node01 (Alpha) on 2026.10.24, updated by its loader from Alpha's refreshed Start Here. Bravo on 2026.10.23.4 (refresh + owner start for 2026.10.24).
+10. Later / on hold: licensing (on hold), Node02 charge-port repair then update, Windows on ARM untested, phone USB-tether uplink untested, Mac QR one-network limit, OpenTAKServer weekly watch (scheduled task "opentakserver-upstream-watch", Mondays 9 AM; press Run now once).
 
 ## 6. How to do things
 **Full release build** (after any payload change):

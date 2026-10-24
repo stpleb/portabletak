@@ -54,6 +54,8 @@ tar -C "$PAYLOAD" -cf - etc usr | tar -C / -xf - || fail payload_install_failed 
 RUNTIME_TEMP="/usr/local/portabletak-runtime-$STAMP"
 mkdir -p "$RUNTIME_TEMP"
 tar -C "$RUNTIME_TEMP" -xzf "$RUNTIME" || fail api_runtime_extract_failed 22
+# The runtime archive was made on a Mac: drop its AppleDouble (._*) metadata files.
+find "$RUNTIME_TEMP" -name '._*' -exec rm -f {} + 2>/dev/null
 [ -d "$RUNTIME_TEMP/python" ] || fail api_runtime_layout_invalid 23
 
 if [ -d /usr/local/portabletak/python ]; then
