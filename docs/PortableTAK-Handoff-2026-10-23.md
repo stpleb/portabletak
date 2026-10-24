@@ -48,9 +48,9 @@ and self-contained on the drive. Main users: Windows laptop with Wi-Fi, ATAK pho
 
 ## 5. Open items (in priority order)
 1. ~~Confirm v2026.10.23.3 finished uploading~~ - done, all 7 assets uploaded. (`gh release view v2026.10.23.3 --repo stpleb/portabletak`). If any asset is missing, re-upload from `outputs/` (zips, `portabletak-host-installer-arm64-openwrt-20261023-3.tar.gz`, manifest+sig from `work/start-here/.portabletak/node/`, `portabletak-loader-install.sh`, SHA256SUMS).
-2. **Update Bravo (Lexar) to 2026.10.23.3**: stop Bravo (Return in its window / Stop PortableTAK), then refresh the drive's Start Here files in place (copy `work/start-here/` contents incl. hidden `.portabletak/` onto the Lexar's `PORTABLETAK` FAT volume; keeps users/data on the Linux partition) or remake it with Mac Setup (wipes it). Then start Bravo; it converts itself (port 18081 etc.).
+2. ~~Update Bravo (Lexar) to 2026.10.23.3~~ - done 2026-10-23 by refreshing Start Here in place (Mac stop via `~/Library/Application Support/PortableTAK/portabletak-mac-run stop`, rsync work/start-here minus .portabletak/node to /Volumes/PORTABLETAK). Bravo runs 2026.10.23.3; Channels verified working on Alpha and Bravo by the owner.
 3. **Update Node01 cleanly**: unplug/replug Alpha after a drive carries 2026.10.23.3 (loader updates Node01 and replaces the hot-patches). The SanDisk gets 2026.10.23.3 node package only when its Start Here/node folder is refreshed or the drive is remade.
-4. **Channels phone test** (iPhone): Bravo after its update, or add the iPhone to Alpha over Tailscale (`https://100.121.108.4:8444`, Alpha's iPhone Trust Profile + full trust, iTAK QR "Tailscale"); create a channel, assign the user, reconnect, check iTAK "TAK Channels".
+4. ~~Channels phone test~~ - owner confirmed channels work on both servers.
 5. ~~Field extension repo~~ - committed and pushed (stpleb/openmanet-field-extension main, 7462f4b "SD image: optional PortableTAK loader").
 6. ~~Contribute to OpenTAKServer~~ - owner decided not to (2026-10-23). Do not raise it again.
 7. **Skydio X10D field test** (Device TLS Package, Video Feeds, phone hotspot bridge) - waiting on the drone.
