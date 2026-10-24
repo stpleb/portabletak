@@ -10,3 +10,4 @@ out/
 *.zip
 test-credentials/
 *.p12
+federation/e2e/*/secrets/
