@@ -30,15 +30,18 @@ class AdoptionTests(unittest.TestCase):
         self.calls = []
 
     def reissue(self, root, addresses, advertise):
+        # Like the real reissue: the new record is saved on the cartridge.
         self.calls.append((addresses, advertise))
-        return {'advertise': advertise, 'addresses': addresses}
+        record = {'advertise': advertise, 'addresses': addresses}
+        (Path(root) / 'config/server-addresses.json').write_text(json.dumps(record))
+        return record
 
     def test_mac_setup_adopted_by_openmanet_node_keeps_tailscale(self):
         root = cartridge('linux', '192.168.64.5', 'eth0',
                          ['192.168.64.5', '100.93.136.26', 'kit.tail1.ts.net'], '192.168.64.5')
         (root / 'config/tailscale').mkdir(parents=True)
         (root / 'config/tailscale/addresses').write_text('100.93.136.26\nkit.tail1.ts.net\n')
-        node = OpenManetAdapter(network_tool=None)
+        node = OpenManetAdapter(network_tool=None, node_local_address='10.41.254.1')
         self.assertTrue(ha.needs_adoption(root, node))
         result = ha.adopt(root, node, reissue=self.reissue, listen=lambda r: None)
         self.assertEqual(self.calls, [(['10.41.254.1', '10.41.250.10', '100.93.136.26', 'kit.tail1.ts.net'],
@@ -50,7 +53,7 @@ class AdoptionTests(unittest.TestCase):
 
     def test_bound_cartridge_is_current(self):
         root = cartridge('openmanet', '10.41.250.10', 'br-ahwlan', ['10.41.254.1'], '10.41.254.1')
-        self.assertFalse(ha.needs_adoption(root, OpenManetAdapter(network_tool=None)))
+        self.assertFalse(ha.needs_adoption(root, OpenManetAdapter(network_tool=None, node_local_address='10.41.254.1')))
 
     def test_linux_address_change_needs_adoption(self):
         root = cartridge('linux', '192.168.1.20', 'eth0', ['192.168.1.20'], '192.168.1.20')
@@ -67,7 +70,7 @@ class AdoptionTests(unittest.TestCase):
         def broken(*a):
             raise ha.ProvisionError('server_certificate_openssl_failed')
         with self.assertRaises(ha.ProvisionError):
-            ha.adopt(root, OpenManetAdapter(network_tool=None), reissue=broken, listen=lambda r: None)
+            ha.adopt(root, OpenManetAdapter(network_tool=None, node_local_address='10.41.254.1'), reissue=broken, listen=lambda r: None)
         self.assertEqual((root / 'config/tak-network.conf').read_text(), before)
 
 
@@ -104,7 +107,7 @@ class VpnOwnershipTests(unittest.TestCase):
     def test_computer_tailscale_address_left_behind_on_node(self):
         root = cartridge('linux', '10.0.2.15', 'eth0', ['192.168.1.50', '10.0.2.15', '100.83.127.3'], '192.168.1.50')
         calls = []
-        ha.adopt(root, OpenManetAdapter(network_tool=None), reissue=self.reissue(calls), listen=lambda r: None)
+        ha.adopt(root, OpenManetAdapter(network_tool=None, node_local_address='10.41.254.1'), reissue=self.reissue(calls), listen=lambda r: None)
         self.assertEqual(calls[0], ['10.41.254.1', '10.41.250.10'])
 
     def test_cartridge_own_tailscale_moves_with_drive(self):

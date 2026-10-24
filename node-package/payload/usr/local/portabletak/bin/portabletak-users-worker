@@ -13,7 +13,7 @@ install_users_helpers()
     TYPE="$(sed -n 's/^PORTABLETAK_INSTANCE_TYPE=//p' /mnt/asgard/portabletak/cartridge.conf 2>/dev/null | head -n 1)"
     [ "$TYPE" = "generic" ] || return 0
     mkdir -p "$ROOT/usr/local/portabletak" || return 1
-    for NAME in users.py users_worker.py federation_actions.py; do
+    for NAME in users.py users_worker.py federation_actions.py channels_actions.py; do
         SRC="/usr/local/portabletak/chroot/$NAME"
         DST="$ROOT/usr/local/portabletak/$NAME"
         [ -r "$SRC" ] || return 1

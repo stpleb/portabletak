@@ -345,7 +345,7 @@ def render_stage(stage, journal, private, original):
         'PORTABLETAK_TRUSTSTORE_PASSWORD': private['client_password'],
         'PORTABLETAK_CLIENT_PASSWORD': private['client_password'],
         'OTS_LISTENER_ADDRESS': '127.0.0.1',
-        'OTS_LISTENER_PORT': 8081, 'OTS_NODE_ID': private['node_id'],
+        'OTS_LISTENER_PORT': 18081, 'OTS_NODE_ID': private['node_id'],
         'OTS_RABBITMQ_SERVER_ADDRESS': '127.0.0.1',
         'OTS_RABBITMQ_USERNAME': 'portabletak',
         'OTS_RABBITMQ_PASSWORD': private['rabbitmq_password'],

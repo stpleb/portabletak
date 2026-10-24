@@ -135,7 +135,7 @@ class LinuxBackendTests(unittest.TestCase):
         self.assertIn('listen 8443 ssl;', site)
         self.assertIn('listen 8446 ssl;', site)
         enrollment = site[site.index('listen 8446'):]
-        self.assertIn('location /Marti/api/tls/ { proxy_pass http://127.0.0.1:8081;', enrollment)
+        self.assertIn('location /Marti/api/tls/ { proxy_pass http://127.0.0.1:18081;', enrollment)
         self.assertIn('location / { return 404; }', enrollment)
         self.assertEqual(result['enrollment'], '8446')
         self.assertNotIn('10.41.250.10:84', site)

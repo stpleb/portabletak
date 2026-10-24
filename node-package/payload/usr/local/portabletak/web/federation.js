@@ -231,12 +231,37 @@
       const reset = el('a', 'font-size:0.8em;opacity:0.7;cursor:pointer;text-align:center', 'Forget its certificate');
       reset.title = 'Use only if the other server got a new certificate';
       reset.onclick = async () => { await save(f, {reset_pin: true}); refresh(); };
-      buttons.append(del, reset);
+      const chLink = el('a', 'font-size:0.8em;opacity:0.85;cursor:pointer;text-align:center', 'Channels...');
+      chLink.title = 'Which channels this link shares';
+      buttons.append(del, chLink, reset);
       row.append(left, middle, right, buttons);
+      const panel = el('div', 'flex-basis:100%;display:none;margin-top:6px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.04)');
+      chLink.onclick = () => { panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; };
+      const grid = el('div', 'display:grid;grid-template-columns:1fr auto auto;gap:6px 16px;align-items:center;max-width:480px');
+      grid.append(el('span', small, 'Channel'), el('span', small, 'Send to ' + f.name), el('span', small, 'Receive into'));
+      const outSet = new Set(f.outbound_groups || []), inSet = new Set(f.inbound_groups || []);
+      const names = Array.from(new Set([...channelNames, ...outSet, ...inSet]));
+      const rows = names.map(n => {
+        const o = el('input'); o.type = 'checkbox'; o.checked = outSet.has(n);
+        const i = el('input'); i.type = 'checkbox'; i.checked = inSet.has(n);
+        grid.append(el('span', '', n), o, i);
+        return [n, o, i];
+      });
+      const saveCh = btn('Save channels', true);
+      saveCh.onclick = async () => {
+        const out = rows.filter(r => r[1].checked).map(r => r[0]), inn = rows.filter(r => r[2].checked).map(r => r[0]);
+        if (!out.length && !inn.length) { status.textContent = 'Tick at least one channel, or use Pause.'; return; }
+        const r = await save(f, {outbound_groups: out, inbound_groups: inn});
+        status.textContent = r.ok ? 'Channels for ' + f.name + ' saved.' : msg(why(r.data)); refresh();
+      };
+      panel.append(el('div', small, 'Send: data from users in these channels goes to ' + f.name + '. Receive: ' + f.name +
+        '\'s data arrives in these channels here. Official TAK Servers match channels by name.'), grid, saveCh);
+      row.append(panel);
       if (f.outbound) row.append(el('div', 'flex-basis:100%;' + small + ';text-align:center', 'Connects to ' + f.address + ':' + f.port));
       return row;
     }
     let d0 = {};
+    let channelNames = ['__ANON__'];
 
     // ---- advanced ---------------------------------------------------------------
     const adv = el('details', 'margin-top:14px;' + small);
@@ -282,6 +307,9 @@
       const d = r.data || {};
       if (!r.ok) { status.textContent = msg(why(d)); return; }
       me = d; d0 = d;
+      const ch = await fetch('/api/channels').then(x => x.json()).catch(() => ({}));
+      channelNames = ((ch && ch.channels) || []).map(c => c.name);
+      if (!channelNames.length) channelNames = ['__ANON__'];
       state.textContent = d.enabled ? 'Federation is ON' : 'Federation is OFF (it turns on by itself when you invite, join or connect)';
       toggle.textContent = d.enabled ? 'Turn off' : 'Turn on';
       toggle.onclick = async () => { await call('/enable', 'POST', {enabled: !d.enabled}); refresh(); };

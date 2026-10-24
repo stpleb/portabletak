@@ -414,6 +414,10 @@ fi
 mkdir -p "$RUN"
 mkdir -p "$LOGDIR"
 
+# OpenTAKServer's internal port: 18081 (8081 is openmanetd's on OpenMANET 1.8).
+# Drives made earlier are moved here, before any service starts (lib/ots_port.py).
+/usr/bin/python3 /usr/local/portabletak/lib/ots_port.py migrate /mnt/asgard 2>/dev/null | grep CHANGED || true
+
 # ---------------------------------------------------------
 # 3. PostgreSQL
 # ---------------------------------------------------------
@@ -673,7 +677,7 @@ else
 
         if /usr/sbin/chroot "$ROOT" \
             /asgard/opentak/venv/bin/python3 -c \
-            'import socket; s=socket.socket(); s.settimeout(1); rc=s.connect_ex(("127.0.0.1",8081)); s.close(); raise SystemExit(0 if rc == 0 else 1)' \
+            'import socket; s=socket.socket(); s.settimeout(1); rc=s.connect_ex(("127.0.0.1",18081)); s.close(); raise SystemExit(0 if rc == 0 else 1)' \
             >/dev/null 2>&1
         then
             echo "OPENTAKSERVER=READY"
@@ -920,6 +924,25 @@ else
     # HTTPS dashboard on the TAK network (8444, sign-in enforced by the API).
     /usr/bin/python3 /usr/local/portabletak/lib/dashboard_site.py /mnt/asgard >/dev/null 2>&1 ||
         echo "ASGARD_WARNING=dashboard_site_not_written"
+
+    # OpenTAKServer's own web site ("default": ports 80 and 443) runs only where those
+    # ports are free: OpenMANET 1.8's web server (uhttpd) holds them on nodes. PortableTAK
+    # itself uses 8443/8444/8446/8089. nginx is not running yet, so any listener is another's.
+    port_in_use()
+    {
+        HEX="$(printf ':%04X' "$1")"
+        awk -v p="$HEX" 'NR > 1 && substr($2, length($2) - 4) == p && $4 == "0A" { f = 1 } END { exit !f }' \
+            /proc/net/tcp /proc/net/tcp6 2>/dev/null
+    }
+    DEFAULT_SITE="$ROOT/etc/nginx/sites-enabled/default"
+    if port_in_use 80 || port_in_use 443; then
+        if [ -L "$DEFAULT_SITE" ]; then
+            rm -f "$DEFAULT_SITE"
+            echo "NGINX_DEFAULT_SITE=OFF_PORTS_80_443_IN_USE"
+        fi
+    elif [ ! -e "$DEFAULT_SITE" ] && [ -f "$ROOT/etc/nginx/sites-available/default" ]; then
+        ln -s /etc/nginx/sites-available/default "$DEFAULT_SITE"
+    fi
 
     /usr/sbin/chroot "$ROOT"         /usr/sbin/nginx || {
             fail_start 75 nginx_start_failed

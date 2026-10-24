@@ -150,7 +150,7 @@ def root():
     from fastapi.responses import HTMLResponse
     web = Path("/usr/local/portabletak/web")
     html = (web / "index.html").read_text()
-    for name in ("auth.js", "remote-access.js", "video-feeds.js", "federation.js", "factory-reset.js"):
+    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "federation.js", "factory-reset.js"):
         try:
             tag = hashlib.sha256((web / name).read_bytes()).hexdigest()[:12]
         except OSError:
@@ -948,6 +948,11 @@ def video_feeds_script():
     return FileResponse("/usr/local/portabletak/web/video-feeds.js", media_type="text/javascript")
 
 
+@app.get("/channels.js")
+def channels_script():
+    return FileResponse("/usr/local/portabletak/web/channels.js", media_type="text/javascript")
+
+
 @app.get("/federation.js")
 def federation_script():
     return FileResponse("/usr/local/portabletak/web/federation.js", media_type="text/javascript")
@@ -1043,6 +1048,40 @@ def remote_access_apply():
 @app.post("/api/remote-access/logout")
 def remote_access_logout():
     return _tailscale("logout", 400)
+
+
+# ---- TAK channels (OpenTAKServer groups) ----
+@app.get("/api/channels")
+def channels_list():
+    return run_users({"action": "channels_list"})
+
+
+@app.post("/api/channels")
+def channels_create(payload: dict = Body(...)):
+    return run_users({"action": "channels_create", "name": str(payload.get("name") or ""),
+                      "description": str(payload.get("description") or "")})
+
+
+@app.post("/api/channels/rename")
+def channels_rename(payload: dict = Body(...)):
+    return run_users({"action": "channels_rename", "name": str(payload.get("name") or ""),
+                      "new_name": str(payload.get("new_name") or "")})
+
+
+@app.delete("/api/channels/{name}")
+def channels_delete(name: str):
+    return run_users({"action": "channels_delete", "name": name})
+
+
+@app.get("/api/users/{username}/channels")
+def channels_user_get(username: str):
+    return run_users({"action": "channels_user_get", "username": username})
+
+
+@app.post("/api/users/{username}/channels")
+def channels_user_set(username: str, payload: dict = Body(...)):
+    return run_users({"action": "channels_user_set", "username": username,
+                      "channels": payload.get("channels")})
 
 
 # ---- Federation (links to other TAK servers; needs the federation add-on) ----

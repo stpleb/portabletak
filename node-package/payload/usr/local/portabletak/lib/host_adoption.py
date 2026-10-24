@@ -98,6 +98,12 @@ def needs_adoption(root, adapter):
     record = server_addresses.current(root)
     if advertise and record.get('advertise') != advertise:
         return True
+    # OpenMANET: CicadaTAK-style nodes advertise the node-local 10.41.254.1, OpenMANET 1.8
+    # nodes the service address itself; a drive moved between the two re-signs.
+    if adapter.profile == 'openmanet':
+        wanted = getattr(adapter, 'node_local_address', None) or adapter.address
+        if record.get('advertise') != wanted:
+            return True
     listed = set(record.get('addresses') or [])
     # A VPN address that is not the drive's own (e.g. a computer's Tailscale app,
     # used by older versions) must go; the drive's own addresses must be present.

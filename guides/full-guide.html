@@ -233,6 +233,12 @@ that phone forwards the drone's traffic to the server over its own Tailscale. No
 the phone needs the free <b>Termux</b> app. Dashboard → <b>Video Feeds</b> → <b>Drone far from this server</b> has the
 one command to paste. Step by step: <b>PortableTAK Skydio X10D Guide</b> (Setup B).</p>
 
+<h3>Channels</h3>
+<p>Channels (TAK groups) split who sees what. Dashboard &rarr; <b>Channels</b>: add, rename or delete channels, then
+pick a user and tick the channels they <b>send</b> into and <b>receive</b> from. Users in no channel use
+<code>__ANON__</code> (everyone without a channel). Phones pick up changes when they reconnect, and users can switch their
+channels on and off in ATAK/iTAK (TAK channels). <code>__ANON__</code>, ADS-B, AIS and Meshtastic are built in and cannot be
+renamed or deleted.</p>
 <h2>8. Linking servers (federation)</h2>
 <p>Federation shares positions, markers, alerts and chat between two TAK servers, so each team sees the other on
 its map. It works with another PortableTAK, OpenTAKServer with PortableTAK's federation add-on, and the official
@@ -261,7 +267,8 @@ allow for its federate (users without a group are <code>__ANON__</code>).</li>
 <h3>Choosing what flows</h3>
 <p>Each linked server shows this server, two arrows and the other server. Tap <b>&rarr;</b> to send to it or stop
 sending, <b>&larr;</b> to receive from it or stop receiving (green = on); the line underneath says which way data flows.
-<b>Pause</b> stops a link without deleting it.</p>
+<b>Pause</b> stops a link without deleting it. <b>Channels...</b> on a link chooses which channels it sends and which
+channels the other server's data arrives in (official TAK Servers match channels by name).</p>
 <h3>Good to know</h3>
 <ul>
 <li>A server that connects to yours without an invite appears as <i>not sharing yet</i>: press <b>Allow sharing</b> only

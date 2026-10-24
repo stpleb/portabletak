@@ -81,6 +81,12 @@ with app.app_context():
         print(json.dumps(result))
         raise SystemExit(0 if result.get("ok") else 4)
 
+    if str(request.get("action", "")).startswith("channels_"):
+        import channels_actions
+        result = channels_actions.handle(app, db, request)
+        print(json.dumps(result))
+        raise SystemExit(0 if result.get("ok") else 4)
+
     username = str(request.get("username", "")).strip()
 
     if not username:

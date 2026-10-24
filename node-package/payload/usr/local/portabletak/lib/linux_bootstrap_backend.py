@@ -323,14 +323,14 @@ class LinuxBootstrapBackend:
             'server { listen 8443 ssl; ' + dashboard_site.TAK_TLS +
             'ssl_certificate ' + ca_root + '/opentakserver.pem; '
             'ssl_certificate_key ' + ca_root + '/opentakserver.nopass.key; '
-            'location / { proxy_pass http://127.0.0.1:8081; '
+            'location / { proxy_pass http://127.0.0.1:18081; '
             'proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; ' + dashboard_site.CERT_HEADER + '} }\n'
             # Certificate enrollment for QR onboarding (ATAK/iTAK use 8446).
             # Only the Marti TLS enrollment API is reachable on this port.
             'server { listen 8446 ssl; ' + dashboard_site.TAK_TLS +
             'ssl_certificate ' + ca_root + '/opentakserver.pem; '
             'ssl_certificate_key ' + ca_root + '/opentakserver.nopass.key; '
-            'location /Marti/api/tls/ { proxy_pass http://127.0.0.1:8081; '
+            'location /Marti/api/tls/ { proxy_pass http://127.0.0.1:18081; '
             'proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; ' + dashboard_site.CERT_HEADER + '} '
             'location / { return 404; } }\n', 0o644)
         enabled = context.root / 'rootfs/etc/nginx/sites-enabled/portabletak'

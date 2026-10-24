@@ -6,7 +6,7 @@ runOnConnectRestart: no
 runOnDisconnect: /usr/bin/python3 /mnt/asgard/mediamtx/ots-webhook.py disconnect
 
 authMethod: http
-authHTTPAddress: http://127.0.0.1:8081/api/external_auth
+authHTTPAddress: http://127.0.0.1:18081/api/external_auth
 authHTTPExclude:
   - action: api
   - action: metrics

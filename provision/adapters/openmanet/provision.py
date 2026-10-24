@@ -1,9 +1,27 @@
 """OpenMANET-specific provisioning adapter."""
 
 import json
+import subprocess
 
 from host_adapter import HostAdapter
 from portabletak_provision import atomic_write
+
+
+LEGACY_NODE_ADDRESS = '10.41.254.1'
+
+
+def detect_node_local(run=subprocess.run):
+    """The address a node answers its own WiFi phones on, when it has one.
+
+    CicadaTAK-style nodes give each node's phones their own 10.41.254.0/24 and answer
+    on 10.41.254.1 (Android has no route to the service address there). OpenMANET 1.8
+    puts every node's phones on the mesh-wide 10.41.0.0/16, where the service address
+    itself reaches them on any node: no node-local address then."""
+    try:
+        out = run(['ip', '-4', '-o', 'addr', 'show'], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return LEGACY_NODE_ADDRESS
+    return LEGACY_NODE_ADDRESS if ' 10.41.254.' in out else None
 
 
 class OpenManetAdapter(HostAdapter):
@@ -11,8 +29,10 @@ class OpenManetAdapter(HostAdapter):
 
     def __init__(self, address='10.41.250.10', prefix=32, interface='br-ahwlan',
                  network_tool='/usr/local/portabletak/adapters/openmanet/network',
-                 node_local_address='10.41.254.1'):
+                 node_local_address='auto'):
         super().__init__()
+        if node_local_address == 'auto':
+            node_local_address = detect_node_local()
         # Every OpenMANET node answers its own WiFi clients on this address, so
         # phones can reach it without a gateway or static route (Android needs that).
         self.node_local_address = node_local_address

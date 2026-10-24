@@ -7,7 +7,7 @@ import sys
 import urllib.parse
 import urllib.request
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8081/api/mediamtx/webhook"
+DEFAULT_BASE_URL = "http://127.0.0.1:18081/api/mediamtx/webhook"
 DEFAULT_TOKEN_FILE = "/mnt/asgard/config/secrets/ots-mediamtx-token"
 
 

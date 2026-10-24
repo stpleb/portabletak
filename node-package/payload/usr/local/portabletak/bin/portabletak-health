@@ -111,7 +111,7 @@ fi
 if pid_file_alive \
     "$MOUNT/opentak/run/opentakserver.pid" \
     "/asgard/opentak/venv/bin/opentakserver" &&
-   port_listening 8081; then
+   port_listening 18081; then
     OTS=RUNNING
 fi
 

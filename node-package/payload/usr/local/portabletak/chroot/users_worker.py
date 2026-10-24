@@ -132,6 +132,10 @@ def handle_request(request):
                 import federation_actions
                 return federation_actions.handle(app, db, request)
 
+            if action.startswith("channels_"):
+                import channels_actions
+                return channels_actions.handle(app, db, request)
+
             username = str(
                 request.get("username", "")
             ).strip()
