@@ -26,8 +26,8 @@ from portabletak_provision import ProvisionError, atomic_write, read_json
 
 MEDIAMTX_FILES = {
     'mediamtx': '07bb8abf4d12cd5c0370c04a72d4b474a9d5f80a13950e83ac12907075b358ef',
-    'mediamtx.yml': '5abc6f83211c576ceb537cf1d8ce8c26bcbf682b7ed839e2dcba1bac3b02b680',
-    'ots-webhook.py': '3e17ed80ab35edcbac2b3cebbc9bca19c0ec08f2b7849e9465c7f6ffa9fa005c',
+    'mediamtx.yml': 'b2f651be78d7f2df0de3611328dc96000e6894ed80d0759c85429ccf2c325460',
+    'ots-webhook.py': 'c8a65ad47c9177572087a5540f3eaafd965a030c3dc3502e392c5db85849d177',
 }
 
 
