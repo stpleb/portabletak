@@ -17,9 +17,10 @@ rsync -a --delete "${X[@]}" "$W/guides/" "$R/guides/"
 rsync -a --delete "${X[@]}" "$W/node-loader/" "$R/node-loader/"
 rsync -a --delete "${X[@]}" --exclude=ots --exclude=wheels --exclude='*.deb' --exclude=e2e/A --exclude=e2e/B \
     --exclude=e2e/payload --exclude=e2e/ptapi --exclude='e2e/*.pem' --exclude='e2e/invite.out*' --exclude=testimg \
-    --exclude='takserver/build.log' "$W/federation/" "$R/federation/"
+    --exclude='takserver/build.log' --exclude=secrets "$W/federation/" "$R/federation/"
 cp "$O"/*.md "$R/docs/"
 cp "$W/sync-repo.sh" "$R/docs/sync-repo.sh"
+cp "$W/build-release.sh" "$R/docs/build-release.sh"
 cd "$R"
 git add -A
 if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi

@@ -62,7 +62,7 @@ and self-contained on the drive. Main users: Windows laptop with Wi-Fi, ATAK pho
 2. Rehash the node package (names with spaces exist - never use awk '{print $2}'):
    `cd work/host-installer-20260929 && find payload -name __pycache__ -type d -prune -exec rm -rf {} + ; { cut -c67- SHA256SUMS | grep -v '^payload/'; find payload -type f; } | sort -u | while IFS= read -r f; do [ -f "$f" ] && shasum -a 256 "$f"; done > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS && shasum -a 256 -c SHA256SUMS | grep -vc ': OK$'` (must print 0).
 3. If OpenTAKServer add-on changed: commit in `work/federation/ots` (branch pt-fed), run `work/federation/build-overlay.sh`, then step 2.
-4. Run the build chain (exact command is in the runbook, "Full rebuild of release"): tar node package -> `node-loader/sign-node-package.sh <tgz> <version> start-here/.portabletak/node` -> WSL distros (amd64+arm64 via docker) -> Mac VM (`portabletak-setup:2` image + qemu-img) -> `win-setup/build-bundle.sh` -> `mac-setup/build-bundle.sh`.
+4. Run the build chain: `work/build-release.sh <version>` (bumps VERSION, rehashes, tars + signs the node package, WSL distros, Mac VM, both bundles, then the regression drive of step 5).
 5. **Regression before publishing**: build a fresh drive with the Mac Setup container into `work/federation/e2e/C/out` (needs `secrets/request.json`) and require `PORTABLETAK_SETUP_SERVICES=7/7`.
 6. Publish with `gh release create ...` (see runbook) and `bash work/sync-repo.sh "message"`.
 - **MediaMTX source pins**: `lib/linux_bootstrap_backend.py` pins sha256 of `share/mediamtx/mediamtx.yml` and `ots-webhook.py`; changing those files needs new pins (both lib copies) and the copy in `portabletak-provision/vendor/mediamtx/`.
@@ -72,6 +72,12 @@ and self-contained on the drive. Main users: Windows laptop with Wi-Fi, ATAK pho
 - On nodes: run long jobs detached: `setsid sh -c "... > /tmp/x.log 2>&1" </dev/null >/dev/null 2>&1 &` (plain `&` dies with the SSH session). BusyBox lacks `base64`, `grep --line-buffered`, `dmesg -w`.
 
 ## 7. Key design facts (don't re-derive)
+- The federation add-on carries a whole opentakserver package; `work/federation/patch-overlay.py` (run by build-overlay.sh) re-applies the base's PortableTAK patches (generic CA, RabbitMQ credentials). Without it ATAK packages get mismatched certificate passwords ("Invalid Truststore"). `lib/client_package_check.py` at start sets aside packages made that way.
+- Mac-side tar to nodes: always `COPYFILE_DISABLE=1` (AppleDouble `._*.py` files break OTS start).
+- iTAK QR needs the drive's iPhone Trust Profile installed AND switched on in Certificate Trust Settings (per drive: each drive has its own CA). iTAK/ATAK packages don't need it.
+- The federation add-on carries a whole opentakserver package; `work/federation/patch-overlay.py` (run by build-overlay.sh) re-applies the base's PortableTAK patches (generic CA, RabbitMQ credentials). Without it ATAK packages get mismatched certificate passwords ("Invalid Truststore"). `lib/client_package_check.py` at start sets aside packages made that way.
+- Mac-side tar to nodes: always `COPYFILE_DISABLE=1` (AppleDouble `._*.py` files break OTS start).
+- iTAK QR needs the drive's iPhone Trust Profile installed AND switched on in Certificate Trust Settings (per drive: each drive has its own CA). iTAK/ATAK packages don't need it.
 - OpenTAKServer internal port **18081** (127.0.0.1); `lib/ots_port.py` migrates old drives at start (YAML and JSON-style config).
 - nginx `default` site (OTS web UI, ports 80/443) dropped at start when those ports are in use (OpenMANET 1.8 uhttpd).
 - OpenMANET adapter: `10.41.254.x` present -> CicadaTAK style, advertise 10.41.254.1; else advertise service IP **10.41.250.10**; `host_adoption.needs_adoption` re-signs when advertise differs.

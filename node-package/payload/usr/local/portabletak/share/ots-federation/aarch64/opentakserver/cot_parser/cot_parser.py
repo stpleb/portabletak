@@ -1,3 +1,4 @@
+from urllib.parse import quote as _pt_quote
 import base64
 import datetime
 from datetime import timedelta, timezone
@@ -1297,7 +1298,7 @@ def status():
 
 
 def main():
-    sio = SocketIO(message_queue="amqp://" + app.config.get("OTS_RABBITMQ_SERVER_ADDRESS"))
+    sio = SocketIO(message_queue="amqp://" + _pt_quote(app.config["OTS_RABBITMQ_USERNAME"], safe="") + ":" + _pt_quote(app.config["OTS_RABBITMQ_PASSWORD"], safe="") + "@" + app.config["OTS_RABBITMQ_SERVER_ADDRESS"])
 
     processes = 0
     while processes < app.config.get("OTS_COT_PARSER_PROCESSES"):

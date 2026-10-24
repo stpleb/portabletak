@@ -417,6 +417,11 @@ mkdir -p "$LOGDIR"
 # OpenTAKServer's internal port: 18081 (8081 is openmanetd's on OpenMANET 1.8).
 # Drives made earlier are moved here, before any service starts (lib/ots_port.py).
 /usr/bin/python3 /usr/local/portabletak/lib/ots_port.py migrate /mnt/asgard 2>/dev/null | grep CHANGED || true
+# User packages made with mismatched certificate passwords (2026.10.23 - .3) are set aside.
+/usr/bin/python3 /usr/local/portabletak/lib/client_package_check.py /mnt/asgard 2>/dev/null || true
+# A newer node package on the Start Here partition (refreshed on a Mac or PC) goes to
+# the Linux partition, where nodes install it from.
+sh /usr/local/portabletak/lib/node-package-sync.sh /mnt/asgard 2>/dev/null || true
 
 # ---------------------------------------------------------
 # 3. PostgreSQL

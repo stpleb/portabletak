@@ -1,3 +1,4 @@
+from urllib.parse import quote as _pt_quote
 from gevent import monkey
 
 monkey.patch_all()
@@ -149,7 +150,7 @@ def init_extensions(app):
         app,
         logger=socketio_logger,
         ping_timeout=1,
-        message_queue="amqp://" + app.config.get("OTS_RABBITMQ_SERVER_ADDRESS"),
+        message_queue="amqp://" + _pt_quote(app.config["OTS_RABBITMQ_USERNAME"], safe="") + ":" + _pt_quote(app.config["OTS_RABBITMQ_PASSWORD"], safe="") + "@" + app.config["OTS_RABBITMQ_SERVER_ADDRESS"],
     )
 
     rabbit_credentials = pika.PlainCredentials(

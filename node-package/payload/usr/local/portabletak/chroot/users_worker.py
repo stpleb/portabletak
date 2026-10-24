@@ -230,7 +230,12 @@ def handle_request(request):
 
                 # iTAK shows the first field as the server's name.
                 label = server_name()
-                if request.get("host"):
+                try:
+                    import ipaddress
+                    remote = ipaddress.ip_address(service_ip) in ipaddress.ip_network("100.64.0.0/10")
+                except ValueError:
+                    remote = str(service_ip).endswith(".ts.net")
+                if remote:
                     label += " (Tailscale)"
 
                 qr_string = (

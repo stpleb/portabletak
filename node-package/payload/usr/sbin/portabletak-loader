@@ -9,6 +9,7 @@
 PUB=/etc/portabletak/loader.pub
 WORK=/tmp/portabletak-loader
 MNT="$WORK/mnt"
+FAT="$WORK/fat"
 MARK=/tmp/portabletak/hotplug-start
 LOG=/tmp/portabletak/loader.log
 
@@ -27,9 +28,17 @@ start_portabletak()
     fi
 }
 
-finish()
+# Unmount the drive's partitions (Linux and Start Here) if mounted.
+release()
 {
     grep -q " $MNT " /proc/mounts && umount "$MNT"
+    grep -q " $FAT " /proc/mounts && umount "$FAT"
+    return 0
+}
+
+finish()
+{
+    release
     rm -rf "$WORK"
     rm -f "$MARK"
     exit "${1:-0}"
@@ -51,37 +60,61 @@ find_package()
     return 1
 }
 
+# The drive's "Start here" partition (FAT) when it holds a node package: mounted
+# read-only at $FAT. A Start Here refreshed on a Mac or PC carries the newer package.
+find_start_here_package()
+{
+    for dev in ${PT_LOADER_FAT_DEVICES:-/dev/sd[a-z][0-9]*}; do    # PT_LOADER_FAT_DEVICES: tests only
+        [ -b "$dev" ] || [ -n "${PT_LOADER_FAT_DEVICES:-}" ] || continue
+        grep -q "^$dev " /proc/mounts && continue
+        mount -t vfat -o "ro${PT_LOADER_FAT_DEVICES:+,loop}" "$dev" "$FAT" 2>/dev/null || continue
+        if [ -f "$FAT/.portabletak/node/node-package.manifest" ]; then
+            echo "$dev"
+            return 0
+        fi
+        umount "$FAT"
+    done
+    return 1
+}
+
 scan()
 {
-    mkdir -p /tmp/portabletak "$MNT"
+    mkdir -p /tmp/portabletak "$MNT" "$FAT"
     sleep 5                                   # let every partition of the drive appear
     if cartridge_running; then log "a cartridge is already running; nothing to do"; finish 0; fi
-    DEV="$(find_package)" || { start_portabletak; finish 0; }
-    D="$MNT/portabletak/node"
+    DEV="$(find_package)" && D="$MNT/portabletak/node"
+    if FDEV="$(find_start_here_package)"; then
+        FV="$(sed -n 's/^version=//p' "$FAT/.portabletak/node/node-package.manifest" | head -n 1)"
+        LV="$( [ -n "$DEV" ] && sed -n 's/^version=//p' "$D/node-package.manifest" | head -n 1)"
+        if [ -z "$DEV" ] || newer "$FV" "$LV"; then
+            DEV="$FDEV"; D="$FAT/.portabletak/node"
+        fi
+    fi
+    [ -n "$DEV" ] || { release; start_portabletak; finish 0; }
     cp "$D/node-package.manifest" "$D/node-package.manifest.sig" "$WORK/" 2>/dev/null ||
-        { log "drive $DEV: node package files unreadable"; umount "$MNT"; start_portabletak; finish 1; }
+        { log "drive $DEV: node package files unreadable"; release; start_portabletak; finish 1; }
     VERSION="$(field version)"; HAVE="$(installed_version)"
     if [ "$HAVE" != none ] && ! newer "$VERSION" "$HAVE"; then
         log "drive $DEV has PortableTAK $VERSION; this node has $HAVE (up to date)"
-        umount "$MNT"; start_portabletak; finish 0
+        release; start_portabletak; finish 0
     fi
     if ! usign -V -q -m "$WORK/node-package.manifest" -p "$PUB" -x "$WORK/node-package.manifest.sig"; then
         log "REFUSED drive $DEV: node package is not signed with the PortableTAK release key"
-        umount "$MNT"; start_portabletak; finish 1
+        release; start_portabletak; finish 1
     fi
     if [ "$(field arch)" != "$(uname -m)" ]; then
         log "REFUSED drive $DEV: package is for $(field arch), this node is $(uname -m)"
-        umount "$MNT"; start_portabletak; finish 1
+        release; start_portabletak; finish 1
     fi
     NEED=$(( $(wc -c < "$D/node-package.tar.gz") * 4 / 1024 ))
     FREE=$(df -k /tmp | awk 'NR==2 {print $4}')
     if [ "$FREE" -lt "$NEED" ]; then
         log "drive $DEV: not enough free memory to install (${FREE} KB free, ${NEED} KB needed)"
-        umount "$MNT"; start_portabletak; finish 1
+        release; start_portabletak; finish 1
     fi
     log "drive $DEV: installing PortableTAK $VERSION (this node has $HAVE)"
-    cp "$D/node-package.tar.gz" "$WORK/package.tar.gz" || { log "copy failed"; umount "$MNT"; finish 1; }
-    umount "$MNT"
+    cp "$D/node-package.tar.gz" "$WORK/package.tar.gz" || { log "copy failed"; release; finish 1; }
+    release
     [ "$(sha256sum "$WORK/package.tar.gz" | awk '{print $1}')" = "$(field sha256)" ] ||
         { log "REFUSED drive $DEV: package does not match its signed checksum"; start_portabletak; finish 1; }
     mkdir -p "$WORK/x"

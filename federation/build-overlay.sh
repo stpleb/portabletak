@@ -14,11 +14,13 @@ rm -rf "$DEST"; mkdir -p "$DEST"
 TMP="$(mktemp -d)"
 git -C "$OTS" archive pt-fed opentakserver | tar -x -C "$TMP"
 find "$TMP" -name '__pycache__' -prune -exec rm -rf {} +
+# Same PortableTAK patches as the sealed base (CA passwords, RabbitMQ credentials).
+python3 "$HERE/patch-overlay.py" "$TMP/opentakserver" "$OTS"
 for ARCH in aarch64 x86_64; do
     mkdir -p "$DEST/$ARCH"
     cp -R "$TMP/opentakserver" "$DEST/$ARCH/"
     (cd "$DEST/$ARCH" && unzip -q "$HERE"/wheels/grpcio-1.82.1-cp312-cp312-manylinux2014_${ARCH}.*.whl)
 done
 rm -rf "$TMP"
-printf 'opentakserver 1.7.13 + federation (PR #343) pt-fed %s; grpcio 1.82.1\n' "$REV" > "$DEST/VERSION"
+printf 'opentakserver 1.7.13 + federation (PR #343) pt-fed %s + base patches; grpcio 1.82.1\n' "$REV" > "$DEST/VERSION"
 du -sh "$DEST"/*; cat "$DEST/VERSION"
