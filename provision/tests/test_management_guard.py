@@ -98,6 +98,14 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/api/provision/status')['status'], 401)
         self.assertEqual(self.request('GET', '/')['body'], b'inner')
 
+    def test_signed_out_live_map_goes_to_sign_in(self):
+        self.initialize()
+        response = self.request('GET', '/map')
+        self.assertEqual(response['status'], 303)
+        self.assertEqual(response['headers']['location'], '/')
+        self.assertEqual(self.request('GET', '/map', headers=self.session())['body'], b'inner')
+        self.assertEqual(self.request('GET', '/api/map/snapshot')['status'], 401)
+
     def test_login_sets_strict_http_only_cookie(self):
         self.initialize()
         response = self.login()

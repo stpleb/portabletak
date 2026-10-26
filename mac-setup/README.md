@@ -20,9 +20,16 @@ drive into later finishes the node-specific part by itself on first start
    If macOS says the disk is not readable, click **Ignore**.
 
 ## Use it
-Plug the drive into an OpenMANET node with the PortableTAK host package
-installed. The node sets the server up for itself and starts it; open the
-dashboard as usual and sign in as `administrator`.
+- **OpenMANET node:** plug the drive into a blue USB 3 port. The node installs or
+  updates PortableTAK from the drive by itself (with the PortableTAK loader),
+  starts it, and the dashboard is at `https://10.41.250.10:8444`.
+- **This Mac or a Windows 11 computer:** open the PORTABLETAK volume and
+  double-click **Start PortableTAK (Mac)** or **(Windows)**.
+
+Sign in as `administrator`. The guides on the drive (Quick Start, Quick
+Reference, Setup and Troubleshooting Guide) cover the dashboard: phones,
+remote access, Live Map, live aircraft and ships, video feeds, ATAK plugins,
+Meshtastic and federation.
 
 ## Safety
 - Only external drives are listed; internal disks are refused.

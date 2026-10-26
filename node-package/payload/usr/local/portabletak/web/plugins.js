@@ -80,10 +80,11 @@
 
     // After Live Feeds / Channels; else at the end.
     const heads = Array.from(document.querySelectorAll('section summary'));
-    const anchor = heads.find(h => h.textContent.trim() === 'Live Feeds') || heads.find(h => h.textContent.trim() === 'Channels');
+    const anchor = heads.find(h => h.textContent.trim() === 'Video Feeds') || heads.find(h => h.textContent.trim() === 'Live Feeds') ||
+      heads.find(h => h.textContent.trim() === 'Channels');
     const after = anchor && anchor.closest('section');
     if (after) after.after(card); else (document.querySelector('main') || document.body).appendChild(card);
   }
-  const go = () => setTimeout(build, 20);   // after the Channels and Live Feeds cards
+  const go = () => setTimeout(build, 20);   // after the Channels, Live Feeds and Video Feeds cards
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
 })();

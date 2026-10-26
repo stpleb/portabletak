@@ -89,7 +89,7 @@ Skydio software versions.</p>
 <h2>6. Watch the video</h2>
 <ul>
 <li><b>ATAK / WinTAK:</b> open <b>Video</b> and pick the feed by name.</li>
-<li><b>Add it by hand</b> (any RTSP player): <code>rtsp://&lt;server address&gt;:8554/skydio1</code>. No user name or password is needed for drone feeds.</li>
+<li><b>Add it by hand</b> (any RTSP player): <code>rtsp://&lt;server address&gt;:8554/skydio1</code>. No user name or password is needed for drone feeds. In the dashboard, <b>Watch</b> plays it in the browser.</li>
 <li>ATAK users on cellular (Tailscale on) watch through the server's Tailscale address, wherever the server is.</li>
 </ul>
 
@@ -98,6 +98,7 @@ Skydio software versions.</p>
 <tr><th style="width:34%">Problem</th><th>What to do</th></tr>
 <tr><td>Aircraft not on the map</td><td>Check the controller's TAK connection: port 8089, SSL on, both certificates and passwords from the README. Setup B: Termux still open with the bridge running, the phone's Tailscale on, and the server online.</td></tr>
 <tr><td>Video Feeds never shows Live</td><td>Same stream name on both sides, port <b>8554</b>, the right IP for your setup, and the aircraft flying. Setup B: the bridge running on the phone, the phone's Tailscale on, and internet on the server.</td></tr>
+<tr><td>Never shows Live while a TAK ICU feed exists</td><td>With a TAK ICU feed on the server, RTSP video is accepted over TCP only. If the controller cannot connect then, delete the TAK ICU feed (Video Feeds) while flying.</td></tr>
 <tr><td>Video stops after switching color/thermal</td><td>Expected on the X10D: press <b>Stop Stream</b>, then <b>Start Stream</b>. Viewers reopen the feed.</td></tr>
 <tr><td>Video choppy or delayed</td><td>Move closer to the Wi-Fi, lower the stream resolution or frame rate (30 FPS), or use a wired USB-C Ethernet adapter on the controller.</td></tr>
 <tr><td>The server moved to another node or computer</td><td>Setup B keeps working: the bridge follows the drive's Tailscale address. Setup A: use the new server's address in both controller settings.</td></tr>

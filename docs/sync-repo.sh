@@ -3,7 +3,8 @@
 #   ./sync-repo.sh "commit message"
 set -e
 W="$(cd "$(dirname "$0")" && pwd)"; O="$W/../outputs"; R=/Users/STPLEB/Documents/portabletak
-X=(--exclude=__pycache__ --exclude=.DS_Store --exclude='*.before-*' --exclude='*.pyc' --exclude=.run --exclude=out)
+X=(--exclude=__pycache__ --exclude=.DS_Store --exclude='*.before-*' --exclude='*.pyc' --exclude=.run --exclude=out
+   --exclude='share/pmtiles/*/pmtiles' --exclude='share/readsb/*/readsb')   # downloaded/built tools: in release assets
 rsync -a --delete "${X[@]}" --exclude='vendor/mediamtx/mediamtx' "$W/portabletak-provision/" "$R/provision/"
 rsync -a --delete "${X[@]}" --exclude='payload/usr/local/portabletak/share/tailscale/tailscale*' --exclude='*.tar.gz' \
     --exclude='payload/usr/local/portabletak/share/mediamtx/mediamtx' "$W/host-installer-20260929/" "$R/node-package/"

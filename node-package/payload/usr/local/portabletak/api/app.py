@@ -150,7 +150,7 @@ def root():
     from fastapi.responses import HTMLResponse
     web = Path("/usr/local/portabletak/web")
     html = (web / "index.html").read_text()
-    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "feeds.js", "plugins.js", "meshtastic.js", "federation.js", "factory-reset.js"):
+    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "feeds.js", "plugins.js", "meshtastic.js", "federation.js", "factory-reset.js", "section-icons.js"):
         try:
             tag = hashlib.sha256((web / name).read_bytes()).hexdigest()[:12]
         except OSError:
@@ -918,6 +918,11 @@ def factory_reset_route(payload: dict = Body(...)):
     return {"ok": True, **result}
 
 
+@app.get("/section-icons.js")
+def section_icons_script():
+    return FileResponse("/usr/local/portabletak/web/section-icons.js", media_type="text/javascript")
+
+
 @app.get("/factory-reset.js")
 def factory_reset_script():
     return FileResponse("/usr/local/portabletak/web/factory-reset.js", media_type="text/javascript")
@@ -995,19 +1000,22 @@ def video_feeds_list():
 def video_feeds_add(payload: dict = Body(...)):
     import video_feeds
     name = str(payload.get("name", "")).strip().lower()
+    existed = any(f["name"] == name for f in video_feeds.load("/mnt/asgard"))
     try:
-        video_feeds.add("/mnt/asgard", name)
+        feeds = video_feeds.add("/mnt/asgard", name, udp=payload.get("udp") is True,
+                                source=payload.get("source") if isinstance(payload.get("source"), str) else None)
     except video_feeds.FeedError as error:
         raise HTTPException(status_code=400, detail=str(error))
     result = run_users({"action": "video_feed_add", "name": name, "host": _feed_targets()["local"]})
-    if not result.get("ok"):
+    if not result.get("ok") and not existed:
         video_feeds.remove("/mnt/asgard", name)
         raise HTTPException(status_code=500, detail=result.get("error", "video_feed_not_registered"))
     try:
         video_feeds.apply("/mnt/asgard")
     except Exception:
         raise HTTPException(status_code=503, detail="video_server_not_running")
-    return {"ok": True, "name": name}
+    feed = video_feeds.public(next(f for f in feeds if f["name"] == name))
+    return {"ok": True, "name": name, "udp_port": feed.get("udp_port"), "source": feed.get("source")}
 
 
 @app.delete("/api/video-feeds/{name}")
@@ -1018,7 +1026,7 @@ def video_feeds_remove(name: str):
     video_feeds.remove("/mnt/asgard", name)
     run_users({"action": "video_feed_remove", "name": name})
     try:
-        video_feeds.apply("/mnt/asgard")
+        video_feeds.apply("/mnt/asgard", forget=[name])
     except Exception:
         pass
     return {"ok": True, "name": name}
@@ -1087,6 +1095,53 @@ def video_hls(path: str, request: Request):
         raise HTTPException(status_code=502, detail={"error": "video_server_unreachable"})
     return Response(content=data, status_code=status, media_type=kind,
                     headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/video/whep/{name}")
+async def video_whep(name: str, request: Request):
+    """WebRTC for Watch (WHEP): relay the browser's offer to MediaMTX (127.0.0.1:8889) and
+    return its answer. Only the set-up goes through the dashboard; the video itself flows
+    from MediaMTX's UDP port (8189) straight to the browser, under a second behind."""
+    import urllib.error
+    import urllib.request
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", name):
+        raise HTTPException(status_code=404, detail="not_found")
+    offer = await request.body()
+    if not offer or len(offer) > 65536:
+        raise HTTPException(status_code=400, detail="invalid_offer")
+    from starlette.concurrency import run_in_threadpool
+    relay = urllib.request.Request("http://127.0.0.1:8889/%s/whep" % name, data=offer, method="POST",
+                                   headers={"Content-Type": "application/sdp"})
+
+    def send():
+        with urllib.request.urlopen(relay, timeout=15) as response:
+            return response.read(), response.headers.get("Location", "")
+    try:
+        answer, location = await run_in_threadpool(send)
+        session = location.rstrip("/").rsplit("/", 1)[-1]
+    except urllib.error.HTTPError as error:
+        raise HTTPException(status_code=error.code if error.code in (400, 401, 403, 404) else 502,
+                            detail={"error": "video_not_available"})
+    except OSError:
+        raise HTTPException(status_code=502, detail={"error": "video_server_unreachable"})
+    headers = {"Cache-Control": "no-store"}
+    if re.fullmatch(r"[A-Za-z0-9-]{1,64}", session):
+        headers["Location"] = "/api/video/whep/%s/%s" % (name, session)
+    return Response(content=answer, status_code=201, media_type="application/sdp", headers=headers)
+
+
+@app.delete("/api/video/whep/{name}/{session}")
+def video_whep_close(name: str, session: str):
+    """End a Watch WebRTC session (MediaMTX also ends it on its own when the browser goes)."""
+    import urllib.request
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", name) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", session):
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            "http://127.0.0.1:8889/%s/whep/%s" % (name, session), method="DELETE"), timeout=5).close()
+    except OSError:
+        pass
+    return {"ok": True}
 
 
 @app.get("/api/meshtastic")

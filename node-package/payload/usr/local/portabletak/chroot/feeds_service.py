@@ -122,12 +122,26 @@ def _get_json(url, timeout=20):
         return json.load(response)
 
 
+# Free community ADS-B sources (same aircraft fields); the next one is used when one
+# refuses (e.g. adsb.lol rate-limits busy shared networks such as hotels).
+FALLBACK_URLS = ['https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}']
+
+
 def fetch_internet_aircraft(cfg):
     if cfg['lat'] is None or cfg['lon'] is None:
         raise ValueError('set_a_center_point')
     radius = max(1, min(250, int(float(cfg['radius_nm']))))
-    data = _get_json('%s/%.4f/%.4f/%d' % (cfg['api_url'].rstrip('/'), float(cfg['lat']), float(cfg['lon']), radius))
-    return data.get('ac') or data.get('aircraft') or []   # adsb.lol / airplanes.live: ac, adsb.fi: aircraft
+    lat, lon = '%.4f' % float(cfg['lat']), '%.4f' % float(cfg['lon'])
+    urls = ['%s/%s/%s/%d' % (cfg['api_url'].rstrip('/'), lat, lon, radius)]
+    urls += [u.format(lat=lat, lon=lon, nm=radius) for u in FALLBACK_URLS]
+    error = None
+    for url in urls:
+        try:
+            data = _get_json(url)
+            return data.get('ac') or data.get('aircraft') or []   # adsb.lol: ac, adsb.fi: aircraft
+        except Exception as failure:   # try the next source
+            error = failure
+    raise error
 
 
 def read_radio_aircraft(path=RADIO_JSON, max_age=60):
@@ -282,13 +296,19 @@ def run_once(cfg, publisher, status, due, now_ts, streams=None):
     if (adsb['internet'] or adsb['radio']) and now_ts >= due.get('adsb', 0):
         due['adsb'] = now_ts + (5 if adsb['radio'] and not adsb['internet'] else max(5, int(adsb['interval'])))
         crafts, errors, sources = {}, [], []
-        if adsb['internet']:
+        if adsb['internet'] and now_ts >= due.get('adsb_backoff', 0):
             try:
                 for craft in fetch_internet_aircraft(adsb):
                     crafts[str(craft.get('hex'))] = (craft, 'ADS-B (internet)')
                 sources.append('internet')
+                due.pop('adsb_strikes', None)
             except Exception as error:
                 errors.append('internet: %s' % error)
+                if '429' in str(error):   # rate limited: wait 1, 2, 4 ... up to 10 minutes
+                    due['adsb_strikes'] = due.get('adsb_strikes', 0) + 1
+                    due['adsb_backoff'] = now_ts + min(600, 30 * 2 ** (due['adsb_strikes'] - 1))
+        elif adsb['internet']:
+            errors.append('internet: rate limited, waiting %d s' % int(due['adsb_backoff'] - now_ts))
         if adsb['radio']:
             try:
                 for craft in read_radio_aircraft():   # the radio wins: newer and local

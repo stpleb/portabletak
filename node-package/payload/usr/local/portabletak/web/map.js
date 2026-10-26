@@ -5,6 +5,7 @@ import * as maplibregl from '/mapkit/maplibre-gl.mjs';
 
 const ORIGIN = location.origin;
 const STREETS = 'https://tiles.openfreemap.org/styles/liberty';
+const STREETS_DARK = 'https://tiles.openfreemap.org/styles/dark';
 const SATELLITE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const POLL_MS = 3000;
 const KINDS = [
@@ -27,6 +28,9 @@ const store = {
 };
 
 let online = false, areas = [], items = [], fitted = false;
+// Dark or light road maps (online Streets and offline areas); satellite is unchanged.
+let theme = store.get('theme', matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+const streets = () => theme === 'dark' ? STREETS_DARK : STREETS;
 const shown = store.get('shown', Object.fromEntries(KINDS.map(([k, , on]) => [k, on])));
 
 // ---------------------------------------------------------------- offline map files
@@ -59,11 +63,11 @@ async function checkOnline() {
 function overlayFonts() { return ORIGIN + '/mapkit/fonts/{fontstack}/{range}.pbf'; }
 
 function offlineStyle(area) {
-    const flavor = basemaps.namedFlavor('dark');
+    const flavor = basemaps.namedFlavor(theme);
     return {
         version: 8,
         glyphs: overlayFonts(),
-        sprite: ORIGIN + '/mapkit/sprites/v4/dark',
+        sprite: ORIGIN + '/mapkit/sprites/v4/' + theme,
         sources: { protomaps: { type: 'vector', url: 'pmtiles://' + ORIGIN + '/maps/' + area.file,
             attribution: '<a href="https://protomaps.com">Protomaps</a> &copy; <a href="https://openstreetmap.org">OpenStreetMap</a>' } },
         layers: basemaps.layers('protomaps', flavor, { lang: 'en' }),
@@ -91,16 +95,16 @@ function areaFor(center) {
 }
 
 function chooseBase(choice) {
-    if (choice === 'streets') return { style: STREETS, label: 'Streets (online)' };
+    if (choice === 'streets') return { style: streets(), label: 'Streets (online)' };
     if (choice === 'satellite') return { style: satelliteStyle(), label: 'Satellite (online)' };
     if (choice && choice.startsWith('area:')) {
         const area = areas.find(a => a.name === choice.slice(5));
-        if (area) return { style: offlineStyle(area), label: 'Offline: ' + area.name };
+        if (area) return { style: offlineStyle(area), label: 'Offline: ' + area.name, area };
     }
     // Auto: online streets when this device has internet, else the offline area here.
-    if (online) return { style: STREETS, label: 'Streets (online)' };
+    if (online) return { style: streets(), label: 'Streets (online)' };
     const area = areaFor(map ? map.getCenter() : { lng: 0, lat: 0 });
-    if (area) return { style: offlineStyle(area), label: 'Offline: ' + area.name };
+    if (area) return { style: offlineStyle(area), label: 'Offline: ' + area.name, area };
     return { style: blankStyle(), label: 'No map', empty: true };
 }
 
@@ -198,6 +202,21 @@ function setBase(choice) {
     $('status').dataset.base = base.label;
     if (base.empty) notice(online ? '' : 'No internet on this device and no offline map yet. While online, open "Offline maps" and save the area you need.');
     else notice('');
+    // An offline map only covers its saved area: picking one shows that area.
+    const area = base.area, c = map.getCenter();
+    if (area && choice !== 'auto' && !(c.lng >= area.bbox[0] && c.lng <= area.bbox[2] && c.lat >= area.bbox[1] && c.lat <= area.bbox[3]))
+        map.fitBounds([[area.bbox[0], area.bbox[1]], [area.bbox[2], area.bbox[3]]], { duration: 500 });
+    checkInside();
+}
+
+// Blank map outside the offline area: say so instead of leaving an empty screen.
+function checkInside() {
+    const label = $('status').dataset.base || '';
+    const area = label.startsWith('Offline: ') && areas.find(a => a.name === label.slice(9));
+    if (!area) return;
+    const b = map.getBounds();
+    const off = b.getEast() < area.bbox[0] || b.getWest() > area.bbox[2] || b.getNorth() < area.bbox[1] || b.getSouth() > area.bbox[3];
+    notice(off ? 'This is outside the offline map "' + area.name + '", so there is no map here. Open "Offline maps" > Show to go to it.' : '');
 }
 
 async function refresh() {
@@ -317,7 +336,7 @@ async function start() {
         map.addImage(id, drawIcon(shape, color), { pixelRatio: 2 });
     });
     map.on('style.load', addOverlay);
-    map.on('moveend', () => { const c = map.getCenter(); store.set('view', { center: [c.lng, c.lat], zoom: map.getZoom() }); store.set('view-saved', true); });
+    map.on('moveend', () => { const c = map.getCenter(); store.set('view', { center: [c.lng, c.lat], zoom: map.getZoom() }); store.set('view-saved', true); checkInside(); });
     map.on('click', 'items', (e) => {
         const it = items.find(x => x.uid === e.features[0].properties.uid);
         if (it) new maplibregl.Popup({ maxWidth: '300px' }).setLngLat([it.lon, it.lat]).setHTML(popupHtml(it)).addTo(map);
@@ -327,6 +346,9 @@ async function start() {
     setBase($('base').value);
     $('base').onchange = () => setBase($('base').value);
     $('fit').onclick = fitAll;
+    const themeLabel = () => { $('theme').textContent = theme === 'dark' ? '\u2600 Light' : '\u263E Dark'; };
+    themeLabel();
+    $('theme').onclick = () => { theme = theme === 'dark' ? 'light' : 'dark'; store.set('theme', theme); themeLabel(); setBase($('base').value); };
     $('show').onclick = () => $('filters').classList.toggle('open');
     $('offline').onclick = () => { const p = $('panel'); p.style.display = p.style.display === 'block' ? 'none' : 'block'; if (p.style.display === 'block') renderPanel(); };
     if (areas.some(a => !a.ready && !a.error)) pollAreas();

@@ -330,11 +330,12 @@
     details.addEventListener('toggle', () => { if (details.open) refresh(); });
     setInterval(() => { if (details.open) refresh(); }, 15000);
 
-    // Directly after Video Feeds (or Users).
+    // Directly after Remote Access (or Users).
     const headings = Array.from(document.querySelectorAll('section > h2, section summary'));
-    const heading = headings.find(h => h.textContent.trim() === 'Video Feeds') || headings.find(h => h.textContent.trim() === 'Users');
+    const heading = headings.find(h => h.textContent.trim() === 'Remote Access') || headings.find(h => h.textContent.trim() === 'Users');
     const after = heading && heading.closest('section');
     if (after) after.after(card); else (document.querySelector('main') || document.body).appendChild(card);
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build); else build();
+  const go = () => setTimeout(build, 5);   // after the Remote Access card
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
 })();

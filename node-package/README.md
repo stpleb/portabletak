@@ -1,19 +1,20 @@
-# PortableTAK OpenWrt host installer candidate
+# PortableTAK node package (OpenWrt / OpenMANET, arm64)
 
-This package installs the host-side PortableTAK controller, management API,
-independent API dependencies, OpenMANET adapter, and lifecycle tools on an
-ARM64 OpenWrt/OpenMANET node. It backs up an existing installation before
-writing files and leaves the physical first-run activation gate closed.
+Installs PortableTAK's host side on an ARM64 OpenWrt/OpenMANET node: the
+dashboard API, the controller that finds, checks, mounts and starts a
+PortableTAK drive (the server itself runs from the drive), the OpenMANET
+adapter (service address `10.41.250.10` on `br-ahwlan`), live feeds (ADS-B,
+AIS), offline map tools, the TAK ICU video relay, and lifecycle tools.
 
-Core provisioning is host-neutral. This package selects the OpenMANET host
-adapter, which owns the `br-ahwlan` service address and host runtime metadata.
-The verified MediaMTX runtime supplement is carried by the host package so it
-does not alter the cartridge's sealed clean base.
+Nodes normally install and update this package by themselves from a drive's
+Start Here partition, through the PortableTAK loader (`portabletak-loader`,
+installed once with `portabletak-loader-install.sh`); only packages signed with
+the PortableTAK release key are accepted.
 
-Run `./install.sh --check` for read-only platform and checksum validation.
-Run `./install.sh` as root to install. The printed backup archive can be passed
-to `./rollback.sh` if rollback is required.
+Manual install (administrators):
+- `./install.sh --check`: read-only platform and checksum check.
+- `./install.sh` as root: installs. It backs up the previous installation first;
+  the printed backup archive can be passed to `./rollback.sh`.
 
-The package retains the current `/mnt/asgard` compatibility path. It does not
-format a cartridge, alter mesh networking, enable first-run activation, or
-claim that physical USB acceptance has passed.
+The package never formats a drive or changes mesh networking. Drive data stays
+under `/mnt/asgard` on the drive.

@@ -19,6 +19,7 @@
 <tr><td>8443 TCP</td><td>TAK web / Marti API</td><td>1935 TCP</td><td>Video: RTMP</td></tr>
 <tr><td>8444 TCP</td><td>PortableTAK dashboard (sign-in)</td><td>8888 / 8889 TCP</td><td>Video: HLS / WebRTC</td></tr>
 <tr><td>8446 TCP</td><td>Certificate enrollment (QR setup)</td><td>8890 UDP/TCP</td><td>Video: SRT</td></tr>
+<tr><td>1883 TCP</td><td>Meshtastic radios (MQTT, when turned on)</td><td>8189 UDP</td><td>Video: Watch in the browser (WebRTC)</td></tr>
 </table>
 
 <h2>Accounts and passwords</h2>
@@ -38,19 +39,26 @@
 <tr><td>Use the server over cellular / from anywhere</td><td><b>Remote Access → Enable remote access</b> (Tailscale), then <b>Finish setup</b></td></tr>
 <tr><td>Link with another PortableTAK</td><td><b>Federation &rarr; Invite a server</b>, send the code; they use <b>Join a server</b></td></tr>
 <tr><td>Link with an official TAK Server</td><td><b>Federation &rarr; Connect to a TAK Server</b>, then send their admin the sheet shown</td></tr>
+<tr><td>See everything on a map</td><td><b>🗺 Live Map</b> (top of the dashboard). Offline: while online, <b>Offline maps</b> → name → <b>Download this area</b></td></tr>
+<tr><td>Aircraft and ships</td><td><b>Live Feeds</b>: set the area, tick the sources, Save. In ATAK: user receives the ADS-B / AIS channel</td></tr>
+<tr><td>Give phones a plugin</td><td><b>ATAK Plugins</b> → Upload plugin (APK). Phones: ATAK → Plugins → ⋮ → Sync</td></tr>
+<tr><td>Watch a video feed</td><td><b>Video Feeds</b> → <b>Watch</b> (live feeds only). ATAK: Video → load from server</td></tr>
+<tr><td>Link Meshtastic radios</td><td><b>Meshtastic</b> → Turn on → Apply now; enter the card's MQTT settings in each radio</td></tr>
 <tr><td>Back up / restore</td><td><b>Backup / Restore</b> (keep a copy of backups off the drive)</td></tr>
 <tr><td>Stop / start the TAK server</td><td><b>Server → Stop Server / Start Server</b></td></tr>
 <tr><td>Unplug the drive (node)</td><td><b>Server → Safe Remove</b>, wait for "safe to remove"</td></tr>
 <tr><td>Return the drive to brand new</td><td><b>Erase Drive</b> (administrator password + type ERASE). Cannot be undone.</td></tr>
 </table>
 
-<h2>Drone video (Skydio X10D)</h2>
+<h2>Video (drones, TAK ICU, cameras)</h2>
 <table>
 <tr><td>1</td><td>Dashboard → <b>Video Feeds</b> → add a name (lowercase letters, numbers, dashes), e.g. <code>skydio1</code>.</td></tr>
 <tr><td>2</td><td>Controller on the server's Wi-Fi → Menu → Sharing → RTSP → External: name <code>skydio1</code>, IP = server address, port <b>8554</b> → Start Stream.</td></tr>
 <tr><td>3</td><td>ATAK/WinTAK → Video → pick the feed (no sign-in needed).</td></tr>
 <tr><td>Map</td><td>User <code>skydio1</code> → <b>Device TLS Package</b> → controller: Sharing → TAK/CoT → Add a Connection (port 8089, SSL, values in README.txt).</td></tr>
 <tr><td>Hotspot</td><td>Drone team on cellular, server elsewhere: Video Feeds → <b>Drone far from this server</b> → paste the command into Termux on the ATAK phone; the controller uses the address it prints.</td></tr>
+<tr><td>TAK ICU</td><td>Add feed type <b>TAK ICU</b>. TAK ICU → Broadcast Preferences: Local Area Network, delivery RTSP, RTSP Server Address <code>&lt;server&gt;:8554/_in/&lt;feed&gt;</code>.</td></tr>
+<tr><td>Camera</td><td>Add feed type <b>Camera / stream URL</b> with the camera's address, e.g. <code>rtsp://user:pass@192.168.1.20:554/stream1</code>.</td></tr>
 </table>
 
 <h2>Remote access (cellular) checklist</h2>

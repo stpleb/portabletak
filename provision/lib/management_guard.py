@@ -160,6 +160,9 @@ class ManagementGuard:
             return await respond(send, 503, {'detail': 'management_auth_not_initialized'})
         session, token, denied = self.check(scope, method)
         if denied:
+            if denied[0] == 401 and method == 'GET' and path == '/map':
+                # A page opened directly (bookmark, phone): go to the dashboard to sign in.
+                return await respond(send, 303, {'detail': denied[1]}, extra=((b'location', b'/'),))
             if denied[0] == 403:
                 self.audit.record('request_denied', client_of(scope), path=path, reason=denied[1])
             return await respond(send, denied[0], {'detail': denied[1]})

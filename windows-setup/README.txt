@@ -10,3 +10,7 @@ Makes a PortableTAK USB drive on this computer (Windows 11, administrator rights
 
 The first run on a computer may install WSL (Windows Subsystem for Linux) and
 ask you to restart; then run setup again.
+
+To use the drive: plug it into an OpenMANET node, or double-click
+"Start PortableTAK (Windows)" (or "(Mac)" on a Mac) on its PORTABLETAK drive.
+The guides on the drive explain everything else.
