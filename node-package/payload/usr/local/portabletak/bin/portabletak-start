@@ -422,6 +422,9 @@ mkdir -p "$LOGDIR"
 # A newer node package on the Start Here partition (refreshed on a Mac or PC) goes to
 # the Linux partition, where nodes install it from.
 sh /usr/local/portabletak/lib/node-package-sync.sh /mnt/asgard 2>/dev/null || true
+# Meshtastic link (MQTT on 1883 for radios), when turned on in the dashboard: set up
+# RabbitMQ and OpenTAKServer before they start (lib/meshtastic_setup.py).
+/usr/bin/python3 /usr/local/portabletak/lib/meshtastic_setup.py apply /mnt/asgard 2>/dev/null | grep '=ON' || true
 
 # ---------------------------------------------------------
 # 3. PostgreSQL
@@ -1060,5 +1063,7 @@ echo "ASGARD_TAK_SERVER=READY"
 /usr/local/portabletak/bin/portabletak-tailscale start </dev/null 2>/dev/null || true
 # Federation with other TAK servers, when turned on; never fails the TAK start.
 /usr/local/portabletak/bin/portabletak-federation start </dev/null 2>/dev/null | grep '^PORTABLETAK_FEDERATION' || true
+# Live feeds (ADS-B / AIS), when turned on in the dashboard.
+/usr/local/portabletak/bin/portabletak-feeds start </dev/null 2>/dev/null | grep '^PORTABLETAK_FEEDS' || true
 
 exit 0

@@ -11,3 +11,5 @@ out/
 test-credentials/
 *.p12
 federation/e2e/*/secrets/
+node-package/payload/usr/local/portabletak/share/pmtiles/*/pmtiles
+node-package/payload/usr/local/portabletak/share/readsb/*/readsb

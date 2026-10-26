@@ -28,7 +28,10 @@ def render(port=PORT, certs=CERTS):
     return ('server { listen %d ssl; '
             'ssl_certificate %s/opentakserver.pem; '
             'ssl_certificate_key %s/opentakserver.nopass.key; '
-            'client_max_body_size 64m; '
+            'client_max_body_size 256m; '
+            # Offline map areas (PMTiles): nginx serves the byte ranges the map asks for.
+            'location /maps/ { alias /asgard/opentak/maps/; '
+            'types { application/octet-stream pmtiles; } add_header Cache-Control no-cache; } '
             'location / { proxy_pass http://127.0.0.1:8090; '
             'proxy_set_header Host $http_host; '
             'proxy_set_header X-Forwarded-Proto https; '

@@ -150,7 +150,7 @@ def root():
     from fastapi.responses import HTMLResponse
     web = Path("/usr/local/portabletak/web")
     html = (web / "index.html").read_text()
-    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "federation.js", "factory-reset.js"):
+    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "feeds.js", "plugins.js", "meshtastic.js", "federation.js", "factory-reset.js"):
         try:
             tag = hashlib.sha256((web / name).read_bytes()).hexdigest()[:12]
         except OSError:
@@ -953,6 +953,21 @@ def channels_script():
     return FileResponse("/usr/local/portabletak/web/channels.js", media_type="text/javascript")
 
 
+@app.get("/meshtastic.js")
+def meshtastic_script():
+    return FileResponse("/usr/local/portabletak/web/meshtastic.js", media_type="text/javascript")
+
+
+@app.get("/plugins.js")
+def plugins_script():
+    return FileResponse("/usr/local/portabletak/web/plugins.js", media_type="text/javascript")
+
+
+@app.get("/feeds.js")
+def feeds_script():
+    return FileResponse("/usr/local/portabletak/web/feeds.js", media_type="text/javascript")
+
+
 @app.get("/federation.js")
 def federation_script():
     return FileResponse("/usr/local/portabletak/web/federation.js", media_type="text/javascript")
@@ -1051,6 +1066,246 @@ def remote_access_logout():
 
 
 # ---- TAK channels (OpenTAKServer groups) ----
+@app.get("/api/video/hls/{path:path}")
+def video_hls(path: str, request: Request):
+    """Relay MediaMTX's HLS (127.0.0.1:8888) so the dashboard can play video feeds on
+    any host (the Mac and Windows only forward the dashboard port to the browser)."""
+    import urllib.error
+    import urllib.request
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,200}", path) or ".." in path:
+        raise HTTPException(status_code=404, detail="not_found")
+    url = "http://127.0.0.1:8888/" + path + ("?" + request.url.query if request.url.query else "")
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            data = response.read()
+            kind = response.headers.get("Content-Type", "application/octet-stream")
+            status = response.status
+    except urllib.error.HTTPError as error:
+        raise HTTPException(status_code=error.code if error.code in (401, 403, 404) else 502,
+                            detail={"error": "video_not_available"})
+    except OSError:
+        raise HTTPException(status_code=502, detail={"error": "video_server_unreachable"})
+    return Response(content=data, status_code=status, media_type=kind,
+                    headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/meshtastic")
+def meshtastic_get():
+    """Meshtastic link: on/off, what radios need (MQTT server, user, password, topic), channels."""
+    import meshtastic_setup
+    settings = meshtastic_setup.load("/mnt/asgard")
+    channels = run_users({"action": "meshtastic_channels"}).get("channels", []) if settings["enabled"] else []
+    try:
+        record = json.loads(Path("/mnt/asgard/opentak/data/portabletak-clients.json").read_text())
+    except (OSError, ValueError):
+        record = {}
+    rabbit_mqtt = (Path("/mnt/asgard/rootfs/etc/rabbitmq/enabled_plugins").exists())
+    return {"enabled": settings["enabled"], "applied": rabbit_mqtt == settings["enabled"],
+            "server": record.get("advertise"), "remote": record.get("remote"), "port": meshtastic_setup.PORT,
+            "username": meshtastic_setup.USER, "password": settings["password"] if settings["enabled"] else "",
+            "topic": meshtastic_setup.TOPIC, "channels": channels}
+
+
+@app.post("/api/meshtastic")
+def meshtastic_set(payload: dict = Body(...)):
+    """Turn the link on/off. Takes effect when the server restarts (the dashboard offers it)."""
+    import meshtastic_setup
+    settings = meshtastic_setup.save("/mnt/asgard", bool(payload.get("enabled")))
+    meshtastic_setup.apply("/mnt/asgard")
+    if settings["enabled"]:
+        run_users({"action": "meshtastic_default"})
+    return {"ok": True, "enabled": settings["enabled"], "restart_needed": True}
+
+
+@app.post("/api/meshtastic/channels")
+def meshtastic_add_channel(payload: dict = Body(...)):
+    return run_users({"action": "meshtastic_add", "url": str(payload.get("url") or "")[:2000]})
+
+
+@app.delete("/api/meshtastic/channels/{channel_id}")
+def meshtastic_delete_channel(channel_id: int):
+    return run_users({"action": "meshtastic_delete", "id": channel_id})
+
+
+PLUGIN_UPLOADS = Path("/mnt/asgard/opentak/data/packages-upload")
+PLUGIN_MAX_BYTES = 256 * 1024 * 1024
+
+
+@app.get("/api/plugins")
+def plugins_list():
+    """Apps and plugins ATAK can install from this server (TAK update server)."""
+    return run_users({"action": "plugins_list"})
+
+
+@app.post("/api/plugins/upload")
+async def plugins_upload(request: Request, description: str = Query(default=""),
+                         install_on_enrollment: bool = Query(default=False),
+                         install_on_connection: bool = Query(default=False)):
+    """The APK is the request body (no multipart): streamed to the drive, then added."""
+    import secrets as _secrets
+    PLUGIN_UPLOADS.mkdir(parents=True, exist_ok=True)
+    staged = PLUGIN_UPLOADS / (_secrets.token_hex(8) + ".apk")
+    size = 0
+    try:
+        with staged.open("wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > PLUGIN_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail={"error": "apk_too_large"})
+                out.write(chunk)
+        if size < 1024:
+            raise HTTPException(status_code=400, detail={"error": "not_an_android_app"})
+        return run_users({"action": "plugins_add", "staged": "/asgard/opentak/data/packages-upload/" + staged.name,
+                          "description": description[:255], "install_on_enrollment": install_on_enrollment,
+                          "install_on_connection": install_on_connection})
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+@app.post("/api/plugins/update")
+def plugins_update(payload: dict = Body(...)):
+    request = {"action": "plugins_update", "package_name": str(payload.get("package_name") or "")}
+    for key in ("install_on_enrollment", "install_on_connection", "description"):
+        if key in payload:
+            request[key] = payload[key]
+    return run_users(request)
+
+
+@app.delete("/api/plugins/{package_name}")
+def plugins_delete(package_name: str):
+    return run_users({"action": "plugins_delete", "package_name": package_name})
+
+
+FEEDS_CONF = Path("/mnt/asgard/opentak/feeds.json")
+FEEDS_STATUS = Path("/mnt/asgard/opentak/feeds-status.json")
+
+
+def _feeds_clean(payload):
+    """Validated feed settings (only known keys; numbers in range)."""
+    def num(value, low, high, default=None):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return default
+        return value if low <= value <= high else default
+    adsb, ais = payload.get("adsb") or {}, payload.get("ais") or {}
+    clean = {
+        "adsb": {"internet": bool(adsb.get("internet")), "radio": bool(adsb.get("radio")),
+                 "lat": num(adsb.get("lat"), -90, 90), "lon": num(adsb.get("lon"), -180, 180),
+                 "radius_nm": num(adsb.get("radius_nm"), 1, 250, 50)},
+        "ais": {"internet": bool(ais.get("internet")),
+                "aishub_username": re.sub(r"[^A-Za-z0-9._-]", "", str(ais.get("aishub_username") or ""))[:64],
+                "aisstream_key": re.sub(r"[^A-Za-z0-9-]", "", str(ais.get("aisstream_key") or ""))[:80]},
+    }
+    bbox = ais.get("bbox")
+    if isinstance(bbox, list) and len(bbox) == 4 and all(num(v, -180, 180) is not None for v in bbox):
+        clean["ais"]["bbox"] = [round(float(v), 4) for v in bbox]
+    if clean["adsb"]["internet"] and (clean["adsb"]["lat"] is None or clean["adsb"]["lon"] is None):
+        raise HTTPException(status_code=400, detail={"error": "adsb_needs_center"})
+    if clean["ais"]["internet"] and not (clean["ais"]["aishub_username"] or clean["ais"]["aisstream_key"]):
+        raise HTTPException(status_code=400, detail={"error": "ais_needs_source"})
+    return clean
+
+
+@app.get("/api/feeds")
+def feeds_get():
+    try:
+        config = json.loads(FEEDS_CONF.read_text())
+    except (OSError, ValueError):
+        config = {}
+    try:
+        status = json.loads(FEEDS_STATUS.read_text())
+    except (OSError, ValueError):
+        status = {}
+    state = subprocess.run(["/usr/local/portabletak/bin/portabletak-feeds", "status"],
+                           capture_output=True, text=True, timeout=20).stdout.strip()
+    radio = any(Path("/sys/bus/usb/devices").glob("*/idVendor")) and _sdr_present()
+    return {"config": config, "status": status, "service": state.split("=", 1)[-1], "radio_detected": radio}
+
+
+def _sdr_present():
+    """An RTL-SDR style USB radio is plugged in (Realtek 0bda:2832/2838)."""
+    for device in Path("/sys/bus/usb/devices").glob("*"):
+        try:
+            ids = (device / "idVendor").read_text().strip(), (device / "idProduct").read_text().strip()
+        except OSError:
+            continue
+        if ids in (("0bda", "2832"), ("0bda", "2838")):
+            return True
+    return False
+
+
+@app.post("/api/feeds")
+def feeds_set(payload: dict = Body(...)):
+    clean = _feeds_clean(payload)
+    FEEDS_CONF.parent.mkdir(parents=True, exist_ok=True)
+    tmp = FEEDS_CONF.with_suffix(".tmp")
+    tmp.write_text(json.dumps(clean, indent=1))
+    os.replace(tmp, FEEDS_CONF)
+    wanted = clean["adsb"]["internet"] or clean["adsb"]["radio"] or clean["ais"]["internet"]
+    action = "start" if wanted else "stop"
+    result = subprocess.run(["/usr/local/portabletak/bin/portabletak-feeds", action],
+                            capture_output=True, text=True, timeout=60).stdout.strip()
+    return {"ok": True, "config": clean, "service": result.splitlines()[-1].split("=", 1)[-1] if result else ""}
+
+
+@app.get("/map")
+def map_page():
+    return FileResponse("/usr/local/portabletak/web/map.html", media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/map.js")
+def map_script():
+    return FileResponse("/usr/local/portabletak/web/map.js", media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/mapkit/{path:path}")
+def map_kit(path: str):
+    """The map library, its fonts and icons (bundled on the drive; no internet needed)."""
+    base = Path("/usr/local/portabletak/web/mapkit").resolve()
+    target = (base / path).resolve()
+    if base not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="not_found")
+    kinds = {".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css",
+             ".pbf": "application/x-protobuf", ".json": "application/json", ".png": "image/png"}
+    return FileResponse(str(target), media_type=kinds.get(target.suffix, "application/octet-stream"),
+                        headers={"Cache-Control": "max-age=86400"})
+
+
+@app.get("/api/map/areas")
+def map_areas_list():
+    import map_areas
+    return {"areas": map_areas.areas("/mnt/asgard")}
+
+
+@app.post("/api/map/areas")
+def map_areas_add(payload: dict = Body(...)):
+    import map_areas
+    try:
+        return map_areas.start("/mnt/asgard", str(payload.get("name") or ""), payload.get("bbox"),
+                               payload.get("maxzoom") or 15)
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=400, detail={"error": str(error)})
+
+
+@app.delete("/api/map/areas/{name}")
+def map_areas_delete(name: str):
+    import map_areas
+    try:
+        map_areas.delete("/mnt/asgard", name)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail={"error": str(error)})
+    return {"ok": True}
+
+
+@app.get("/api/map/snapshot")
+def map_snapshot():
+    """Everything currently on the live map (phones, feeds, markers), newest per uid."""
+    return run_users({"action": "map_snapshot"})
+
+
 @app.get("/api/channels")
 def channels_list():
     return run_users({"action": "channels_list"})

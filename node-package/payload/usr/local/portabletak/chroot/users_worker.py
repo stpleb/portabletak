@@ -136,6 +136,18 @@ def handle_request(request):
                 import channels_actions
                 return channels_actions.handle(app, db, request)
 
+            if action.startswith("map_"):
+                import map_actions
+                return map_actions.handle(app, db, request)
+
+            if action.startswith("plugins_"):
+                import plugins_actions
+                return plugins_actions.handle(app, db, request)
+
+            if action.startswith("meshtastic_"):
+                import meshtastic_actions
+                return meshtastic_actions.handle(app, db, request)
+
             username = str(
                 request.get("username", "")
             ).strip()

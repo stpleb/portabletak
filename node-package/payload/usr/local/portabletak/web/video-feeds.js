@@ -19,6 +19,39 @@
     return t;
   }
 
+  // In-browser player: the dashboard relays the feed's HLS (/api/video/hls/<name>/index.m3u8).
+  window.ptWatchVideo = function (feed) {
+    const shade = el('div', 'position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:16px');
+    const box = el('div', 'width:min(960px,100%);background:#121922;border:1px solid #293748;border-radius:12px;padding:12px');
+    const head = el('div', 'display:flex;align-items:center;gap:10px;margin-bottom:8px');
+    const title = el('b', 'flex:1', feed);
+    const note = el('span', 'font-size:0.85em;opacity:0.8', 'Connecting\u2026');
+    const close = el('button', '', 'Close');
+    head.append(title, note, close);
+    const video = el('video', 'width:100%;max-height:75vh;background:#000;border-radius:8px');
+    video.controls = true; video.autoplay = true; video.muted = true; video.playsInline = true;
+    box.append(head, video); shade.appendChild(box); document.body.appendChild(shade);
+    const src = '/api/video/hls/' + encodeURIComponent(feed) + '/index.m3u8';
+    let hls = null;
+    const done = () => { if (hls) hls.destroy(); video.pause(); shade.remove(); };
+    close.onclick = done; shade.onclick = (e) => { if (e.target === shade) done(); };
+    video.addEventListener('playing', () => { note.textContent = 'Live'; });
+    const start = () => {
+      if (window.Hls && window.Hls.isSupported()) {
+        hls = new window.Hls({ lowLatencyMode: true, liveSyncDurationCount: 2 });
+        hls.on(window.Hls.Events.ERROR, (_, data) => { if (data.fatal) note.textContent = 'Video not available (' + data.details + ')'; });
+        hls.loadSource(src); hls.attachMedia(video);
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;   // iPhone / Safari play HLS natively
+      } else {
+        note.textContent = 'This browser cannot play the video.';
+      }
+    };
+    if (window.Hls || video.canPlayType('application/vnd.apple.mpegurl')) start();
+    else { const sc = document.createElement('script'); sc.src = '/mapkit/hls.min.js'; sc.onload = start;
+      sc.onerror = () => { note.textContent = 'Player did not load.'; }; document.head.appendChild(sc); }
+  };
+
   function build() {
     // Same markup as the dashboard's other collapsible sections.
     const card = el('section', 'margin-top:18px');
@@ -107,7 +140,10 @@
           await call('/' + encodeURIComponent(f.name), 'DELETE');
           refresh();
         };
-        line.append(dot, name, state, del);
+        const watch = el('button', '', 'Watch');
+        watch.className = 'primary';
+        watch.onclick = () => window.ptWatchVideo(f.name);
+        if (f.live) line.append(dot, name, state, watch, del); else line.append(dot, name, state, del);
         list.appendChild(line);
       });
       droneSettings(info, feeds);

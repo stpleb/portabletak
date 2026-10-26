@@ -87,6 +87,24 @@ with app.app_context():
         print(json.dumps(result))
         raise SystemExit(0 if result.get("ok") else 4)
 
+    if str(request.get("action", "")).startswith("map_"):
+        import map_actions
+        result = map_actions.handle(app, db, request)
+        print(json.dumps(result))
+        raise SystemExit(0 if result.get("ok") else 4)
+
+    if str(request.get("action", "")).startswith("plugins_"):
+        import plugins_actions
+        result = plugins_actions.handle(app, db, request)
+        print(json.dumps(result))
+        raise SystemExit(0 if result.get("ok") else 4)
+
+    if str(request.get("action", "")).startswith("meshtastic_"):
+        import meshtastic_actions
+        result = meshtastic_actions.handle(app, db, request)
+        print(json.dumps(result))
+        raise SystemExit(0 if result.get("ok") else 4)
+
     username = str(request.get("username", "")).strip()
 
     if not username:

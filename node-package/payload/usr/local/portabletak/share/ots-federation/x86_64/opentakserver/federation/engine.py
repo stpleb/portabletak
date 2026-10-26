@@ -35,6 +35,7 @@ import traceback
 from datetime import datetime, timezone
 
 import pika
+import pika.exceptions
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
@@ -266,7 +267,10 @@ class Directory:
             existing = db.session.execute(db.session.query(EUD).filter_by(uid=uid)).first()
             now = datetime.now(timezone.utc)
             if existing:
-                if not (existing[0].last_status or "").startswith("Federated ("):
+                # PortableTAK: a phone connected here right now keeps its uid (no
+                # federate may speak for it). One that is not connected has moved to
+                # another server: show it as federated until it connects here again.
+                if existing[0].last_status == "Connected":
                     return False
                 db.session.execute(
                     update(EUD)
@@ -432,24 +436,36 @@ class RabbitBridge:
     Uses two BlockingConnections because pika connections are not thread safe:
     one is driven by the consumer thread, the other is used by the socket
     reader thread to publish inbound events.
+
+    PortableTAK: the publisher sits idle between inbound events, so the broker
+    closes it after missed heartbeats; the next publish then failed and took the
+    whole federation link down. Both connections now reopen themselves.
     """
 
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
         self._publish_lock = threading.Lock()
+        self._closed = threading.Event()
 
         credentials = pika.PlainCredentials(
             config.get("OTS_RABBITMQ_USERNAME"), config.get("OTS_RABBITMQ_PASSWORD")
         )
-        params = pika.ConnectionParameters(
+        self._params = pika.ConnectionParameters(
             host=config.get("OTS_RABBITMQ_SERVER_ADDRESS"), credentials=credentials
         )
 
-        self._publisher = pika.BlockingConnection(params)
+        self._publisher = None
+        self._open_publisher()
+        self._consumer = None
+        self._open_consumer()
+
+    def _open_publisher(self):
+        self._publisher = pika.BlockingConnection(self._params)
         self._publish_channel = self._publisher.channel()
 
-        self._consumer = pika.BlockingConnection(params)
+    def _open_consumer(self):
+        self._consumer = pika.BlockingConnection(self._params)
         self._consume_channel = self._consumer.channel()
         self._consume_channel.exchange_declare("firehose", durable=True, exchange_type="fanout")
         result = self._consume_channel.queue_declare(queue="", exclusive=True)
@@ -457,13 +473,25 @@ class RabbitBridge:
         self._consume_channel.queue_bind(exchange="firehose", queue=self._queue)
 
     def publish_inbound(self, envelope: dict):
+        body = json.dumps(envelope)
+        properties = pika.BasicProperties(expiration=self.config.get("OTS_RABBITMQ_TTL"))
         with self._publish_lock:
-            self._publish_channel.basic_publish(
-                exchange="cot_parser",
-                routing_key="cot_parser",
-                body=json.dumps(envelope),
-                properties=pika.BasicProperties(expiration=self.config.get("OTS_RABBITMQ_TTL")),
-            )
+            for attempt in (1, 2):
+                try:
+                    if self._publisher is None or self._publisher.is_closed:
+                        self._open_publisher()
+                    self._publish_channel.basic_publish(
+                        exchange="cot_parser",
+                        routing_key="cot_parser",
+                        body=body,
+                        properties=properties,
+                    )
+                    return
+                except (pika.exceptions.AMQPError, OSError) as e:
+                    self._publisher = None
+                    if attempt == 2:
+                        raise
+                    self.logger.info(f"Federation: reopening RabbitMQ publisher ({e!r})")
 
     def consume_outbound(self, callback):
         """Deliver firehose envelopes to callback. Blocks until close()."""
@@ -471,13 +499,27 @@ class RabbitBridge:
         def on_message(channel, method, properties, body):
             callback(body)
 
-        self._consume_channel.basic_consume(
-            queue=self._queue, on_message_callback=on_message, auto_ack=True
-        )
-        self._consume_channel.start_consuming()
+        while not self._closed.is_set():
+            try:
+                if self._consumer is None or self._consumer.is_closed:
+                    self._open_consumer()
+                self._consume_channel.basic_consume(
+                    queue=self._queue, on_message_callback=on_message, auto_ack=True
+                )
+                self._consume_channel.start_consuming()
+                return   # stopped by close()
+            except (pika.exceptions.AMQPError, OSError) as e:
+                self._consumer = None
+                if self._closed.is_set():
+                    return
+                self.logger.info(f"Federation: reopening RabbitMQ consumer ({e!r})")
+                time.sleep(2)
 
     def close(self):
+        self._closed.set()
         for connection in (self._consumer, self._publisher):
+            if connection is None:
+                continue
             try:
                 connection.add_callback_threadsafe(connection.close)
             except Exception:

@@ -143,6 +143,7 @@ then
 fi
 
 # Federation links first (they feed the services stopped below).
+/usr/local/portabletak/bin/portabletak-feeds stop </dev/null 2>/dev/null | grep '^PORTABLETAK_FEEDS' || true
 /usr/local/portabletak/bin/portabletak-federation stop </dev/null 2>/dev/null | grep '^PORTABLETAK_FEDERATION' || true
 
 # ---------------------------------------------------------

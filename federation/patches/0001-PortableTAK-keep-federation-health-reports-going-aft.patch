@@ -1,0 +1,91 @@
+From 4a9506e4d776cbeaaba2480912610b249b72760a Mon Sep 17 00:00:00 2001
+From: Stephen LeBLanc <stpleb@mac.com>
+Date: Sun, 25 Oct 2026 23:39:11 -0500
+Subject: [PATCH] PortableTAK: keep federation health reports going after a
+ cancelled check
+
+TAK Server 5.8 occasionally cancels a single v2 HealthCheck (RST_STREAM
+CANCEL). The loop then stopped reporting, the server expired the client
+event stream and the link dropped about once a minute. Retry instead; only
+UNIMPLEMENTED ends health reporting.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ opentakserver/federation/grpc_engine.py | 10 +++++--
+ tests/test_portabletak_bridge.py        | 40 +++++++++++++++++++++++++
+ 2 files changed, 47 insertions(+), 3 deletions(-)
+
+diff --git a/opentakserver/federation/grpc_engine.py b/opentakserver/federation/grpc_engine.py
+index dd22ba7..ae6a414 100644
+--- a/opentakserver/federation/grpc_engine.py
++++ b/opentakserver/federation/grpc_engine.py
+@@ -124,11 +124,15 @@ def _health_check_loop(stub, stop, interval, logger, peer_name):
+                 )
+                 continue
+             else:
+-                logger.warning(
++                # PortableTAK: TAK Server 5.8 now and then cancels one check
++                # (RST_STREAM CANCEL). Stopping here starved the peer of SERVING
++                # reports, so it expired the stream and the link dropped every
++                # minute. Keep reporting; a dead link ends the event stream anyway.
++                logger.info(
+                     f"Federation v2 health check to '{peer_name}' failed: "
+-                    f"{e.code()} {e.details()}"
++                    f"{e.code()} {e.details()}; retrying"
+                 )
+-                return
++                continue
+ 
+         if response.status != fig_pb2.ServerHealth.SERVING:
+             logger.warning(
+diff --git a/tests/test_portabletak_bridge.py b/tests/test_portabletak_bridge.py
+index 91a96c6..f65b251 100644
+--- a/tests/test_portabletak_bridge.py
++++ b/tests/test_portabletak_bridge.py
+@@ -101,3 +101,43 @@ def test_consumer_reopens_after_losing_its_connection(bridge):
+     bridge.consume_outbound(received.append)
+     assert received == [b"event"]
+     assert FakeConnection.opened[-1] is not consumer
++
++
++def test_health_checks_continue_after_tak_server_cancels_one():
++    """TAK Server 5.8 sometimes cancels a single HealthCheck (RST_STREAM CANCEL).
++    Reporting must go on, or the server expires the link about a minute later."""
++    import threading
++
++    import grpc
++
++    from opentakserver.federation.grpc_engine import _health_check_loop
++    from opentakserver.federation.proto import fig_pb2
++
++    stop = threading.Event()
++
++    class Cancelled(grpc.RpcError):
++        def code(self):
++            return grpc.StatusCode.CANCELLED
++
++        def details(self):
++            return "Stream removed (Received RST_STREAM with error code 8)"
++
++    class TakServer58Stub:
++        calls = 0
++
++        def HealthCheck(self, request, timeout):
++            self.calls += 1
++            if self.calls == 1:
++                raise Cancelled()
++            if self.calls == 3:
++                stop.set()
++            return fig_pb2.ServerHealth(status=fig_pb2.ServerHealth.SERVING)
++
++    stub = TakServer58Stub()
++    worker = threading.Thread(
++        target=_health_check_loop, args=(stub, stop, 0.01, logging.getLogger("test"), "tak-5.8")
++    )
++    worker.start()
++    worker.join(timeout=2)
++    assert not worker.is_alive()
++    assert stub.calls == 3
+-- 
+2.23.0
+

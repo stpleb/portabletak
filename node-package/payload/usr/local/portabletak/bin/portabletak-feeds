@@ -1,0 +1,106 @@
+#!/bin/sh
+# Start/stop the PortableTAK live feeds service (chroot/feeds_service.py): ADS-B aircraft
+# from the internet and/or a USB radio (readsb), AIS ships from the internet, sent into
+# OpenTAKServer. Runs only while a feed is turned on in the dashboard (opentak/feeds.json).
+#   portabletak-feeds start|stop|restart|status
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
+CONF=/mnt/asgard/opentak/feeds.json
+PIDFILE=/mnt/asgard/opentak/run/feeds.pid
+LOG=/mnt/asgard/opentak/data/logs/feeds-runtime.log
+NEEDLE=feeds_service.py
+RADIO_PID=/mnt/asgard/opentak/run/readsb.pid
+RADIO_DIR=/mnt/asgard/opentak/adsb
+case "$(uname -m)" in aarch64|arm64) RADIO_BIN=/usr/local/portabletak/share/readsb/aarch64/readsb ;;
+    x86_64|amd64) RADIO_BIN=/usr/local/portabletak/share/readsb/x86_64/readsb ;; *) RADIO_BIN= ;; esac
+
+running()
+{
+    P="$(cat "$PIDFILE" 2>/dev/null)"
+    [ -n "$P" ] && [ -r "/proc/$P/cmdline" ] && tr '\000' ' ' < "/proc/$P/cmdline" | grep -q "$NEEDLE"
+}
+
+wanted()
+{
+    [ -r "$CONF" ] && grep -Eq '"(internet|radio)": *true' "$CONF"
+}
+
+radio_wanted()
+{
+    [ -r "$CONF" ] && tr -d ' \n' < "$CONF" | grep -q '"radio":true'
+}
+
+radio_running()
+{
+    P="$(cat "$RADIO_PID" 2>/dev/null)"
+    [ -n "$P" ] && [ -r "/proc/$P/cmdline" ] && tr '\000' ' ' < "/proc/$P/cmdline" | grep -q readsb
+}
+
+# The USB radio decoder runs on the host (it needs the USB device) and writes
+# aircraft.json where feeds_service.py reads it (/asgard/opentak/adsb in the chroot).
+radio_start()
+{
+    radio_wanted || { radio_stop; return 0; }
+    radio_running && return 0
+    [ -x "$RADIO_BIN" ] || { echo "PORTABLETAK_FEEDS_RADIO=NO_DECODER"; return 0; }
+    mkdir -p "$RADIO_DIR" /mnt/asgard/opentak/run
+    nohup "$RADIO_BIN" --device-type rtlsdr --gain auto --write-json "$RADIO_DIR" --write-json-every 2 \
+        --quiet >> /mnt/asgard/opentak/data/logs/readsb.log 2>&1 </dev/null &
+    echo $! > "$RADIO_PID"
+    sleep 2
+    if radio_running; then echo "PORTABLETAK_FEEDS_RADIO=RUNNING"; else echo "PORTABLETAK_FEEDS_RADIO=NO_RADIO"; fi
+}
+
+radio_stop()
+{
+    radio_running || { rm -f "$RADIO_PID"; return 0; }
+    P="$(cat "$RADIO_PID")"
+    kill -TERM "$P" 2>/dev/null; sleep 1; [ -d "/proc/$P" ] && kill -KILL "$P" 2>/dev/null
+    rm -f "$RADIO_PID"
+}
+
+stop_service()
+{
+    running || { rm -f "$PIDFILE"; return 0; }
+    P="$(cat "$PIDFILE")"
+    kill -TERM "$P" 2>/dev/null
+    i=0
+    while [ "$i" -lt 10 ] && [ -d "/proc/$P" ]; do sleep 1; i=$((i + 1)); done
+    [ -d "/proc/$P" ] && kill -KILL "$P" 2>/dev/null
+    rm -f "$PIDFILE"
+}
+
+case "${1:-status}" in
+    start)
+        wanted || { radio_stop; stop_service; echo "PORTABLETAK_FEEDS=OFF"; exit 0; }
+        radio_start
+        running && { echo "PORTABLETAK_FEEDS=RUNNING"; exit 0; }
+        mount | grep -F " on /mnt/asgard " >/dev/null 2>&1 || { echo "PORTABLETAK_FEEDS_ERROR=cartridge_not_mounted"; exit 21; }
+        mkdir -p /mnt/asgard/opentak/run /mnt/asgard/opentak/adsb "$ROOT/usr/local/portabletak"
+        cp /usr/local/portabletak/chroot/feeds_service.py "$ROOT/usr/local/portabletak/feeds_service.py" || exit 22
+        /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            cd /asgard/opentak
+            /usr/bin/nohup /asgard/opentak/venv/bin/python /usr/local/portabletak/feeds_service.py \
+                >> /asgard/opentak/data/logs/feeds-runtime.log 2>&1 </dev/null &
+            echo $! > /asgard/opentak/run/feeds.pid
+        '
+        sleep 2
+        running || { echo "PORTABLETAK_FEEDS_ERROR=exited"; tail -n 5 "$LOG" 2>/dev/null | sed 's/^/PORTABLETAK_FEEDS_LOG=/'; exit 23; }
+        echo "PORTABLETAK_FEEDS=RUNNING"
+        ;;
+    stop)
+        radio_stop
+        stop_service
+        echo "PORTABLETAK_FEEDS=STOPPED"
+        ;;
+    restart)
+        radio_stop
+        stop_service
+        exec "$0" start
+        ;;
+    status)
+        if running; then echo "PORTABLETAK_FEEDS=RUNNING"
+        elif wanted; then echo "PORTABLETAK_FEEDS=STOPPED"
+        else echo "PORTABLETAK_FEEDS=OFF"; fi
+        ;;
+    *) echo "usage: portabletak-feeds start|stop|restart|status" >&2; exit 2 ;;
+esac

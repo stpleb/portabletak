@@ -124,11 +124,15 @@ def _health_check_loop(stub, stop, interval, logger, peer_name):
                 )
                 continue
             else:
-                logger.warning(
+                # PortableTAK: TAK Server 5.8 now and then cancels one check
+                # (RST_STREAM CANCEL). Stopping here starved the peer of SERVING
+                # reports, so it expired the stream and the link dropped every
+                # minute. Keep reporting; a dead link ends the event stream anyway.
+                logger.info(
                     f"Federation v2 health check to '{peer_name}' failed: "
-                    f"{e.code()} {e.details()}"
+                    f"{e.code()} {e.details()}; retrying"
                 )
-                return
+                continue
 
         if response.status != fig_pb2.ServerHealth.SERVING:
             logger.warning(

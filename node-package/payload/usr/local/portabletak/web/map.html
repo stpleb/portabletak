@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PortableTAK Map</title>
+<link rel="stylesheet" href="/mapkit/maplibre-gl.css">
+<style>
+:root {
+    color-scheme: dark;
+    --bg: #0b0f14; --panel: #121922; --panel2: #18222e; --border: #293748;
+    --text: #e8eef5; --muted: #8fa1b5; --good: #49d17d; --warn: #e5b94c; --bad: #ef6b73; --accent: #63a7ff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+#bar { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px;
+    align-items: center; padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top));
+    background: rgba(18, 25, 34, 0.94); border-bottom: 1px solid var(--border); }
+#bar a, #bar button, #bar select { font: inherit; font-size: 14px; color: var(--text); background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; text-decoration: none; cursor: pointer; }
+#bar a:hover, #bar button:hover { border-color: var(--accent); }
+#title { font-weight: 700; font-size: 17px; margin-right: 4px; }
+#status { color: var(--muted); font-size: 13px; margin-left: auto; }
+#filters { display: flex; gap: 6px; flex-wrap: wrap; }
+#filters label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted);
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
+#filters input { margin: 0; }
+#map { position: absolute; inset: 0; }
+#notice { position: absolute; z-index: 2; left: 50%; transform: translateX(-50%); bottom: 28px; max-width: min(560px, calc(100% - 32px));
+    background: rgba(18, 25, 34, 0.95); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px;
+    font-size: 14px; line-height: 1.4; display: none; }
+#panel { position: absolute; z-index: 3; top: 64px; right: 12px; width: min(380px, calc(100% - 24px)); max-height: calc(100% - 80px);
+    overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: none; }
+#panel h2 { margin: 0 0 8px; font-size: 17px; }
+#panel p { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 6px 0; }
+#panel button { font: inherit; font-size: 14px; color: var(--text); background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 10px; cursor: pointer; margin: 4px 6px 4px 0; }
+#panel button.primary { background: #1f4f8a; border-color: var(--accent); }
+#panel input, #panel select { font: inherit; font-size: 14px; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 8px; width: 100%; margin: 3px 0; }
+.area { border-top: 1px solid var(--border); padding: 8px 0; font-size: 14px; }
+.area small { color: var(--muted); }
+.maplibregl-popup-content { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; font-size: 13px; line-height: 1.45; min-width: 190px; }
+.maplibregl-popup-tip { border-top-color: var(--panel) !important; border-bottom-color: var(--panel) !important; }
+.maplibregl-popup-close-button { color: var(--muted); font-size: 18px; }
+.pop-title { font-weight: 700; font-size: 15px; margin-bottom: 2px; }
+.pop-kind { color: var(--muted); margin-bottom: 6px; }
+.pop-row { display: flex; gap: 10px; justify-content: space-between; }
+.pop-row span:first-child { color: var(--muted); }
+.maplibregl-ctrl-attrib { font-size: 11px; }
+#show { display: none; }
+@media (max-width: 640px) {
+    #status { width: 100%; margin-left: 0; font-size: 12px; } #title { display: none; }
+    #show { display: inline-block; } #filters { display: none; width: 100%; } #filters.open { display: flex; }
+    #bar a, #bar button, #bar select { padding: 6px 8px; font-size: 13px; }
+}
+</style>
+</head>
+<body>
+<div id="bar">
+    <a href="/" title="Back to the dashboard">&larr; Dashboard</a>
+    <span id="title">Live Map</span>
+    <select id="base" title="Map background"></select>
+    <button id="fit" title="Show everything">Fit all</button>
+    <button id="offline" title="Maps for use without internet">Offline maps</button>
+    <button id="show" title="Choose what the map shows">Show &#9662;</button>
+    <div id="filters"></div>
+    <span id="status">Loading&hellip;</span>
+</div>
+<div id="map"></div>
+<div id="notice"></div>
+<div id="panel"></div>
+<script src="/mapkit/pmtiles.js"></script>
+<script src="/mapkit/basemaps.js"></script>
+<script type="module" src="/map.js"></script>
+</body>
+</html>

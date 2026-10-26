@@ -33,7 +33,7 @@ and self-contained on the drive. Main users: Windows laptop with Wi-Fi, ATAK pho
 | Node01 (Pi 4, OpenMANET 24.10 / 1.8.0, field-extension SD card, hostname TyrNode01) | SSH `root@10.41.0.1` (Mac on Node01 Wi-Fi gets 10.41.0.x). Has the PortableTAK loader + package 2026.10.23.2 **plus hot-patches** (port 18081, nginx default-site skip, OpenMANET 1.8 address detection, adoption rule, channels card). Running drive: **SanDisk = "Alpha TAK"**, advertises **10.41.250.10**, Tailscale 100.121.108.4. |
 | Mac | **Lexar = "Bravo TAK"** running in the Mac VM (dashboard `https://localhost:8444`), built with 2026.10.23.2 (no channels card yet). iPhone (iTAK) connected to Bravo via Tailscale. |
 | Federation | Alpha <-> Bravo joined by invite/join, both arrows green. |
-| Node02 | Charge port needs repair; last known: OpenWrt/CicadaTAK 0.12, package 2026.10.04 + loader. |
+| Node02 | Repaired 2026-10-25: OpenMANET 1.8.0 (ThorNode01, 10.41.75.232), PortableTAK 2026.10.24 + loader, autoload on, no drive. |
 | Docker on Mac | Colima, 4 GB. Test containers may still exist: `fedA`, `fedB` (e2e drives), `taksrv` (TAK Server 5.8). Test drive images (~19 GB) in `work/federation/e2e/A,B/out`. |
 
 ## 4. Verified (with what)

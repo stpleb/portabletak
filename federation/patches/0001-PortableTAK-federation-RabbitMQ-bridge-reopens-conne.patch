@@ -1,0 +1,247 @@
+From c961b4020c4b9ae8e07c5a4c4d6b18983861b67c Mon Sep 17 00:00:00 2001
+From: Stephen LeBLanc <stpleb@mac.com>
+Date: Sun, 25 Oct 2026 22:42:13 -0500
+Subject: [PATCH] PortableTAK: federation RabbitMQ bridge reopens connections
+ the broker closed
+
+The inbound publisher connection sits idle between federated events, so
+RabbitMQ closes it after missed heartbeats; the next inbound event raised
+StreamLostError and dropped the whole federation link for 30 s (events sent
+in that gap were lost). Publisher retries once on a fresh connection; the
+outbound consumer reopens instead of silently stopping.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ opentakserver/federation/engine.py |  65 ++++++++++++++----
+ tests/test_portabletak_bridge.py   | 103 +++++++++++++++++++++++++++++
+ 2 files changed, 155 insertions(+), 13 deletions(-)
+ create mode 100644 tests/test_portabletak_bridge.py
+
+diff --git a/opentakserver/federation/engine.py b/opentakserver/federation/engine.py
+index e653164..9b178d2 100644
+--- a/opentakserver/federation/engine.py
++++ b/opentakserver/federation/engine.py
+@@ -35,6 +35,7 @@ import traceback
+ from datetime import datetime, timezone
+ 
+ import pika
++import pika.exceptions
+ from sqlalchemy import update
+ from sqlalchemy.exc import IntegrityError
+ 
+@@ -435,24 +436,36 @@ class RabbitBridge:
+     Uses two BlockingConnections because pika connections are not thread safe:
+     one is driven by the consumer thread, the other is used by the socket
+     reader thread to publish inbound events.
++
++    PortableTAK: the publisher sits idle between inbound events, so the broker
++    closes it after missed heartbeats; the next publish then failed and took the
++    whole federation link down. Both connections now reopen themselves.
+     """
+ 
+     def __init__(self, config, logger):
+         self.config = config
+         self.logger = logger
+         self._publish_lock = threading.Lock()
++        self._closed = threading.Event()
+ 
+         credentials = pika.PlainCredentials(
+             config.get("OTS_RABBITMQ_USERNAME"), config.get("OTS_RABBITMQ_PASSWORD")
+         )
+-        params = pika.ConnectionParameters(
++        self._params = pika.ConnectionParameters(
+             host=config.get("OTS_RABBITMQ_SERVER_ADDRESS"), credentials=credentials
+         )
+ 
+-        self._publisher = pika.BlockingConnection(params)
++        self._publisher = None
++        self._open_publisher()
++        self._consumer = None
++        self._open_consumer()
++
++    def _open_publisher(self):
++        self._publisher = pika.BlockingConnection(self._params)
+         self._publish_channel = self._publisher.channel()
+ 
+-        self._consumer = pika.BlockingConnection(params)
++    def _open_consumer(self):
++        self._consumer = pika.BlockingConnection(self._params)
+         self._consume_channel = self._consumer.channel()
+         self._consume_channel.exchange_declare("firehose", durable=True, exchange_type="fanout")
+         result = self._consume_channel.queue_declare(queue="", exclusive=True)
+@@ -460,13 +473,25 @@ class RabbitBridge:
+         self._consume_channel.queue_bind(exchange="firehose", queue=self._queue)
+ 
+     def publish_inbound(self, envelope: dict):
++        body = json.dumps(envelope)
++        properties = pika.BasicProperties(expiration=self.config.get("OTS_RABBITMQ_TTL"))
+         with self._publish_lock:
+-            self._publish_channel.basic_publish(
+-                exchange="cot_parser",
+-                routing_key="cot_parser",
+-                body=json.dumps(envelope),
+-                properties=pika.BasicProperties(expiration=self.config.get("OTS_RABBITMQ_TTL")),
+-            )
++            for attempt in (1, 2):
++                try:
++                    if self._publisher is None or self._publisher.is_closed:
++                        self._open_publisher()
++                    self._publish_channel.basic_publish(
++                        exchange="cot_parser",
++                        routing_key="cot_parser",
++                        body=body,
++                        properties=properties,
++                    )
++                    return
++                except (pika.exceptions.AMQPError, OSError) as e:
++                    self._publisher = None
++                    if attempt == 2:
++                        raise
++                    self.logger.info(f"Federation: reopening RabbitMQ publisher ({e!r})")
+ 
+     def consume_outbound(self, callback):
+         """Deliver firehose envelopes to callback. Blocks until close()."""
+@@ -474,13 +499,27 @@ class RabbitBridge:
+         def on_message(channel, method, properties, body):
+             callback(body)
+ 
+-        self._consume_channel.basic_consume(
+-            queue=self._queue, on_message_callback=on_message, auto_ack=True
+-        )
+-        self._consume_channel.start_consuming()
++        while not self._closed.is_set():
++            try:
++                if self._consumer is None or self._consumer.is_closed:
++                    self._open_consumer()
++                self._consume_channel.basic_consume(
++                    queue=self._queue, on_message_callback=on_message, auto_ack=True
++                )
++                self._consume_channel.start_consuming()
++                return   # stopped by close()
++            except (pika.exceptions.AMQPError, OSError) as e:
++                self._consumer = None
++                if self._closed.is_set():
++                    return
++                self.logger.info(f"Federation: reopening RabbitMQ consumer ({e!r})")
++                time.sleep(2)
+ 
+     def close(self):
++        self._closed.set()
+         for connection in (self._consumer, self._publisher):
++            if connection is None:
++                continue
+             try:
+                 connection.add_callback_threadsafe(connection.close)
+             except Exception:
+diff --git a/tests/test_portabletak_bridge.py b/tests/test_portabletak_bridge.py
+new file mode 100644
+index 0000000..91a96c6
+--- /dev/null
++++ b/tests/test_portabletak_bridge.py
+@@ -0,0 +1,103 @@
++"""PortableTAK: the federation RabbitMQ bridge survives the broker closing its connections.
++
++An idle publisher connection is closed by RabbitMQ after missed heartbeats. The
++next inbound federated event used to fail and take the whole federation link
++down; the bridge now reopens the connection and delivers the event.
++"""
++import logging
++
++import pika.exceptions
++import pytest
++
++from opentakserver.federation import engine
++
++
++class FakeChannel:
++    def __init__(self, conn):
++        self.conn = conn
++
++    def basic_publish(self, **kwargs):
++        if self.conn.dead:
++            raise pika.exceptions.StreamLostError("Stream connection lost: ConnectionResetError(104)")
++        self.conn.published.append(kwargs["body"])
++
++    def exchange_declare(self, *args, **kwargs):
++        pass
++
++    def queue_declare(self, *args, **kwargs):
++        class Result:
++            class method:
++                queue = "q"
++        return Result
++
++    def queue_bind(self, *args, **kwargs):
++        pass
++
++    def basic_consume(self, **kwargs):
++        self.conn.on_message = kwargs["on_message_callback"]
++
++    def start_consuming(self):
++        if self.conn.fail_consume:
++            self.conn.fail_consume = False
++            raise pika.exceptions.StreamLostError("lost")
++        self.conn.on_message(None, None, None, b"event")
++
++
++class FakeConnection:
++    opened = []
++
++    def __init__(self, params):
++        self.dead = False
++        self.is_closed = False
++        self.published = []
++        self.fail_consume = False
++        FakeConnection.opened.append(self)
++
++    def channel(self):
++        return FakeChannel(self)
++
++    def add_callback_threadsafe(self, fn):
++        pass
++
++    def close(self):
++        self.is_closed = True
++
++
++@pytest.fixture
++def bridge(monkeypatch):
++    FakeConnection.opened = []
++    monkeypatch.setattr(engine.pika, "BlockingConnection", FakeConnection)
++    monkeypatch.setattr(engine.time, "sleep", lambda s: None)
++    return engine.RabbitBridge({"OTS_RABBITMQ_SERVER_ADDRESS": "127.0.0.1"}, logging.getLogger("test"))
++
++
++def test_publish_reopens_a_connection_the_broker_closed(bridge):
++    publisher = FakeConnection.opened[0]
++    bridge.publish_inbound({"uid": "a"})
++    publisher.dead = True                    # broker dropped the idle connection
++    bridge.publish_inbound({"uid": "b"})     # must not raise
++    fresh = FakeConnection.opened[-1]
++    assert fresh is not publisher
++    assert len(publisher.published) == 1 and len(fresh.published) == 1
++
++
++def test_publish_gives_up_after_one_retry(bridge, monkeypatch):
++    FakeConnection.opened[0].dead = True
++
++    class AlwaysDead(FakeConnection):
++        def __init__(self, params):
++            super().__init__(params)
++            self.dead = True
++
++    monkeypatch.setattr(engine.pika, "BlockingConnection", AlwaysDead)
++    with pytest.raises(pika.exceptions.AMQPError):
++        bridge.publish_inbound({"uid": "c"})
++
++
++def test_consumer_reopens_after_losing_its_connection(bridge):
++    consumer = FakeConnection.opened[1]
++    consumer.fail_consume = True
++    received = []
++    bridge.consume_outbound(received.append)
++    assert received == [b"event"]
++    assert FakeConnection.opened[-1] is not consumer
+-- 
+2.23.0
+

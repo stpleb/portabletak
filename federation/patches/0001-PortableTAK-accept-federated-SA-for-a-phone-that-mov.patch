@@ -1,0 +1,113 @@
+From d76c419f8d7b4a8379230dcf1f3a9c146f7fb5e3 Mon Sep 17 00:00:00 2001
+From: Stephen LeBLanc <stpleb@mac.com>
+Date: Sun, 25 Oct 2026 22:12:24 -0500
+Subject: [PATCH] PortableTAK: accept federated SA for a phone that moved to
+ another server
+
+A phone that once connected here keeps a local EUD row. When it later joins a
+federated server (e.g. an official TAK Server), its SA was refused forever as
+'belongs to a local EUD'. Refuse only while the phone is connected here.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ opentakserver/federation/engine.py  |  5 +-
+ tests/test_portabletak_moved_eud.py | 71 +++++++++++++++++++++++++++++
+ 2 files changed, 75 insertions(+), 1 deletion(-)
+ create mode 100644 tests/test_portabletak_moved_eud.py
+
+diff --git a/opentakserver/federation/engine.py b/opentakserver/federation/engine.py
+index 022ad3e..e653164 100644
+--- a/opentakserver/federation/engine.py
++++ b/opentakserver/federation/engine.py
+@@ -266,7 +266,10 @@ class Directory:
+             existing = db.session.execute(db.session.query(EUD).filter_by(uid=uid)).first()
+             now = datetime.now(timezone.utc)
+             if existing:
+-                if not (existing[0].last_status or "").startswith("Federated ("):
++                # PortableTAK: a phone connected here right now keeps its uid (no
++                # federate may speak for it). One that is not connected has moved to
++                # another server: show it as federated until it connects here again.
++                if existing[0].last_status == "Connected":
+                     return False
+                 db.session.execute(
+                     update(EUD)
+diff --git a/tests/test_portabletak_moved_eud.py b/tests/test_portabletak_moved_eud.py
+new file mode 100644
+index 0000000..3170a1c
+--- /dev/null
++++ b/tests/test_portabletak_moved_eud.py
+@@ -0,0 +1,71 @@
++"""PortableTAK: a phone that moved to a federated server shows up again here.
++
++A phone that once connected to this server has a local EUD row. When it later
++connects to a federated server instead, its SA arrives through federation under
++the same uid. It must be accepted while the phone is not connected here, and
++refused while it is (no federate may speak for a phone connected locally).
++"""
++import importlib
++import logging
++import pkgutil
++
++from flask import Flask
++from flask_security.models import fsqla_v3 as fsqla
++
++from opentakserver.extensions import db
++
++fsqla.FsModels.set_db_info(db)          # as opentakserver.app does before loading the models
++import opentakserver.models  # noqa: E402
++
++for _module in pkgutil.iter_modules(opentakserver.models.__path__):
++    importlib.import_module("opentakserver.models." + _module.name)
++
++from opentakserver.federation.engine import Directory  # noqa: E402
++from opentakserver.models.EUD import EUD  # noqa: E402
++from opentakserver.models.user import User  # noqa: E402
++
++
++def _directory():
++    app = Flask("moved-eud-test")
++    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite://"
++    db.init_app(app)
++    with app.app_context():
++        db.metadata.create_all(bind=db.engine, tables=[User.__table__, EUD.__table__])
++    return app, Directory(app, logging.getLogger("test"))
++
++
++def _add_local(app, uid, status):
++    with app.app_context():
++        eud = EUD()
++        eud.uid = uid
++        eud.callsign = "TITAN"
++        eud.last_status = status
++        db.session.add(eud)
++        db.session.commit()
++
++
++def _status(app, uid):
++    with app.app_context():
++        return db.session.query(EUD).filter_by(uid=uid).one().last_status
++
++
++def test_connected_local_phone_is_protected():
++    app, directory = _directory()
++    _add_local(app, "ANDROID-1", "Connected")
++    assert directory.ensure_federated_eud("ANDROID-1", "TITAN", "HQ") is False
++    assert _status(app, "ANDROID-1") == "Connected"
++
++
++def test_phone_that_moved_away_is_federated():
++    app, directory = _directory()
++    _add_local(app, "ANDROID-2", "Disconnected")
++    assert directory.ensure_federated_eud("ANDROID-2", "TITAN", "HQ") is True
++    assert _status(app, "ANDROID-2") == "Federated (HQ)"
++    # Still federated on the next report.
++    assert directory.ensure_federated_eud("ANDROID-2", "TITAN", "HQ") is True
++
++
++def test_unknown_phone_is_registered():
++    app, directory = _directory()
++    assert directory.ensure_federated_eud("ANDROID-3", "BRAVO-1", "HQ") is True
++    assert _status(app, "ANDROID-3") == "Federated (HQ)"
+-- 
+2.23.0
+

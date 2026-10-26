@@ -21,7 +21,7 @@ $Home2 = Join-Path $env:LOCALAPPDATA 'PortableTAK'
 $StateFile = Join-Path $Home2 'attached-disk.txt'
 $LogFile = Join-Path $Home2 'portabletak.log'
 # TAK (CoT, web, dashboard, enrollment) and video (RTSP, RTMP, HLS, WebRTC, SRT).
-$TakPorts = 8089, 8443, 8444, 8446, 8554, 1935, 8888, 8889, 8890
+$TakPorts = 8089, 8443, 8444, 8446, 8554, 1935, 8888, 8889, 8890, 1883
 $TakUdpPorts = 8000, 8001, 8189, 8890
 $VmCreatorId = '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}'   # WSL's Hyper-V firewall identity
 
