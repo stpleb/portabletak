@@ -22,6 +22,8 @@ const TEAM = { 'White': '#ffffff', 'Yellow': '#ffeb3b', 'Orange': '#ff9800', 'Ma
 const AFFIL = { friend: '#63a7ff', hostile: '#ef3b3b', neutral: '#49d17d', unknown: '#e5d94c' };
 
 const $ = (id) => document.getElementById(id);
+// Inside the dashboard's desktop layout (an iframe) the dashboard is already around the map.
+if (window.self !== window.top) document.querySelectorAll('a[href="/"]').forEach(a => { a.style.display = 'none'; });
 const store = {
     get(k, d) { try { const v = localStorage.getItem('pt-map-' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
     set(k, v) { try { localStorage.setItem('pt-map-' + k, JSON.stringify(v)); } catch { /* private mode */ } },

@@ -25,6 +25,8 @@ drive into later finishes the node-specific part by itself on first start
   starts it, and the dashboard is at `https://10.41.250.10:8444`.
 - **This Mac or a Windows 11 computer:** open the PORTABLETAK volume and
   double-click **Start PortableTAK (Mac)** or **(Windows)**.
+- **A Linux computer or Raspberry Pi (64-bit):** in a terminal on the
+  PORTABLETAK volume run `sudo bash "Start PortableTAK (Linux).sh"`.
 
 Sign in as `administrator`. The guides on the drive (Quick Start, Quick
 Reference, Setup and Troubleshooting Guide) cover the dashboard: phones,

@@ -150,7 +150,7 @@ def root():
     from fastapi.responses import HTMLResponse
     web = Path("/usr/local/portabletak/web")
     html = (web / "index.html").read_text()
-    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "feeds.js", "plugins.js", "meshtastic.js", "federation.js", "factory-reset.js", "section-icons.js"):
+    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "feeds.js", "plugins.js", "datapackages.js", "meshtastic.js", "federation.js", "factory-reset.js", "section-icons.js", "desktop-layout.js"):
         try:
             tag = hashlib.sha256((web / name).read_bytes()).hexdigest()[:12]
         except OSError:
@@ -918,6 +918,16 @@ def factory_reset_route(payload: dict = Body(...)):
     return {"ok": True, **result}
 
 
+@app.get("/desktop-layout.js")
+def desktop_layout_script():
+    return FileResponse("/usr/local/portabletak/web/desktop-layout.js", media_type="text/javascript")
+
+
+@app.get("/datapackages.js")
+def datapackages_script():
+    return FileResponse("/usr/local/portabletak/web/datapackages.js", media_type="text/javascript")
+
+
 @app.get("/section-icons.js")
 def section_icons_script():
     return FileResponse("/usr/local/portabletak/web/section-icons.js", media_type="text/javascript")
@@ -1229,6 +1239,62 @@ def plugins_update(payload: dict = Body(...)):
 @app.delete("/api/plugins/{package_name}")
 def plugins_delete(package_name: str):
     return run_users({"action": "plugins_delete", "package_name": package_name})
+
+
+@app.get("/api/datapackages")
+def datapackages_list():
+    """OpenTAKServer's data packages (enrollment packages excluded) and the phones to send to."""
+    return run_users({"action": "dp_list"})
+
+
+@app.post("/api/datapackages/upload")
+async def datapackages_upload(request: Request, filename: str = Query(default="")):
+    """The file is the request body (no multipart): an ATAK data package is kept as it is,
+    any other file is wrapped in one."""
+    import secrets as _secrets
+    PLUGIN_UPLOADS.mkdir(parents=True, exist_ok=True)
+    staged = PLUGIN_UPLOADS / (_secrets.token_hex(8) + ".bin")
+    size = 0
+    try:
+        with staged.open("wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > PLUGIN_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail={"error": "file_too_large"})
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail={"error": "empty_file"})
+        return run_users({"action": "dp_add", "staged": "/asgard/opentak/data/packages-upload/" + staged.name,
+                          "filename": filename[:255]})
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+@app.post("/api/datapackages/send")
+def datapackages_send(payload: dict = Body(...)):
+    uids = payload.get("uids") if isinstance(payload.get("uids"), list) else []
+    return run_users({"action": "dp_send", "hash": str(payload.get("hash") or ""), "uids": [str(u) for u in uids][:200]})
+
+
+@app.get("/api/datapackages/{sha256}/download")
+def datapackages_download(sha256: str):
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise HTTPException(status_code=404, detail="not_found")
+    found = run_users({"action": "dp_file", "hash": sha256})
+    path = str(found.get("path") or "")
+    if not found.get("ok") or not path.startswith("/asgard/"):
+        raise HTTPException(status_code=404, detail="not_found")
+    host_path = Path("/mnt" + path)
+    if not host_path.is_file():
+        raise HTTPException(status_code=404, detail="not_found")
+    return FileResponse(str(host_path), media_type="application/zip", filename=found.get("filename") or sha256 + ".zip")
+
+
+@app.delete("/api/datapackages/{sha256}")
+def datapackages_delete(sha256: str):
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise HTTPException(status_code=404, detail="not_found")
+    return run_users({"action": "dp_delete", "hash": sha256})
 
 
 FEEDS_CONF = Path("/mnt/asgard/opentak/feeds.json")

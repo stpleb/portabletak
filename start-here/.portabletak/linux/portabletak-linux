@@ -1,0 +1,208 @@
+#!/bin/bash
+# PortableTAK host for Linux computers and Raspberry Pi OS (64-bit: x86-64 or arm64).
+#   sudo portabletak-linux start|stop|status|setup|install|uninstall [--ip ADDRESS]
+#
+# Runs the PortableTAK host system (the same one Windows uses through WSL, kept on the
+# drive's Start Here partition) as a contained system in /opt/portabletak/root that
+# shares this computer's network. That system finds the PortableTAK drive, checks and
+# mounts it and starts the server from it, exactly as on a node. Nothing of the server
+# is stored on this computer: users, data and certificates stay on the drive.
+set -u
+ROOT=/opt/portabletak/root
+STATE=/opt/portabletak
+SELF=/usr/local/sbin/portabletak
+UNIT=/etc/systemd/system/portabletak.service
+RULE=/etc/udev/rules.d/60-portabletak.rules
+TCP_PORTS="8089 8443 8444 8446 8554 1935 8888 8889 8890 9000 9001 1883"
+UDP_PORTS="8000 8001 8189 8890"
+
+say() { printf '%s\n' "$*"; }
+die() { printf '\nPortableTAK: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || exec sudo -- bash "$0" "$@"   # the drive's FAT partition has no exec bits
+
+case "$(uname -m)" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) die "this computer is $(uname -m). PortableTAK needs a 64-bit x86 or ARM computer (Raspberry Pi: Raspberry Pi OS 64-bit)." ;;
+esac
+
+# The drive's Start Here files: next to this script when it runs from the drive.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+IMAGE="$HERE/../wsl/portabletak-wsl-$ARCH.tar.gz"
+
+inroot() { chroot "$ROOT" /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 "$@"; }
+
+install_image() {
+    [ -f "$IMAGE" ] || { [ -x "$ROOT/usr/local/portabletak/bin/portabletak-wsl-start" ] && return 0
+        die "the PortableTAK host files are missing. Start this from the drive's PORTABLETAK volume (.portabletak/linux)."; }
+    WANT="$(cat "$IMAGE.sha256" 2>/dev/null)"
+    [ -n "$WANT" ] && [ "$WANT" = "$(cat "$STATE/image.sha256" 2>/dev/null)" ] && [ -d "$ROOT/usr" ] && return 0
+    say "Installing the PortableTAK host on this computer (about 1 minute)..."
+    [ "$(sha256sum "$IMAGE" | cut -d' ' -f1)" = "$WANT" ] || die "the host image on the drive is damaged (checksum). Refresh the drive with PortableTAK Setup."
+    stop_server quiet
+    mkdir -p "$STATE"; rm -rf "$ROOT.new"; mkdir -p "$ROOT.new"
+    tar -xpzf "$IMAGE" -C "$ROOT.new" --numeric-owner || die "could not unpack the host image."
+    rm -rf "$ROOT"; mv "$ROOT.new" "$ROOT"
+    printf '%s\n' "$WANT" > "$STATE/image.sha256"
+}
+
+install_system() {
+    # This launcher, the boot/plug service, no desktop auto-mount of the server
+    # partition, and the TAK ports in the firewall.
+    install -m 755 "$0" "$SELF" 2>/dev/null || true
+    if command -v systemctl >/dev/null 2>&1; then
+        cat > "$UNIT" <<EOF
+[Unit]
+Description=PortableTAK server (from the PortableTAK drive)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$SELF start --service
+ExecStop=$SELF stop --service
+TimeoutStartSec=900
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload; systemctl enable portabletak.service >/dev/null 2>&1
+    fi
+    mkdir -p "$(dirname "$RULE")"
+    mkdir -p "$(dirname "$RULE")"
+    cat > "$RULE" <<'EOF'
+# PortableTAK: the server partition is mounted by PortableTAK itself, never by the desktop;
+# plugging a PortableTAK drive in starts the server.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_FS_TYPE}=="ext4", ENV{ID_FS_LABEL}=="PORTABLETAK", ENV{UDISKS_IGNORE}="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="portabletak.service"
+EOF
+    command -v udevadm >/dev/null 2>&1 && udevadm control --reload >/dev/null 2>&1
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        for p in $TCP_PORTS; do ufw allow "$p/tcp" >/dev/null; done
+        for p in $UDP_PORTS; do ufw allow "$p/udp" >/dev/null; done
+    elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+        for p in $TCP_PORTS; do firewall-cmd -q --permanent --add-port="$p/tcp"; done
+        for p in $UDP_PORTS; do firewall-cmd -q --permanent --add-port="$p/udp"; done
+        firewall-cmd -q --reload
+    fi
+}
+
+mount_root() {
+    mountpoint -q "$ROOT/proc" || mount -t proc proc "$ROOT/proc"
+    mountpoint -q "$ROOT/sys" || { mount --rbind /sys "$ROOT/sys" && mount --make-rslave "$ROOT/sys"; }
+    mountpoint -q "$ROOT/dev" || { mount --rbind /dev "$ROOT/dev" && mount --make-rslave "$ROOT/dev"; }
+    mountpoint -q "$ROOT/run" || mount -t tmpfs -o mode=755 tmpfs "$ROOT/run"
+    mountpoint -q "$ROOT/tmp" || mount -t tmpfs -o mode=1777 tmpfs "$ROOT/tmp"
+    if [ -d /lib/modules ]; then
+        mkdir -p "$ROOT/lib/modules"; mountpoint -q "$ROOT/lib/modules" || mount --bind -o ro /lib/modules "$ROOT/lib/modules"
+    fi
+    rm -f "$ROOT/etc/resolv.conf"; cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf" 2>/dev/null || true
+}
+
+release_drive() {
+    # A desktop may have mounted the server partition before the rule existed.
+    for dev in $(blkid -t TYPE=ext4 -t LABEL=PORTABLETAK -o device 2>/dev/null); do
+        findmnt -rn -S "$dev" -o TARGET 2>/dev/null | while read -r m; do
+            case "$m" in "$ROOT"/*) ;; *) umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null ;; esac
+        done
+    done
+}
+
+service_ip() {
+    [ -n "${PT_IP:-}" ] && { printf '%s' "$PT_IP"; return; }
+    ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1
+}
+
+other_ips() {
+    ip -4 -o addr show scope global 2>/dev/null | awk -v ip="$1" '{split($4,a,"/"); if (a[1]!=ip) print a[1]}' | paste -sd, -
+}
+
+setup_blank() {
+    [ -t 0 ] || { say "PORTABLETAK=BLANK_DRIVE (run: sudo portabletak setup)"; return 1; }
+    say ""; say "This drive is blank. Let's set it up (one time)."
+    while :; do
+        read -r -p "Server name (letters, numbers, space . _ -): " NAME
+        printf '%s' "$NAME" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9 ._-]{0,62}[A-Za-z0-9])?$' && break
+        say "  That name can't be used. Try again."
+    done
+    ask() { while :; do read -r -s -p "$1 (8+ characters; 12+ recommended): " A; echo
+            [ "${#A}" -ge 8 ] && [ "${#A}" -le 128 ] && ! printf '%s' "$A" | LC_ALL=C grep -q '[^ -~]' || { say "  Use 8 to 128 ordinary characters."; continue; }
+            read -r -s -p "Type it again: " B; echo; [ "$A" = "$B" ] && { PW="$A"; return; }; say "  They didn't match."; done; }
+    while :; do ask "Administrator password (dashboard sign-in)"; ADMIN="$PW"; ask "Client password (used when phones enroll)"; CLIENT="$PW"
+        [ "$ADMIN" != "$CLIENT" ] && break; say "  The two passwords must be different."; done
+    esc() { printf '%s' "$1" | sed 's/[\\"]/\\&/g'; }
+    say "Setting up the server (about 5-10 minutes)..."
+    RESULT="$(printf '{"instance_name":"%s","administrator_password":"%s","client_password":"%s"}' "$NAME" "$(esc "$ADMIN")" "$(esc "$CLIENT")" |
+        inroot /usr/local/portabletak/bin/portabletak-wsl-provision)"
+    unset ADMIN CLIENT PW A B
+    printf '%s\n' "$RESULT" | grep -q "PORTABLETAK_SETUP=COMPLETE" || die "setup failed: $(printf '%s\n' "$RESULT" | grep _ERROR= | head -2)"
+}
+
+start_server() {
+    install_image
+    [ -x "$SELF" ] && [ -f "$RULE" ] || install_system
+    mount_root; release_drive
+    IP="$(service_ip)"; [ -n "$IP" ] || die "this computer has no network address. Connect it to a network (or set PT_IP)."
+    inroot /usr/local/portabletak/bin/portabletak-wsl-boot >/dev/null 2>&1
+    RESULT=""
+    for TRY in 1 2 3 4 5 6; do
+        RESULT="$(inroot /usr/local/portabletak/bin/portabletak-wsl-start "$IP" "$(other_ips "$IP")" 2>&1)"
+        printf '%s\n' "$RESULT" | grep -qE "AUTOLOAD=(RUNNING|AWAITING_ACTION|MULTIPLE_CARTRIDGES)|AUTOLOAD_ERROR" && break
+        sleep 5   # NO_CARTRIDGE: the drive may still be settling after it was plugged in
+    done
+    if printf '%s\n' "$RESULT" | grep -q "PORTABLETAK_PROVISIONING_STATE=new"; then
+        setup_blank || return 1
+    elif printf '%s\n' "$RESULT" | grep -q "AUTOLOAD=MULTIPLE_CARTRIDGES"; then
+        die "more than one PortableTAK drive is attached. Unplug the others and start again."
+    elif printf '%s\n' "$RESULT" | grep -q "AUTOLOAD=NO_CARTRIDGE"; then
+        say "PORTABLETAK=NO_DRIVE"; [ "$SERVICE" = 1 ] && return 0; die "no PortableTAK drive found. Plug it in and start again."
+    elif ! printf '%s\n' "$RESULT" | grep -q "AUTOLOAD=RUNNING"; then
+        printf '%s\n' "$RESULT" | grep -E "ERROR" | head -3; die "PortableTAK did not start."
+    fi
+    say ""; say "PortableTAK is running."
+    say "  Dashboard on this computer: http://localhost:8090"
+    say "  Phones, WinTAK and other computers use this address: $IP (dashboard https://$IP:8444)"
+    say "  Stop it before unplugging the drive: sudo portabletak stop"
+}
+
+stop_server() {
+    [ -d "$ROOT/proc" ] || return 0
+    if mountpoint -q "$ROOT/proc"; then
+        [ "${1:-}" = quiet ] || say "Stopping PortableTAK safely..."
+        inroot /usr/local/portabletak/bin/portabletak-wsl-stop >/dev/null 2>&1
+        inroot /usr/local/portabletak/bin/portabletak-wsl-api stop >/dev/null 2>&1
+    fi
+    # Anything still running inside the host system, then its mounts (deepest first).
+    REAL="$(readlink -f "$ROOT")"
+    for p in /proc/[0-9]*; do [ "$(readlink -f "$p/root" 2>/dev/null)" = "$REAL" ] && kill "${p#/proc/}" 2>/dev/null; done
+    sleep 2
+    for p in /proc/[0-9]*; do [ "$(readlink -f "$p/root" 2>/dev/null)" = "$REAL" ] && kill -9 "${p#/proc/}" 2>/dev/null; done
+    findmnt -rn -o TARGET 2>/dev/null | grep "^$REAL/" | sort -r | while read -r m; do umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null; done
+    [ "${1:-}" = quiet ] || say "You can remove the drive now."
+}
+
+SERVICE=0
+CMD="${1:-start}"; shift 2>/dev/null || true
+while [ $# -gt 0 ]; do case "$1" in --service) SERVICE=1 ;; --ip) PT_IP="${2:-}"; shift ;; esac; shift; done
+
+case "$CMD" in
+    start) start_server ;;
+    stop)
+        # Through the service when it is running, so plugging the drive in starts it again.
+        if [ "$SERVICE" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl -q is-active portabletak.service 2>/dev/null; then
+            say "Stopping PortableTAK safely..."; systemctl stop portabletak.service; say "You can remove the drive now."
+        else stop_server; fi ;;
+    setup) mountpoint -q "$ROOT/proc" || die "start PortableTAK first: sudo portabletak start"; setup_blank && start_server ;;
+    status)
+        if mountpoint -q "$ROOT/mnt/asgard" 2>/dev/null; then inroot /usr/local/portabletak/bin/portabletak-health 2>/dev/null | grep -E "=RUNNING|=STOPPED|=FAILED"
+        else say "PORTABLETAK=STOPPED"; fi ;;
+    install) install_image; install_system; say "Installed. PortableTAK now starts when its drive is plugged in and at boot." ;;
+    uninstall)
+        stop_server quiet
+        command -v systemctl >/dev/null 2>&1 && { systemctl disable portabletak.service >/dev/null 2>&1; rm -f "$UNIT"; systemctl daemon-reload; }
+        rm -f "$RULE" "$SELF"; rm -rf "$STATE"
+        say "PortableTAK host removed from this computer (the drive is untouched)." ;;
+    *) die "usage: sudo portabletak start|stop|status|setup|install|uninstall [--ip ADDRESS]" ;;
+esac

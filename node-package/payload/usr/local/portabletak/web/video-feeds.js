@@ -45,21 +45,11 @@
 
   // In-browser player: WebRTC first; HLS (relayed: /api/video/hls/<name>/index.m3u8,
   // a few seconds behind) when WebRTC cannot connect or play within a few seconds.
-  window.ptWatchVideo = function (feed) {
-    const shade = el('div', 'position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:16px');
-    const box = el('div', 'width:min(960px,100%);background:#121922;border:1px solid #293748;border-radius:12px;padding:12px');
-    const head = el('div', 'display:flex;align-items:center;gap:10px;margin-bottom:8px');
-    const title = el('b', 'flex:1', feed);
-    const note = el('span', 'font-size:0.85em;opacity:0.8', 'Connecting\u2026');
-    const close = el('button', '', 'Close');
-    head.append(title, note, close);
-    const video = el('video', 'width:100%;max-height:75vh;background:#000;border-radius:8px');
-    video.controls = true; video.autoplay = true; video.muted = true; video.playsInline = true;
-    box.append(head, video); shade.appendChild(box); document.body.appendChild(shade);
+  // Plays <feed> in <video>, reports in <note>; returns a function that stops it.
+  function playVideo(feed, video, note) {
+    video.autoplay = true; video.muted = true; video.playsInline = true;
     const src = '/api/video/hls/' + encodeURIComponent(feed) + '/index.m3u8';
     let hls = null, rtc = null, mode = 'WebRTC', closed = false;
-    const done = () => { closed = true; if (rtc) rtc.close(); if (hls) hls.destroy(); video.pause(); shade.remove(); };
-    close.onclick = done; shade.onclick = (e) => { if (e.target === shade) done(); };
     video.addEventListener('playing', () => { note.textContent = mode === 'WebRTC' ? 'Live' : 'Live (a few seconds behind)'; });
     // hls.js wherever the browser can run it: the browsers' own HLS players (Safari, newer
     // Chrome) stall on streams with uneven timing, such as TAK ICU's.
@@ -85,16 +75,38 @@
       else { const sc = document.createElement('script'); sc.src = '/mapkit/hls.min.js'; sc.onload = start;
         sc.onerror = () => { note.textContent = 'Player did not load.'; }; document.head.appendChild(sc); }
     };
-    if (!window.RTCPeerConnection) { startHls(); return; }
-    let fallback = setTimeout(startHls, 8000);   // not playing by then: HLS
-    video.addEventListener('playing', () => { if (mode === 'WebRTC') clearTimeout(fallback); }, {once: true});
-    webrtcPlay(feed, video).then(r => {
-      if (closed || mode !== 'WebRTC') { r.close(); return; }
-      rtc = r;
-      r.pc.addEventListener('connectionstatechange', () => {
-        if (mode === 'WebRTC' && r.pc.connectionState === 'failed') { clearTimeout(fallback); startHls(); }
-      });
-    }).catch(() => { clearTimeout(fallback); startHls(); });
+    let fallback = null;
+    if (!window.RTCPeerConnection) startHls();
+    else {
+      fallback = setTimeout(startHls, 8000);   // not playing by then: HLS
+      video.addEventListener('playing', () => { if (mode === 'WebRTC') clearTimeout(fallback); }, {once: true});
+      webrtcPlay(feed, video).then(r => {
+        if (closed || mode !== 'WebRTC') { r.close(); return; }
+        rtc = r;
+        r.pc.addEventListener('connectionstatechange', () => {
+          if (mode === 'WebRTC' && r.pc.connectionState === 'failed') { clearTimeout(fallback); startHls(); }
+        });
+      }).catch(() => { clearTimeout(fallback); startHls(); });
+    }
+    return () => { closed = true; clearTimeout(fallback); if (rtc) rtc.close(); if (hls) hls.destroy();
+                   video.pause(); video.removeAttribute('src'); video.srcObject = null; };
+  }
+
+  // Watch: the player in a window over the page.
+  window.ptWatchVideo = function (feed) {
+    const shade = el('div', 'position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;padding:16px');
+    const box = el('div', 'width:min(960px,100%);background:#121922;border:1px solid #293748;border-radius:12px;padding:12px');
+    const head = el('div', 'display:flex;align-items:center;gap:10px;margin-bottom:8px');
+    const title = el('b', 'flex:1', feed);
+    const note = el('span', 'font-size:0.85em;opacity:0.8', 'Connecting\u2026');
+    const close = el('button', '', 'Close');
+    head.append(title, note, close);
+    const video = el('video', 'width:100%;max-height:75vh;background:#000;border-radius:8px');
+    video.controls = true;
+    box.append(head, video); shade.appendChild(box); document.body.appendChild(shade);
+    const stop = playVideo(feed, video, note);
+    const done = () => { stop(); shade.remove(); };
+    close.onclick = done; shade.onclick = (e) => { if (e.target === shade) done(); };
   };
 
   function build() {
@@ -145,7 +157,31 @@
     const icuBody = el('div', 'margin-top:6px');
     icu.appendChild(icuBody);
 
-    body.append(help, list, row, status, drone, icu, bridge);
+    // Desktop layout: live feeds play on the page (one tile each), only while the page is shown.
+    const tiles = el('div', 'display:none;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px;margin:4px 0 16px');
+    const playing = new Map();
+    const onPage = () => document.body.classList.contains('pt-desk') && details.open && card.offsetParent !== null;
+    function syncTiles(feeds) {
+      const want = onPage() ? feeds.filter(f => f.live).map(f => f.name) : [];
+      tiles.style.display = want.length ? 'grid' : 'none';
+      for (const [name, p] of playing) {
+        if (!want.includes(name)) { p.stop(); p.tile.remove(); playing.delete(name); }
+      }
+      want.forEach(name => {
+        if (playing.has(name)) return;
+        const tile = el('div', 'background:#0b0f14;border:1px solid var(--border,#293748);border-radius:10px;overflow:hidden');
+        const head = el('div', 'display:flex;align-items:center;gap:8px;padding:8px 10px');
+        const note = el('span', 'font-size:0.85em;opacity:0.8', 'Connecting\u2026');
+        head.append(el('b', 'flex:1', name), note);
+        const video = el('video', 'width:100%;aspect-ratio:16/9;background:#000;display:block');
+        video.controls = true;
+        tile.append(head, video); tiles.appendChild(tile);
+        playing.set(name, {tile, stop: playVideo(name, video, note)});
+      });
+    }
+    setInterval(() => { if (onPage()) refresh(); else if (playing.size) syncTiles([]); }, 5000);
+
+    body.append(help, tiles, list, row, status, drone, bridge, icu);
 
     // TAK ICU: Settings > Broadcast Preferences. Local Area Network with RTSP delivery to
     // the feed's hidden input (TCP, nothing lost over Wi-Fi); the server unwraps it.
@@ -153,7 +189,7 @@
       icuBody.innerHTML = '';
       const udp = feeds.filter(f => f.udp_port);
       if (!udp.length) {
-        icuBody.append(el('div', 'opacity:0.85', 'Add a feed of type "TAK ICU" (or press "Use for TAK ICU" on a feed); its settings show here.'));
+        icuBody.append(el('div', 'opacity:0.85', 'Add a feed of type "TAK ICU"; its settings show here.'));
         return;
       }
       icuBody.append(el('div', 'opacity:0.85', 'In TAK ICU: Settings → Broadcast Preferences'));
@@ -212,17 +248,10 @@
         const line = el('div', 'display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08)');
         const dot = el('span', 'width:10px;height:10px;border-radius:50%;background:' + (f.live ? '#3fb950' : '#6e7681'));
         const name = el('span', 'font-weight:600;flex:1', f.name);
-        if (f.udp_port) name.append(el('span', 'font-weight:400;font-size:0.85em;opacity:0.7;margin-left:8px', 'TAK ICU'));
+        // Its type, fixed when it was added (delete and add it again to change it).
+        const kind = f.udp_port ? 'TAK ICU' : (f.source ? 'Camera' : 'Drone / app');
+        name.append(el('span', 'font-weight:400;font-size:0.8em;opacity:0.75;margin-left:8px;padding:1px 7px;border:1px solid rgba(255,255,255,0.18);border-radius:999px', kind));
         if (f.source) name.append(el('div', 'font-weight:400;font-size:0.8em;opacity:0.7;word-break:break-all', f.source));
-        const mode = el('button', '', f.udp_port ? 'Use for drones' : 'Use for TAK ICU');
-        mode.title = f.udp_port ? 'Drones and other RTSP senders' : 'TAK ICU (Local Area Network, RTSP)';
-        mode.onclick = async () => {
-          const r = await call('', 'POST', {name: f.name, udp: !f.udp_port});
-          status.textContent = r.ok ? (r.data.udp_port ? '"' + f.name + '" now takes TAK ICU video (settings below).' : '"' + f.name + '" now takes drone video.')
-            : 'Could not change the feed: ' + (r.data.detail || 'unknown error');
-          if (r.ok && r.data.udp_port) icu.open = true;
-          refresh();
-        };
         const state = el('span', 'font-size:0.85em;opacity:0.8', f.live ? 'Live' : (f.source ? 'Connecting to camera' : 'Waiting for video'));
         const del = el('button', '', 'Delete');
         del.onclick = async () => {
@@ -235,13 +264,13 @@
         watch.onclick = () => window.ptWatchVideo(f.name);
         line.append(dot, name, state);
         if (f.live) line.append(watch);
-        if (!f.source) line.append(mode);
         line.append(del);
         line.style.flexWrap = 'wrap';
         // Side by side on phones too (the dashboard makes buttons full width there).
-        [watch, mode, del].forEach(b => { b.style.setProperty('width', 'auto', 'important'); b.style.padding = '6px 12px'; });
+        [watch, del].forEach(b => { b.style.setProperty('width', 'auto', 'important'); b.style.padding = '6px 12px'; });
         list.appendChild(line);
       });
+      syncTiles(feeds);
       droneSettings(info, feeds.filter(f => !f.udp_port && !f.source));
       icuSettings(info, feeds);
       bridgeHelp(info);

@@ -1,7 +1,8 @@
 # PortableTAK
 
 A portable OpenTAKServer on a USB drive. The same drive runs on OpenMANET nodes, Windows 11 computers
-(WSL2) and Apple Silicon Macs (QEMU), adapts to whichever host it is plugged into, and works offline.
+(WSL2), Apple Silicon Macs (QEMU) and 64-bit Linux computers including Raspberry Pi OS (a contained host system,
+`start-here/.portabletak/linux`), adapts to whichever host it is plugged into, and works offline.
 
 ## What it does
 
@@ -14,6 +15,8 @@ A portable OpenTAKServer on a USB drive. The same drive runs on OpenMANET nodes,
 - **Video feeds**: drones (RTSP push), the TAK ICU app and RTSP/RTMP/SRT/HLS cameras; Watch in the browser
   (WebRTC, under a second behind) and in ATAK.
 - **ATAK plugin update server**: phones install uploaded plugins from ATAK → Plugins → Sync, offline.
+- **Data packages**: upload any file or ATAK data package and send it to phones; packages phones share are listed.
+- **Desktop layout**: on a computer screen the dashboard is a sidebar of pages; on phones it is one scrolling page.
 - **Meshtastic**: radios over MQTT on the map and in ATAK.
 - **Federation** with other PortableTAK servers, OpenTAKServer and the official TAK Server.
 

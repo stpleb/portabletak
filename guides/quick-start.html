@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta charset="utf-8"><title>PortableTAK Quick Start</title><link rel="stylesheet" href="style.css"></head><body>
 <h1>PortableTAK Quick Start</h1>
-<p class="subtitle">Your TAK server on a USB drive. Plug it into an OpenMANET node, a Windows computer or a Mac.</p>
+<p class="subtitle">Your TAK server on a USB drive. Plug it into an OpenMANET node, a Windows computer, a Mac, a Linux computer or a Raspberry Pi.</p>
 
 <div class="box"><b>Before you start:</b> this drive has already been set up with a server name, an
 <b>administrator password</b> (dashboard sign-in) and a <b>client password</b> (phones use it to enroll).
@@ -38,6 +38,12 @@ for the server name and both passwords.</div>
   <li>To finish, press <b>Return</b> in that window (or double-click <b>Stop PortableTAK</b> on the Desktop), then eject and unplug.</li>
 </ol>
 
+<h2>C2. On Linux or a Raspberry Pi (64-bit)</h2>
+<ol>
+<li>Plug in the drive and open a terminal in the <b>PORTABLETAK</b> volume.</li>
+<li>Run <code>sudo bash "Start PortableTAK (Linux).sh"</code>. The window shows this computer's address for phones; the dashboard is <code>http://localhost:8090</code>.</li>
+<li>After that it starts by itself when the drive is plugged in. Before unplugging: <code>sudo portabletak stop</code>.</li>
+</ol>
 <h2>D. Add a phone (ATAK, iTAK) or WinTAK</h2>
 <ol>
   <li>In the dashboard open <b>Users</b> → <b>Create User</b>, one user per person. (In the TAK app, give every device its own <b>callsign</b>.)</li>
@@ -85,6 +91,7 @@ the server side must have internet, and the phone must have the new package.</di
 <li><b>Live Feeds</b>: aircraft (internet or a USB radio) and ships (internet) on the map and, for users on the ADS-B / AIS channel, in ATAK.</li>
 <li><b>Video Feeds</b>: drones, the TAK ICU app and cameras; press <b>Watch</b> to see a feed in the browser.</li>
 <li><b>ATAK Plugins</b>: upload a plugin; phones install it from ATAK → Plugins → ⋮ → Sync, without internet.</li>
+<li><b>Data Packages</b>: upload a file (map overlay, PDF, image or ATAK data package) and send it to phones.</li>
 <li><b>Meshtastic</b>: Meshtastic radios on the map and in ATAK.</li>
 </ul>
 <div class="box ok">More help: <b>PortableTAK Quick Reference</b> (addresses, ports, common tasks) and

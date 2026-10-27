@@ -9,6 +9,7 @@
 <tr><td>OpenMANET node (from elsewhere on the mesh)</td><td><code>10.41.250.10</code></td><td><code>https://10.41.250.10:8444</code></td></tr>
 <tr><td>Windows computer</td><td>The address shown in the Start window</td><td>Opens automatically: <code>http://localhost:8090</code> (desktop shortcut)</td></tr>
 <tr><td>Mac (Apple Silicon)</td><td>The address shown in the Start window</td><td>Opens automatically: <code>http://localhost:8090</code></td></tr>
+<tr><td>Linux computer / Raspberry Pi (64-bit)</td><td>The address shown by <code>sudo bash "Start PortableTAK (Linux).sh"</code></td><td><code>http://localhost:8090</code> on that computer; <code>https://&lt;address&gt;:8444</code> elsewhere</td></tr>
 <tr><td>Anywhere, over cellular (after Remote Access is turned on; Tailscale app on)</td><td>Tailscale address shown under <b>Remote Access</b> (same on every host)</td><td><code>https://&lt;Tailscale address&gt;:8444</code></td></tr>
 </table>
 
@@ -42,6 +43,7 @@
 <tr><td>See everything on a map</td><td><b>🗺 Live Map</b> (top of the dashboard). Offline: while online, <b>Offline maps</b> → name → <b>Download this area</b></td></tr>
 <tr><td>Aircraft and ships</td><td><b>Live Feeds</b>: set the area, tick the sources, Save. In ATAK: user receives the ADS-B / AIS channel</td></tr>
 <tr><td>Give phones a plugin</td><td><b>ATAK Plugins</b> → Upload plugin (APK). Phones: ATAK → Plugins → ⋮ → Sync</td></tr>
+<tr><td>Send a file to phones</td><td><b>Data Packages</b> → Upload (any file or ATAK data package) → <b>Send</b> → pick connected phones</td></tr>
 <tr><td>Watch a video feed</td><td><b>Video Feeds</b> → <b>Watch</b> (live feeds only). ATAK: Video → load from server</td></tr>
 <tr><td>Link Meshtastic radios</td><td><b>Meshtastic</b> → Turn on → Apply now; enter the card's MQTT settings in each radio</td></tr>
 <tr><td>Back up / restore</td><td><b>Backup / Restore</b> (keep a copy of backups off the drive)</td></tr>
@@ -70,11 +72,13 @@
 <tr><td>5</td><td>Test with the phone's Wi-Fi off.</td></tr>
 </table>
 
-<h2>Windows and Mac shortcuts</h2>
+<h2>Windows, Mac and Linux shortcuts</h2>
 <table>
 <tr><td><b>Start PortableTAK (Windows)</b> / <b>(Mac)</b></td><td>On the drive. Starts the server and opens the dashboard.</td></tr>
 <tr><td><b>Stop PortableTAK</b></td><td>Desktop. Stops safely and releases the drive; then unplug. (Dashboard "Stop Server" only pauses the TAK services.)</td></tr>
 <tr><td><b>PortableTAK Dashboard</b> / <b>PortableTAK Status</b></td><td>Desktop.</td></tr>
+<tr><td><code>sudo bash "Start PortableTAK (Linux).sh"</code></td><td>Linux / Raspberry Pi, in a terminal on the drive: first start (then it starts by itself when the drive is plugged in).</td></tr>
+<tr><td><code>sudo portabletak stop</code> / <code>start</code> / <code>status</code></td><td>Linux / Raspberry Pi: stop safely before unplugging; start or check by hand.</td></tr>
 </table>
 
 <h2>Rules of thumb</h2>

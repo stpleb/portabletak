@@ -144,6 +144,10 @@ def handle_request(request):
                 import plugins_actions
                 return plugins_actions.handle(app, db, request)
 
+            if action.startswith("dp_"):
+                import datapackages_actions
+                return datapackages_actions.handle(app, db, request)
+
             if action.startswith("meshtastic_"):
                 import meshtastic_actions
                 return meshtastic_actions.handle(app, db, request)

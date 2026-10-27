@@ -18,6 +18,7 @@
     'Live Feeds': '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12l6-6"/><circle cx="12" cy="12" r=".6"/>',
     'Video Feeds': '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3z"/>',
     'ATAK Plugins': '<path d="M12 2.5 20 6v6c0 4.4-3.4 8-8 9.5C7.4 20 4 16.4 4 12V6z"/><path d="M6.5 9 12 11.5 17.5 9M8.5 7.2 12 8.8l3.5-1.6M9 15h6"/>',   // TAK badge
+    'Data Packages': '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9M8 5.25l8 4.5"/>',
     'Meshtastic': '<path d="M3 18.5 9 6.5M10.5 18.5l5.25-11 5.25 11"/>',   // Meshtastic mark
     'Backup / Restore': '<path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 7v10c0 1.7 3.6 3 8 3M20 7v5"/><path d="M17 15v6M14.5 18.5 17 21l2.5-2.5"/>',
     'Activity': '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',

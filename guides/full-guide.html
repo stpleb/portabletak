@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta charset="utf-8"><title>PortableTAK Setup and Troubleshooting Guide</title><link rel="stylesheet" href="style.css"></head><body>
 <h1>PortableTAK Setup and Troubleshooting Guide</h1>
-<p class="subtitle">A complete TAK server (OpenTAKServer) that lives on a USB drive and runs on an OpenMANET node or a Windows computer.</p>
+<p class="subtitle">A complete TAK server (OpenTAKServer) that lives on a USB drive and runs on an OpenMANET node, a Windows computer, a Mac, a Linux computer or a Raspberry Pi.</p>
 
 <h2>1. What PortableTAK is</h2>
 <p>The drive holds the whole server: its software, its database, its users and certificates, and its settings.
@@ -8,20 +8,23 @@ The computer or node it is plugged into only provides power, network and process
 same server, with the same users and phones, comes up somewhere else.</p>
 <ul>
 <li><b>One drive = one server.</b> Each drive has its own certificate authority, users and data.</li>
-<li><b>Runs on:</b> OpenMANET nodes (Raspberry Pi), Windows 11 computers (Intel/AMD and ARM) and Apple Silicon Macs. The drive carries
+<li><b>Runs on:</b> OpenMANET nodes, Windows 11 computers (Intel/AMD and ARM), Apple Silicon Macs, and 64-bit Linux
+computers including a Raspberry Pi 4 or 5 with Raspberry Pi OS (64-bit). The drive carries
 software for both processor types and picks the right one automatically.</li>
 <li><b>Moves between hosts:</b> on the first start on a new node or computer, the server adapts itself to that host
 (addresses and server certificate). Phones already set up keep working.</li>
 <li><b>Works offline.</b> Internet is only needed for optional extras: Remote Access (Tailscale), online maps and
 aircraft/ships from the internet.</li>
 <li><b>Dashboard:</b> users and phones, a <b>Live Map</b>, live aircraft and ships, video feeds you can watch in the
-browser, an ATAK plugin update server, Meshtastic radios and links to other TAK servers.</li>
+browser, an ATAK plugin update server, data packages you can send to phones, Meshtastic radios and links to other TAK servers.</li>
+<li><b>Dashboard layout:</b> on a computer screen the sections are pages in a menu on the left (the Live Map is one of them);
+on a phone or a narrow window they are one scrolling page.</li>
 </ul>
 
 <h3>What is on the drive</h3>
 <p>Plugged into Windows or a Mac, only a small <b>PORTABLETAK</b> volume is visible. It holds:</p>
 <table>
-<tr><td><b>Start PortableTAK (Windows)</b> / <b>(Mac)</b></td><td>Runs the server on this computer.</td></tr>
+<tr><td><b>Start PortableTAK (Windows)</b> / <b>(Mac)</b> / <b>(Linux).sh</b></td><td>Runs the server on this computer.</td></tr>
 <tr><td><b>Scan to open the dashboard (node).png</b></td><td>QR code for the dashboard when the drive is in a node.</td></tr>
 <tr><td><b>Quick Start</b>, <b>Quick Reference</b>, this guide</td><td>Documentation (PDF).</td></tr>
 </table>
@@ -118,6 +121,26 @@ and the window shows the Mac's address for phones and WinTAK (other devices reac
 <li>The PORTABLETAK volume disappears while the server runs. To stop, press Return in the window or double-click
 <b>Stop PortableTAK</b> on the Desktop; then eject and unplug.</li>
 </ol>
+
+<h3>Using the drive on Linux or a Raspberry Pi</h3>
+<p>Any 64-bit Linux computer (Intel/AMD or ARM) with systemd: Ubuntu, Debian, Raspberry Pi OS (64-bit) on a
+Raspberry Pi 4 or 5 with 4 GB of memory or more, and similar. Nothing needs installing first.</p>
+<ol>
+<li>Plug in the drive. If the desktop opens the <b>PORTABLETAK</b> volume, open a terminal in it (on a Pi without a
+desktop: <code>sudo mount /dev/sda1 /mnt</code> and <code>cd /mnt</code>).</li>
+<li>Run <code>sudo bash "Start PortableTAK (Linux).sh"</code>. The first time it installs the small PortableTAK host on
+this computer (about a minute, nothing of the server is stored on it), opens the TAK ports if the firewall (ufw or
+firewalld) is on, and stops the desktop from opening the server partition.</li>
+<li>A blank drive asks for the server name and both passwords and sets itself up (5–10 minutes).</li>
+<li>It shows <b>this computer's address</b> for phones and WinTAK. The dashboard is <code>http://localhost:8090</code> on this
+computer and <code>https://&lt;address&gt;:8444</code> from other devices.</li>
+</ol>
+<p>From then on PortableTAK starts by itself when the drive is plugged in and when the computer boots. Before
+unplugging: <code>sudo portabletak stop</code> and wait for "You can remove the drive now". Other commands:
+<code>sudo portabletak start</code>, <code>status</code>, <code>uninstall</code> (removes it from this computer; the drive is untouched).
+If the computer has several networks, choose the one phones use with <code>sudo portabletak start --ip &lt;address&gt;</code>.</p>
+<div class="box">The computer should not run another TAK server or another program on the same ports (8089, 8443,
+8444, 8446, 8554). If the computer already runs Tailscale itself, PortableTAK's own Remote Access may conflict with it.</div>
 
 <h2>5. Adding phones and devices</h2>
 <ol>
@@ -310,10 +333,17 @@ must be reachable from the server (same network, or Tailscale).</li>
 <p>The password stays on the drive and is shown as <code>***</code>. ATAK plays H.264 and H.265; browsers need H.264 on most
 computers (most cameras can be set to H.264).</p>
 
-<h2>10. ATAK plugins (update server)</h2>
+<h2>10. ATAK plugins and data packages</h2>
 <p>Dashboard → <b>ATAK Plugins</b> → <b>Upload plugin (APK)</b>. Phones set up with this server's QR code or package find the
 plugins in ATAK under <b>Plugins</b> (⋮ → <b>Sync</b>) and install them without internet. <b>On setup</b> installs a plugin when a
 phone enrolls; <b>On connect</b> offers it every time a phone connects. Upload a newer APK of the same plugin to update it.</p>
+
+<h3>Data packages</h3>
+<p>Dashboard → <b>Data Packages</b>: the server's data packages, the ones phones send and share and ones uploaded here.
+<b>Upload</b> a ready-made ATAK data package (.zip) or any file (map overlay KML/KMZ, PDF, image, document); other files
+are wrapped in a data package automatically. <b>Send</b> picks connected phones: ATAK shows its "file received" notice,
+downloads it from this server (over Wi-Fi, mesh or Tailscale) and opens it (KML/KMZ appear on the map).
+<b>Download</b> saves a copy; <b>Delete</b> removes it from the server (phones keep theirs). Up to 256 MB per file.</p>
 
 <h2>11. Meshtastic</h2>
 <p>Links Meshtastic radios to the server: radios appear on the Live Map and, for users who receive the <b>Meshtastic</b>
@@ -397,6 +427,8 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <tr><td>ATAK: "The TAK Server's identity could not be verified" after QR setup</td><td>ATAK no longer trusts the drive (deleting servers in ATAK can remove the trust). Import the <b>ATAK Trust Package (for QR)</b> again from Client Setup, then scan a fresh QR. Or import the <b>ATAK Package</b> for that user, which carries everything ATAK needs.</td></tr>
 <tr><td>Federation link stays red</td><td>"Not connected: certificate" after the other server was rebuilt: <b>Forget its certificate</b>, or remove and invite again. "Connection refused" or unreachable: the servers need a network path (same network, or the same Tailscale account). A TAK Server peer: its admin must upload this server's CA and set the federate's groups.</td></tr>
 <tr><td>Drone feed never shows Live</td><td>The controller must be on the server's network, with the IP address and port <b>8554</b> from the Video Feeds card and exactly the same stream name. Video only starts once the aircraft is flying.</td></tr>
+<tr><td>Linux: "no PortableTAK drive found"</td><td>Plug the drive in and wait a few seconds, then <code>sudo portabletak start</code>. Check it shows in <code>lsblk</code>.</td></tr>
+<tr><td>Linux / Raspberry Pi: "needs a 64-bit computer"</td><td>Install the 64-bit version of the system (Raspberry Pi OS 64-bit). 32-bit systems and Pis older than the Pi 4 cannot run PortableTAK.</td></tr>
 <tr><td>Windows: drive vanished from File Explorer</td><td>Normal while PortableTAK runs. Use <b>Stop PortableTAK</b> to get it back.</td></tr>
 <tr><td>Windows offers to format the drive, or macOS to initialize it</td><td>Always Cancel / Ignore. The Linux partition holds the server.</td></tr>
 <tr><td>"More than one PortableTAK drive is attached" / server does not start with two drives plugged in</td><td>Use one PortableTAK drive per node or computer at a time. Unplug the other drive and start again (node: power-cycle or re-plug).</td></tr>
@@ -413,7 +445,7 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <tr><td>Node: a new node does not start PortableTAK</td><td>The node needs the PortableTAK loader once (field extension or <code>portabletak-loader-install.sh</code>). On the node, <code>portabletak-loader status</code> shows what happened; a refused drive means its package is not signed with the PortableTAK release key (make the drive again with the official Setup).</td></tr>
 </table>
 <h3>Logs</h3>
-<p><b>Windows:</b> <code>%LOCALAPPDATA%\PortableTAK\portabletak.log</code>. <b>Node</b> (administrators, over SSH):
+<p><b>Linux:</b> <code>journalctl -u portabletak</code> and <code>/opt/portabletak/root/tmp/portabletak/</code>. <b>Windows:</b> <code>%LOCALAPPDATA%\PortableTAK\portabletak.log</code>. <b>Node</b> (administrators, over SSH):
 <code>/usr/local/portabletak/bin/portabletak-health</code> and the logs under <code>/mnt/asgard/opentak/data/logs</code>.</p>
 
 <h2>15. Security notes</h2>
