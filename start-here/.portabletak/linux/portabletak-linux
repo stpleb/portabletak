@@ -13,6 +13,10 @@ STATE=/opt/portabletak
 SELF=/usr/local/sbin/portabletak
 UNIT=/etc/systemd/system/portabletak.service
 RULE=/etc/udev/rules.d/60-portabletak.rules
+# USB ADS-B radios (RTL-SDR sticks: RTL2832U) are claimed by Linux's TV-tuner drivers,
+# which keeps the radio software (readsb) from opening them.
+TUNER_CONF=/etc/modprobe.d/portabletak-rtl-sdr.conf
+TUNER_MODULES="dvb_usb_rtl28xxu rtl2832_sdr rtl2832 rtl2830"
 TCP_PORTS="8089 8443 8444 8446 8554 1935 8888 8889 8890 9000 9001 1883"
 UDP_PORTS="8000 8001 8189 8890"
 
@@ -79,6 +83,9 @@ EOF
 ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_FS_TYPE}=="ext4", ENV{ID_FS_LABEL}=="PORTABLETAK", ENV{UDISKS_IGNORE}="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="portabletak.service"
 EOF
     command -v udevadm >/dev/null 2>&1 && udevadm control --reload >/dev/null 2>&1
+    mkdir -p "$(dirname "$TUNER_CONF")"
+    { echo "# PortableTAK: leave RTL-SDR (USB ADS-B) sticks to the radio software, not the TV-tuner drivers."
+      for m in $TUNER_MODULES; do echo "blacklist $m"; done; } > "$TUNER_CONF"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
         for p in $TCP_PORTS; do ufw allow "$p/tcp" >/dev/null; done
         for p in $UDP_PORTS; do ufw allow "$p/udp" >/dev/null; done
@@ -140,9 +147,19 @@ setup_blank() {
     printf '%s\n' "$RESULT" | grep -q "PORTABLETAK_SETUP=COMPLETE" || die "setup failed: $(printf '%s\n' "$RESULT" | grep _ERROR= | head -2)"
 }
 
+release_radio() {
+    # A stick plugged in before the blacklist existed: unload the TV-tuner drivers
+    # (only when one is loaded; nothing else uses them for an RTL-SDR stick).
+    for m in $TUNER_MODULES; do
+        grep -q "^$m " /proc/modules 2>/dev/null && modprobe -r "$m" >/dev/null 2>&1
+    done
+    return 0
+}
+
 start_server() {
     install_image
-    [ -x "$SELF" ] && [ -f "$RULE" ] || install_system
+    [ -x "$SELF" ] && [ -f "$RULE" ] && [ -f "$TUNER_CONF" ] || install_system
+    release_radio
     mount_root; release_drive
     IP="$(service_ip)"; [ -n "$IP" ] || die "this computer has no network address. Connect it to a network (or set PT_IP)."
     inroot /usr/local/portabletak/bin/portabletak-wsl-boot >/dev/null 2>&1
@@ -202,7 +219,7 @@ case "$CMD" in
     uninstall)
         stop_server quiet
         command -v systemctl >/dev/null 2>&1 && { systemctl disable portabletak.service >/dev/null 2>&1; rm -f "$UNIT"; systemctl daemon-reload; }
-        rm -f "$RULE" "$SELF"; rm -rf "$STATE"
+        rm -f "$RULE" "$SELF" "$TUNER_CONF"; rm -rf "$STATE"
         say "PortableTAK host removed from this computer (the drive is untouched)." ;;
     *) die "usage: sudo portabletak start|stop|status|setup|install|uninstall [--ip ADDRESS]" ;;
 esac

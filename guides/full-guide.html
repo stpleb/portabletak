@@ -139,7 +139,9 @@ computer and <code>https://&lt;address&gt;:8444</code> from other devices.</li>
 <p>From then on PortableTAK starts by itself when the drive is plugged in and when the computer boots. Before
 unplugging: <code>sudo portabletak stop</code> and wait for "You can remove the drive now". Other commands:
 <code>sudo portabletak start</code>, <code>status</code>, <code>uninstall</code> (removes it from this computer; the drive is untouched).
-If the computer has several networks, choose the one phones use with <code>sudo portabletak start --ip &lt;address&gt;</code>.</p>
+If the computer has several networks, choose the one phones use with <code>sudo portabletak start --ip &lt;address&gt;</code>.
+A USB ADS-B radio (RTL-SDR stick) works here too: PortableTAK keeps Linux's TV-tuner drivers away from it (those drivers
+would otherwise claim the stick), so the computer can no longer use an RTL2832 stick as a TV tuner.</p>
 <div class="box">The computer should not run another TAK server or another program on the same ports (8089, 8443,
 8444, 8446, 8554). If the computer already runs Tailscale itself, PortableTAK's own Remote Access may conflict with it.</div>
 
@@ -444,6 +446,7 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <tr><td>Federation link stays red</td><td>"Not connected: certificate" after the other server was rebuilt: <b>Forget its certificate</b>, or remove and invite again. "Connection refused" or unreachable: the servers need a network path (same network, or the same Tailscale account). A TAK Server peer: its admin must upload this server's CA and set the federate's groups.</td></tr>
 <tr><td>Drone feed never shows Live</td><td>The controller must be on the server's network, with the IP address and port <b>8554</b> from the Video Feeds card and exactly the same stream name. Video only starts once the aircraft is flying.</td></tr>
 <tr><td>Linux: "no PortableTAK drive found"</td><td>Plug the drive in and wait a few seconds, then <code>sudo portabletak start</code>. Check it shows in <code>lsblk</code>.</td></tr>
+<tr><td>Linux: Live Feeds says no USB radio, or the radio sends no data</td><td>Unplug the stick and plug it in again, then <code>sudo portabletak start</code> (it releases the stick from the TV-tuner drivers). If it still fails, restart the computer once.</td></tr>
 <tr><td>Linux / Raspberry Pi: "needs a 64-bit computer"</td><td>Install the 64-bit version of the system (Raspberry Pi OS 64-bit). 32-bit systems and Pis older than the Pi 4 cannot run PortableTAK.</td></tr>
 <tr><td>Windows: drive vanished from File Explorer</td><td>Normal while PortableTAK runs. Use <b>Stop PortableTAK</b> to get it back.</td></tr>
 <tr><td>Windows offers to format the drive, or macOS to initialize it</td><td>Always Cancel / Ignore. The Linux partition holds the server.</td></tr>
