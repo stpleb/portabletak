@@ -78,13 +78,14 @@ automatically and stops when the uplink goes away (phones then use cellular for 
 <p><b>Unplugging:</b> press <b>Safe Remove</b> in the dashboard and wait for "safe to remove". Pulling the drive or
 power without this is survivable: the next start checks and repairs the drive. Avoid it when you can.</p>
 
-<h2>4. Using the drive on a Windows computer</h2>
-<h3>Requirements</h3>
+<h2>4. Using the drive on a computer (Windows, Mac, Linux, Raspberry Pi)</h2>
+<h3>Windows</h3>
+<h4>Requirements</h4>
 <ul>
 <li>Windows 11 version 22H2 or newer (Intel/AMD or ARM). Administrator rights (Windows asks).</li>
 <li>Virtualization enabled (it is on most computers; WSL reports it if not).</li>
 </ul>
-<h3>Start</h3>
+<h4>Start</h4>
 <ol>
 <li>Plug in the drive, open the <b>PORTABLETAK</b> drive in File Explorer, double-click <b>Start PortableTAK (Windows)</b>, click <b>Yes</b>.</li>
 <li>First time on a computer only (needs internet): it installs WSL (Windows Subsystem for Linux) if missing (type
@@ -96,20 +97,20 @@ host. The first start of the server on a computer takes a few minutes.</li>
 <li>While the server runs, the drive is attached to the PortableTAK host and disappears from File Explorer. Desktop
 shortcuts appear: <b>Stop PortableTAK</b>, <b>PortableTAK Dashboard</b>, <b>PortableTAK Status</b>.</li>
 </ol>
-<h3>Stop</h3>
+<h4>Stop</h4>
 <p>Double-click <b>Stop PortableTAK</b> on the desktop. Wait for "You can remove the drive now", then unplug.
 On a computer the dashboard shows this reminder instead of Start/Stop buttons: only the Start and Stop shortcuts can
 attach and release the drive.</p>
-<h3>WinTAK on the same computer</h3>
+<h4>WinTAK on the same computer</h4>
 <p>Create a user for WinTAK and use <b>WinTAK Setup</b> in the dashboard. WinTAK connects to the computer's address shown at start.</p>
-<h3>Start automatically</h3>
+<h4>Start automatically</h4>
 <p>Run <code>%LOCALAPPDATA%\PortableTAK\PortableTAK.ps1 install-helper</code> in PowerShell once. From then on, plugging the
 drive into that computer starts PortableTAK and opens the dashboard. <code>remove-helper</code> turns it off.</p>
 <div class="box"><b>Laptop on the move:</b> PortableTAK uses the computer's address at start. If you change networks
 (for example from home Wi-Fi to a hotspot), stop and start PortableTAK so it re-binds to the new address. Phones
 keep their certificates. Only the address they connect to changes, so add the new address in the TAK app or use Remote Access.</div>
 
-<h3>Using the drive on a Mac</h3>
+<h3>Mac (Apple Silicon)</h3>
 <p>Apple Silicon Macs can run the server too, in a small Linux virtual machine. One-time preparation: install
 Homebrew and run <code>brew install qemu</code>.</p>
 <ol>
@@ -122,7 +123,7 @@ and the window shows the Mac's address for phones and WinTAK (other devices reac
 <b>Stop PortableTAK</b> on the Desktop; then eject and unplug.</li>
 </ol>
 
-<h3>Using the drive on Linux or a Raspberry Pi</h3>
+<h3>Linux or a Raspberry Pi</h3>
 <p>Any 64-bit Linux computer (Intel/AMD or ARM) with systemd: Ubuntu, Debian, Raspberry Pi OS (64-bit) on a
 Raspberry Pi 4 or 5 with 4 GB of memory or more, and similar. Nothing needs installing first.</p>
 <ol>
@@ -142,7 +143,21 @@ If the computer has several networks, choose the one phones use with <code>sudo 
 <div class="box">The computer should not run another TAK server or another program on the same ports (8089, 8443,
 8444, 8446, 8554). If the computer already runs Tailscale itself, PortableTAK's own Remote Access may conflict with it.</div>
 
-<h2>5. Adding phones and devices</h2>
+<h2>5. Using the dashboard</h2>
+<p>The dashboard arranges itself for the screen it is on:</p>
+<table>
+<tr><th style="width:22%">Screen</th><th>Layout</th></tr>
+<tr><td><b>Computer</b> (window wider than about 1100 pixels)</td><td>A menu on the left with the server's name,
+<b>Dashboard</b> (status cards and Controls), <b>Live Map</b> and every section with its icon, and <b>Sign out</b> at the
+bottom. Click an entry to open it as a page; the server name and RUNNING badge stay at the top. The dashboard remembers
+the page you had open, and a page can be bookmarked (for example <code>https://&lt;server&gt;:8444/#users</code>).
+On the <b>Video Feeds</b> page every live feed plays right on the page.</td></tr>
+<tr><td><b>Phone, tablet or narrow window</b></td><td>One scrolling page: the status cards, then each section, which
+opens when you tap its title. <b>🗺 Live Map</b> at the top opens the map, and <b>Watch</b> plays a video feed.</td></tr>
+</table>
+<p>Resizing the window switches between the two. Both have the same sections and work the same way.</p>
+
+<h2>6. Adding phones and devices</h2>
 <ol>
 <li><b>Users → Create User</b>: one user per person. In each TAK app, give every device its own <b>callsign</b>.</li>
 <li>Under <b>Manage User / Download Setup Package</b> choose one:
@@ -170,7 +185,7 @@ pick a user and tick the channels they <b>send</b> into and <b>receive</b> from.
 channels on and off in ATAK/iTAK (TAK channels). <code>__ANON__</code>, ADS-B, AIS and Meshtastic are built in and cannot be
 renamed or deleted.</p>
 
-<h2>6. Remote access over cellular (Tailscale)</h2>
+<h2>7. Remote access over cellular (Tailscale)</h2>
 <p>Remote access lets phones reach the server from anywhere they have internet (cellular or any Wi-Fi),
 without opening ports on a router. It uses <b>Tailscale</b>, a free private network: the server and the phones
 all sign in to the <b>same Tailscale account</b> and can then reach each other. Set it up once per server.</p>
@@ -228,7 +243,7 @@ On the server's own Wi-Fi you can also use <code>https://10.41.250.10:8444</code
 
 </table>
 
-<h2>7. Live Map</h2>
+<h2>8. Live Map</h2>
 <p>Dashboard → <b>🗺 Live Map</b> (top of the page), or <code>https://&lt;server&gt;:8444/map</code>. It shows phones (in their team
 colours), phones on linked servers, aircraft, ships, Meshtastic radios, markers and CASEVAC requests, updated every
 3 seconds. Tap anything for its details. <b>Show</b> chooses what is on the map, <b>Fit all</b> zooms to everything,
@@ -244,7 +259,7 @@ internet at all. A town is a few MB; a large metro area at street level about 20
 <li>These maps are for the Live Map. ATAK keeps its own offline maps (in ATAK: Layers → Mobile → download).</li>
 </ul>
 
-<h2>8. Live aircraft and ships (Live Feeds)</h2>
+<h2>9. Live aircraft and ships (Live Feeds)</h2>
 <p>Dashboard → <b>Live Feeds</b>. Set the area (<b>Use my location</b>, or type the centre and radius), tick what you want
 and press <b>Save</b>. Aircraft and ships appear on the Live Map within about 20 seconds.</p>
 <table>
@@ -256,7 +271,7 @@ and press <b>Save</b>. Aircraft and ships appear on the Live Map within about 20
 <p>To see them in ATAK, give the user <b>Receive</b> on the <b>ADS-B</b> or <b>AIS</b> channel (Channels card). Phones pick
 it up when they reconnect.</p>
 
-<h2>9. Video feeds</h2>
+<h2>10. Video feeds</h2>
 <p>Live video for every TAK user. Each feed has a name; TAK clients see it in their video list, and the dashboard can
 play it. Feeds need no sign-in to send or watch, so anyone who can reach the server (its Wi-Fi or mesh, or your
 Tailscale) can watch them. Dashboard → <b>Video Feeds</b>, then pick the type when adding a feed:</p>
@@ -268,8 +283,9 @@ Tailscale) can watch them. Dashboard → <b>Video Feeds</b>, then pick the type 
 </table>
 <h3>Watching</h3>
 <ul>
-<li><b>Dashboard:</b> a live feed shows <b>Watch</b>. It plays in the browser, normally less than a second behind. If the
-fast connection is not possible it switches to a backup player and says <i>a few seconds behind</i>.</li>
+<li><b>Dashboard:</b> on a computer, every live feed plays on the Video Feeds page itself (it stops when you leave the
+page). On any screen, <b>Watch</b> plays a feed in a large window. Video is normally less than a second behind; if the
+fast connection is not possible the player switches to a backup and says <i>a few seconds behind</i>.</li>
 <li><b>ATAK / WinTAK:</b> open <b>Video</b> (Video Player), load the list from the server and pick the feed. A phone
 connected over Tailscale gets the feed at the server's Tailscale address automatically. Or add it by hand: RTSP,
 <code>&lt;server&gt;:8554/&lt;feed name&gt;</code>, no user name or password.</li>
@@ -333,7 +349,7 @@ must be reachable from the server (same network, or Tailscale).</li>
 <p>The password stays on the drive and is shown as <code>***</code>. ATAK plays H.264 and H.265; browsers need H.264 on most
 computers (most cameras can be set to H.264).</p>
 
-<h2>10. ATAK plugins and data packages</h2>
+<h2>11. ATAK plugins and data packages</h2>
 <p>Dashboard → <b>ATAK Plugins</b> → <b>Upload plugin (APK)</b>. Phones set up with this server's QR code or package find the
 plugins in ATAK under <b>Plugins</b> (⋮ → <b>Sync</b>) and install them without internet. <b>On setup</b> installs a plugin when a
 phone enrolls; <b>On connect</b> offers it every time a phone connects. Upload a newer APK of the same plugin to update it.</p>
@@ -345,7 +361,7 @@ are wrapped in a data package automatically. <b>Send</b> picks connected phones:
 downloads it from this server (over Wi-Fi, mesh or Tailscale) and opens it (KML/KMZ appear on the map).
 <b>Download</b> saves a copy; <b>Delete</b> removes it from the server (phones keep theirs). Up to 256 MB per file.</p>
 
-<h2>11. Meshtastic</h2>
+<h2>12. Meshtastic</h2>
 <p>Links Meshtastic radios to the server: radios appear on the Live Map and, for users who receive the <b>Meshtastic</b>
 channel, in ATAK; text messages pass between Meshtastic and ATAK chat. A radio connects over Wi-Fi (radios with Wi-Fi
 on the server's network) or through the Meshtastic phone app (MQTT client proxy).</p>
@@ -359,7 +375,7 @@ the card shows; encryption on, JSON off, TLS off. Then for each channel: Channel
 <p>A Meshtastic radio plugged into a node by USB (for example one used by the ManetNode field extension) is not used by
 this feature; it connects over MQTT only.</p>
 
-<h2>12. Linking servers (federation)</h2>
+<h2>13. Linking servers (federation)</h2>
 <p>Federation shares positions, markers, alerts and chat between two TAK servers, so each team sees the other on
 its map. It works with another PortableTAK, OpenTAKServer with PortableTAK's federation add-on, and the official
 TAK Server (tak.gov). Dashboard &rarr; <b>Federation</b> (under Remote Access).</p>
@@ -397,7 +413,7 @@ if you trust it.</li>
 (or remove the link and invite again).</li>
 <li>Moving the drive to another node or computer keeps its links: the federation certificate belongs to the drive.</li>
 </ul>
-<h2>13. Backups, moving and erasing</h2>
+<h2>14. Backups, moving and erasing</h2>
 <ul>
 <li><b>Backups:</b> <b>Backup / Restore</b> creates checked backups on the drive. Download important ones and keep them elsewhere.</li>
 <li><b>Moving the drive</b> to another node or computer: stop or safely remove it, plug it in elsewhere. It adapts by itself.</li>
@@ -406,7 +422,7 @@ settings, remote access, data and on-drive backups. It asks for the administrato
 and cannot be undone. Set the drive up again with PortableTAK Setup afterwards.</li>
 </ul>
 
-<h2 class="pb">14. Troubleshooting</h2>
+<h2 class="pb">15. Troubleshooting</h2>
 <table>
 <tr><th style="width:32%">Problem</th><th>What to do</th></tr>
 <tr><td>Phone says "host unreachable" or never connects</td><td>Check the phone is on the node's Wi-Fi (or the same network as the Windows computer).
@@ -448,7 +464,7 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <p><b>Linux:</b> <code>journalctl -u portabletak</code> and <code>/opt/portabletak/root/tmp/portabletak/</code>. <b>Windows:</b> <code>%LOCALAPPDATA%\PortableTAK\portabletak.log</code>. <b>Node</b> (administrators, over SSH):
 <code>/usr/local/portabletak/bin/portabletak-health</code> and the logs under <code>/mnt/asgard/opentak/data/logs</code>.</p>
 
-<h2>15. Security notes</h2>
+<h2>16. Security notes</h2>
 <ul>
 <li>The dashboard requires sign-in. It is reachable on the TAK network at port 8444 (HTTPS), and with remote access
 also from devices signed in to your Tailscale account (nobody else can reach it). It is protected against
