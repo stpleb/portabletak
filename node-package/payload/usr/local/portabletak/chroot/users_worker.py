@@ -24,7 +24,7 @@ with contextlib.redirect_stdout(startup_output), contextlib.redirect_stderr(star
     app = create_app()
 
 
-HOST = "127.0.0.1"
+HOST = "127.0.0.2"   # internal address: not reachable over Tailscale
 PORT = 18090
 
 

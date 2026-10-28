@@ -60,7 +60,7 @@ class VideoFeedTests(unittest.TestCase):
             return FakeResponse(b'')
         self.assertTrue(vf.apply(self.root, opener=opener))
         method, url, data = sent[0]
-        self.assertEqual((method, url), ('PATCH', 'http://127.0.0.1:9997/v3/config/global/patch'))
+        self.assertEqual((method, url), ('PATCH', 'http://127.0.0.2:9997/v3/config/global/patch'))
         self.assertIn({'action': 'publish', 'path': 'skydio1'}, json.loads(data)['authHTTPExclude'])
         self.assertEqual(vf.status(self.root, opener=opener), [{'name': 'skydio1', 'created': vf.load(self.root)[0]['created'], 'live': True}])
 
@@ -92,7 +92,7 @@ class VideoFeedTests(unittest.TestCase):
         calls = [(m, u) for m, u, _ in sent[2:]]
         self.assertEqual(calls, [('DELETE', '/v3/config/paths/delete/old'), ('POST', '/v3/config/paths/add/icu'),
                                  ('POST', '/v3/config/paths/add/_in/icu')])
-        self.assertEqual(json.loads(sent[3][2]), {'source': 'udp://127.0.0.1:5600'})   # loopback only
+        self.assertEqual(json.loads(sent[3][2]), {'source': 'udp://127.0.0.2:5600'})   # internal address only
         self.assertEqual(json.loads(sent[0][2])['rtspTransports'], ['tcp'])
         relay = json.loads(sent[4][2])                    # TAK ICU's RTSP input, unwrapped into port 5600
         self.assertEqual(relay['source'], 'publisher')
@@ -100,7 +100,7 @@ class VideoFeedTests(unittest.TestCase):
         self.assertEqual(relay['runOnNotReady'], '')      # not announced to OpenTAKServer
         rules = json.loads(sent[0][2])['authHTTPExclude']
         self.assertIn({'action': 'publish', 'path': '_in/icu'}, rules)
-        sent.clear(); have[1:] = [{'name': 'icu', 'source': 'udp://127.0.0.1:5600'}, dict(relay, name='_in/icu'),
+        sent.clear(); have[1:] = [{'name': 'icu', 'source': 'udp://127.0.0.2:5600'}, dict(relay, name='_in/icu'),
                                   {'name': '_in/gone', 'source': 'publisher'}]
         vf.apply(self.root, opener=opener)
         self.assertEqual([(m, u) for m, u, _ in sent[2:]], [('DELETE', '/v3/config/paths/delete/_in/gone')])

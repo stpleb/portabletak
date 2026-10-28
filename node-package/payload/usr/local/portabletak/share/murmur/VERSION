@@ -1,0 +1,4 @@
+Murmur (mumble-server) 1.5.517-1ubuntu2 with ZeroC Ice 3.7.10 (python3-zeroc-ice), from Ubuntu 24.04
+(noble) packages, plus the libraries the PortableTAK base does not already have. Licenses: BSD-3-Clause
+(Mumble), GPL-2.0 (ZeroC Ice), LGPL-3.0 (Qt 5), others in each bundle's licenses/ folder.
+Built by work/voice/build-murmur-bundle.sh; package list in each bundle's PACKAGES file.

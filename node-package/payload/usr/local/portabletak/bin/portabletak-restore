@@ -232,7 +232,7 @@ while [ "$i" -lt 20 ]
 do
     if /usr/sbin/chroot "$ROOT" \
         /usr/bin/pg_isready \
-        -h 127.0.0.1 \
+        -h /run/postgresql \
         -p 5432 >/dev/null 2>&1
     then
         break

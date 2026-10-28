@@ -10,8 +10,8 @@ APP="$HOME/Library/Application Support/PortableTAK"
 STATE="$APP/run"
 QEMU=/opt/homebrew/bin/qemu-system-aarch64
 CONTROL=http://127.0.0.1:18091
-TCP_PORTS="8089 8443 8444 8446 8554 1935 8888 8889 8890 9000 9001 1883"
-UDP_PORTS="8000 8001 8189 8890"
+TCP_PORTS="8089 8443 8444 8446 8554 1935 8888 8889 8890 9000 9001 1883 64738"
+UDP_PORTS="8000 8001 8189 8890 64738"
 
 say() { printf '%s\n' "$*"; }
 die() { printf '\nPortableTAK: %s\n' "$*" >&2; read -r -p "Press Return to close. " _; exit 1; }

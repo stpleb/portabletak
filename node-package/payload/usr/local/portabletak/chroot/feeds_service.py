@@ -255,7 +255,7 @@ class Publisher:
         credentials = pika.PlainCredentials(self.cfg.get('OTS_RABBITMQ_USERNAME', 'guest'),
                                             self.cfg.get('OTS_RABBITMQ_PASSWORD', 'guest'))
         self.connection = pika.BlockingConnection(pika.ConnectionParameters(
-            host=self.cfg.get('OTS_RABBITMQ_SERVER_ADDRESS', '127.0.0.1'), credentials=credentials))
+            host=self.cfg.get('OTS_RABBITMQ_SERVER_ADDRESS', '127.0.0.2'), credentials=credentials))
         self.channel = self.connection.channel()
         self.declared = set()
 

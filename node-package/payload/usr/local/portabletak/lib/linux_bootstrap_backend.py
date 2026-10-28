@@ -20,6 +20,7 @@ from clean_base import BaseError, verify_sealed_software
 from host_profile import rootfs as host_rootfs
 import arch_sync
 import dashboard_site
+import internal_address
 from management_auth import ManagementAuth
 import server_addresses
 from portabletak_provision import ProvisionError, atomic_write, read_json
@@ -222,6 +223,12 @@ class LinuxBootstrapBackend:
                           '--auth-local=peer', '--auth-host=scram-sha-256'])
         elif (pgdata / 'PG_VERSION').read_text().strip() != '16':
             raise ProvisionError('unsupported_postgres_cluster')
+        # PostgreSQL listens on the internal address only (not reachable over Tailscale).
+        conf = pgdata / 'postgresql.conf'
+        text = conf.read_text()
+        if internal_address.postgres_config(text) != text:
+            atomic_write(conf, internal_address.postgres_config(text), 0o600)
+            os.chown(conf, *self._account('postgres'))
         self._start_postgres()
         self._chroot(['/usr/sbin/runuser', '-u', 'postgres', '--',
                       '/asgard/opentak/venv/bin/python', '-c', DATABASE_SCRIPT],
@@ -285,7 +292,7 @@ class LinuxBootstrapBackend:
         os.chown(definition_path, *rabbit)
         config_path = etc / 'rabbitmq.conf'
         atomic_write(config_path,
-                     'listeners.tcp.default = 127.0.0.1:5672\n'
+                     'listeners.tcp.default = ' + internal_address.HOST + ':5672\n'
                      'definitions.import_backend = local_filesystem\n'
                      'definitions.local.path = /etc/rabbitmq/portabletak-definitions.json\n', 0o640)
         os.chown(config_path, *rabbit)
@@ -293,7 +300,7 @@ class LinuxBootstrapBackend:
         # RabbitMQ keeps its data under mnesia/<node>; a host-derived node name
         # (rabbit@Node02) would strand the data when the cartridge moves hosts.
         atomic_write(context.root / 'config/rabbitmq-nodename', RABBITMQ_NODE + '\n', 0o644)
-        return {'rabbitmq': 'configured', 'listener': '127.0.0.1:5672',
+        return {'rabbitmq': 'configured', 'listener': internal_address.HOST + ':5672',
                 'node': RABBITMQ_NODE}
 
     def configure_services(self, context):
@@ -311,7 +318,7 @@ class LinuxBootstrapBackend:
             raise ProvisionError('mediamtx_supplement_incomplete')
         media_config = context.root / 'opentak/data/mediamtx/mediamtx.yml'
         self._mkdir(media_config.parent, 0o700)
-        atomic_write(media_config, template.read_text(), 0o600)
+        atomic_write(media_config, internal_address.rewrite(template.read_text()), 0o600)
         token = context.root / 'config/secrets/ots-mediamtx-token'
         self._mkdir(token.parent, 0o700)
         atomic_write(token, context.secrets['mediamtx_token'] + '\n', 0o600)
@@ -323,14 +330,14 @@ class LinuxBootstrapBackend:
             'server { listen 8443 ssl; ' + dashboard_site.TAK_TLS +
             'ssl_certificate ' + ca_root + '/opentakserver.pem; '
             'ssl_certificate_key ' + ca_root + '/opentakserver.nopass.key; '
-            'location / { proxy_pass http://127.0.0.1:18081; '
+            'location / { proxy_pass http://' + internal_address.HOST + ':18081; '
             'proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; ' + dashboard_site.CERT_HEADER + '} }\n'
             # Certificate enrollment for QR onboarding (ATAK/iTAK use 8446).
             # Only the Marti TLS enrollment API is reachable on this port.
             'server { listen 8446 ssl; ' + dashboard_site.TAK_TLS +
             'ssl_certificate ' + ca_root + '/opentakserver.pem; '
             'ssl_certificate_key ' + ca_root + '/opentakserver.nopass.key; '
-            'location /Marti/api/tls/ { proxy_pass http://127.0.0.1:18081; '
+            'location /Marti/api/tls/ { proxy_pass http://' + internal_address.HOST + ':18081; '
             'proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto https; ' + dashboard_site.CERT_HEADER + '} '
             'location / { return 404; } }\n', 0o644)
         enabled = context.root / 'rootfs/etc/nginx/sites-enabled/portabletak'

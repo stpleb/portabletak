@@ -1,0 +1,239 @@
+#!/bin/sh
+# Start/stop the PortableTAK voice server: Murmur (Mumble, port 64738 TCP and UDP) inside the
+# chroot, plus the sign-in check (chroot/voice/takptt_auth.py) and the voice history recorder
+# (chroot/voice/takptt_recorder.py: clips kept 7 days, served at https://<server>:8443/voice/), and the
+# OpenMANET talk group bridge (chroot/voice/takptt_bridge.py: "talkGroups" in opentak/voice.json,
+# default "LOBBY=1"; "" turns it off). Phones sign in with the TAK
+# certificate ATAK enrolled with this server (TAK PTT plugin), or a PortableTAK user name and
+# password (other Mumble apps such as Vx). On by default; "enabled": false in
+# opentak/voice.json turns it off.
+#   portabletak-voice start|stop|restart|status
+ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
+ARCH="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard --arch)"
+case "$ARCH" in x86_64|amd64) ARCH=x86_64 ;; *) ARCH=aarch64 ;; esac
+CONF=/mnt/asgard/opentak/voice.json
+RUN=/mnt/asgard/opentak/run
+DATA=/mnt/asgard/opentak/voice
+LOG=/mnt/asgard/opentak/data/logs/voice.log
+CA=/mnt/asgard/opentak/data/ca
+BUNDLE=/usr/local/portabletak/share/murmur/murmur-$ARCH.tar.gz
+INSTALL="$ROOT/usr/local/portabletak/murmur"
+MURMUR_PID=$RUN/murmur.pid
+AUTH_PID=$RUN/voice-auth.pid
+REC_PID=$RUN/voice-recorder.pid
+BRIDGE_PID=$RUN/voice-bridge.pid
+
+running()   # pidfile needle
+{
+    P="$(cat "$1" 2>/dev/null)"
+    [ -n "$P" ] && [ -r "/proc/$P/cmdline" ] && tr '\000' ' ' < "/proc/$P/cmdline" | grep -q "$2"
+}
+
+# Server channels joined to OpenMANET talk groups: "talkGroups" in voice.json, e.g. "LOBBY=1,Ops=2".
+talk_groups()
+{
+    V="LOBBY=1"
+    if [ -r "$CONF" ] && tr -d '\n' < "$CONF" | grep -q '"talkGroups"'; then
+        V="$(tr -d '\n' < "$CONF" | sed -n 's/.*"talkGroups"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    fi
+    case "$V" in *[!A-Za-z0-9\ _.=,-]*) V="LOBBY=1" ;; esac     # only plain channel names
+    printf '%s' "$V"
+}
+
+wanted()
+{
+    ! { [ -r "$CONF" ] && tr -d ' \n' < "$CONF" | grep -q '"enabled":false'; }
+}
+
+stop_pid()  # pidfile needle
+{
+    running "$1" "$2" || { rm -f "$1"; return 0; }
+    P="$(cat "$1")"
+    kill -TERM "$P" 2>/dev/null
+    i=0
+    while [ "$i" -lt 10 ] && [ -d "/proc/$P" ]; do sleep 1; i=$((i + 1)); done
+    [ -d "/proc/$P" ] && kill -KILL "$P" 2>/dev/null
+    rm -f "$1"
+}
+
+# Unpack the Murmur bundle and the sign-in check into the chroot when either is new or changed.
+install_bundle()
+{
+    [ -r "$BUNDLE" ] || { echo "PORTABLETAK_VOICE_ERROR=no_bundle"; return 1; }
+    SUM="$(find "$BUNDLE" /usr/local/portabletak/chroot/voice -type f | sort | xargs cat | sha256sum | cut -d' ' -f1)"
+    [ "$(cat "$INSTALL/.bundle" 2>/dev/null)" = "$SUM" ] && [ -x "$INSTALL/root/usr/bin/mumble-server" ] && return 0
+    rm -rf "$INSTALL.new" && mkdir -p "$INSTALL.new" || return 1
+    tar -C "$INSTALL.new" -xzf "$BUNDLE" || { rm -rf "$INSTALL.new"; return 1; }
+    mkdir -p "$INSTALL.new/auth"
+    cp -R /usr/local/portabletak/chroot/voice/. "$INSTALL.new/auth/" || return 1
+    echo "$SUM" > "$INSTALL.new/.bundle"
+    rm -rf "$INSTALL" && mv "$INSTALL.new" "$INSTALL"
+}
+
+# Murmur runs as "nobody" and gets its own certificate from this server's certificate authority
+# (never the TAK server's own key). Secrets and settings stay root's; only Murmur's database
+# folder belongs to nobody.
+prepare_data()
+{
+    mkdir -p "$DATA/murmur" "$DATA/tls" "$RUN" || return 1
+    [ -r "$CA/ca.pem" ] && [ -r "$CA/ca-do-not-share.key" ] || { echo "PORTABLETAK_VOICE_ERROR=no_certificate_authority"; return 1; }
+    NOBODY="$(awk -F: '$1 == "nobody" {print $3 ":" $4; exit}' "$ROOT/etc/passwd")"
+    NOBODY="${NOBODY:-65534:65534}"
+    NOGROUP="${NOBODY#*:}"
+    # Earlier installs kept the database, a copy of the TAK server key and the settings in $DATA.
+    [ -f "$DATA/murmur.sqlite" ] && [ ! -f "$DATA/murmur/murmur.sqlite" ] && mv "$DATA/murmur.sqlite" "$DATA/murmur/murmur.sqlite"
+    rm -f "$DATA/server.key" "$DATA/server.pem" "$DATA/ca.pem"
+    for f in ids.json recorder.pem recorder.key recorder.sha1 bridge.pem bridge.key bridge.sha1 mesh.secret history.sqlite; do
+        [ -e "$DATA/$f" ] && chown 0:0 "$DATA/$f"
+    done
+    [ -d "$DATA/clips" ] && chown -R 0:0 "$DATA/clips"
+    chown 0:0 "$DATA"; chmod 0711 "$DATA"
+    umask 077
+    if ! /usr/sbin/chroot "$ROOT" openssl x509 -checkend 2592000 -noout -in /asgard/opentak/voice/tls/voice.pem >/dev/null 2>&1; then
+        /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            set -e
+            cd /asgard/opentak/voice/tls
+            PW="$(/asgard/opentak/venv/bin/python -c "import yaml; print(yaml.safe_load(open(\"/asgard/opentak/data/config.yml\"))[\"OTS_CA_PASSWORD\"])")"
+            export PW
+            openssl req -new -nodes -newkey rsa:2048 -keyout voice.key.new -out voice.csr -subj "/CN=PortableTAK voice" 2>/dev/null
+            openssl x509 -req -sha256 -days 730 -in voice.csr -CA /asgard/opentak/data/ca/ca.pem \
+                -CAkey /asgard/opentak/data/ca/ca-do-not-share.key -passin env:PW \
+                -set_serial "0x$(od -An -N8 -tx1 /dev/urandom | tr -d " \n")" \
+                -extfile /asgard/opentak/data/ca/ca_config.cfg -extensions server -out voice.pem.new 2>/dev/null
+            mv voice.key.new voice.key
+            mv voice.pem.new voice.pem
+            rm -f voice.csr
+        ' || { echo "PORTABLETAK_VOICE_ERROR=certificate_not_made"; return 1; }
+    fi
+    cp "$CA/ca.pem" "$DATA/tls/ca.pem"
+    [ -s "$DATA/ice-secret" ] || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DATA/ice-secret"
+    SECRET="$(cat "$DATA/ice-secret")"
+    # A server password nobody is given: only users the sign-in check lets in (registered users,
+    # who skip it) get on. While the check is not attached (starting, or stopped) nobody does.
+    [ -s "$DATA/server-password" ] || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DATA/server-password"
+    SERVERPW="$(cat "$DATA/server-password")"
+    {
+        echo "database=/asgard/opentak/voice/murmur/murmur.sqlite"
+        echo "port=64738"
+        echo "users=100"
+        echo "uname=nobody"
+        echo 'ice="tcp -h 127.0.0.2 -p 6502"'   # internal address: not reachable over Tailscale
+        echo "icesecretread=$SECRET"
+        echo "icesecretwrite=$SECRET"
+        echo "serverpassword=$SERVERPW"
+        echo "sslCert=/asgard/opentak/voice/tls/voice.pem"
+        echo "sslKey=/asgard/opentak/voice/tls/voice.key"
+        echo "sslCA=/asgard/opentak/voice/tls/ca.pem"
+        echo "registerName=PortableTAK"
+        echo "bonjour=false"
+        echo "welcometext="
+    } > "$DATA/murmur.ini"
+    chown -R 0:0 "$DATA/tls" "$DATA/murmur.ini" "$DATA/ice-secret" "$DATA/server-password"
+    chown -R "$NOBODY" "$DATA/murmur"
+    chgrp "$NOGROUP" "$DATA/tls" "$DATA/tls/voice.pem" "$DATA/tls/voice.key" "$DATA/tls/ca.pem" "$DATA/murmur.ini"
+    chmod 0750 "$DATA/tls"
+    chmod 0640 "$DATA/tls/voice.key" "$DATA/tls/voice.pem" "$DATA/murmur.ini"
+    chmod 0644 "$DATA/tls/ca.pem"
+    chmod 0600 "$DATA/ice-secret" "$DATA/server-password"
+    chmod 0700 "$DATA/murmur"
+}
+
+start_service()
+{
+    mount | grep -F " on /mnt/asgard " >/dev/null 2>&1 || { echo "PORTABLETAK_VOICE_ERROR=cartridge_not_mounted"; return 21; }
+    install_bundle || return 22
+    prepare_data || return 23
+    mkdir -p "$(dirname "$LOG")" && touch "$LOG"
+    # First start: give Murmur's SuperUser account a random password that is never shown
+    # (PortableTAK does not use it; otherwise Murmur prints one into the log).
+    if [ ! -s "$DATA/murmur/murmur.sqlite" ]; then
+        /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            L=/usr/local/portabletak/murmur/root/usr/lib/$(uname -m)-linux-gnu
+            LD_LIBRARY_PATH=$L QT_PLUGIN_PATH=$L/qt5/plugins /usr/local/portabletak/murmur/root/usr/bin/mumble-server \
+                -ini /asgard/opentak/voice/murmur.ini -supw "$(head -c 18 /dev/urandom | od -An -tx1 | tr -d " \n")"
+        ' >/dev/null 2>&1
+    fi
+    FROM=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 ))
+    if ! running "$MURMUR_PID" mumble-server; then
+        /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            L=/usr/local/portabletak/murmur/root/usr/lib/$(uname -m)-linux-gnu
+            LD_LIBRARY_PATH=$L QT_PLUGIN_PATH=$L/qt5/plugins /usr/bin/nohup \
+                /usr/local/portabletak/murmur/root/usr/bin/mumble-server -fg -ini /asgard/opentak/voice/murmur.ini \
+                >> /asgard/opentak/data/logs/voice.log 2>&1 </dev/null &
+            echo $! > /asgard/opentak/run/murmur.pid
+        '
+    fi
+    if ! running "$AUTH_PID" takptt_auth.py; then
+        /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            cd /asgard/opentak
+            L=/usr/local/portabletak/murmur/root/usr/lib/$(uname -m)-linux-gnu
+            LD_LIBRARY_PATH=$L PYTHONPATH=/usr/local/portabletak/murmur/root/usr/lib/python3/dist-packages /usr/bin/nohup \
+                /asgard/opentak/venv/bin/python /usr/local/portabletak/murmur/auth/takptt_auth.py \
+                --ca /asgard/opentak/data/ca/ca.pem --crl /asgard/opentak/data/ca/ca.crl \
+                --ids /asgard/opentak/voice/ids.json --secret-file /asgard/opentak/voice/ice-secret \
+                --db-config /asgard/opentak/data/config.yml \
+                --login-url http://127.0.0.2:18081/api/login \
+                --recorder /asgard/opentak/voice/recorder.sha1 \
+                --bridge /asgard/opentak/voice/bridge.sha1 \
+                >> /asgard/opentak/data/logs/voice.log 2>&1 </dev/null &
+            echo $! > /asgard/opentak/run/voice-auth.pid
+        '
+    fi
+    if ! running "$REC_PID" takptt_recorder.py; then
+        /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            cd /asgard/opentak
+            /usr/bin/nohup /asgard/opentak/venv/bin/python /usr/local/portabletak/murmur/auth/takptt_recorder.py \
+                --data /asgard/opentak/voice --ids /asgard/opentak/voice/ids.json \
+                --ca /asgard/opentak/data/ca/ca.pem --socket /asgard/opentak/voice/api.sock \
+                --db-config /asgard/opentak/data/config.yml \
+                >> /asgard/opentak/data/logs/voice.log 2>&1 </dev/null &
+            echo $! > /asgard/opentak/run/voice-recorder.pid
+        '
+    fi
+    i=0
+    while [ "$i" -lt 15 ]; do
+        tail -c +"$FROM" "$LOG" 2>/dev/null | grep -q "attached to Murmur" && running "$MURMUR_PID" mumble-server && break
+        sleep 1; i=$((i + 1))
+    done
+    # The bridge signs in once the sign-in check is attached (it is let in by its certificate).
+    if ! running "$BRIDGE_PID" takptt_bridge.py; then
+        LINKS="$(talk_groups)" /usr/sbin/chroot "$ROOT" /bin/sh -c '
+            cd /asgard/opentak
+            /usr/bin/nohup /asgard/opentak/venv/bin/python /usr/local/portabletak/murmur/auth/takptt_bridge.py \
+                --data /asgard/opentak/voice --links "$LINKS" \
+                >> /asgard/opentak/data/logs/voice.log 2>&1 </dev/null &
+            echo $! > /asgard/opentak/run/voice-bridge.pid
+        '
+    fi
+    if running "$MURMUR_PID" mumble-server && running "$AUTH_PID" takptt_auth.py; then
+        echo "PORTABLETAK_VOICE=RUNNING"
+    else
+        echo "PORTABLETAK_VOICE_ERROR=exited"
+        tail -n 5 "$LOG" 2>/dev/null | sed 's/^/PORTABLETAK_VOICE_LOG=/'
+        return 24
+    fi
+}
+
+case "${1:-status}" in
+    start)
+        wanted || { stop_pid "$BRIDGE_PID" takptt_bridge.py; stop_pid "$REC_PID" takptt_recorder.py; stop_pid "$AUTH_PID" takptt_auth.py; stop_pid "$MURMUR_PID" mumble-server; echo "PORTABLETAK_VOICE=OFF"; exit 0; }
+        start_service; exit $?
+        ;;
+    stop)
+        stop_pid "$BRIDGE_PID" takptt_bridge.py
+        stop_pid "$REC_PID" takptt_recorder.py
+        stop_pid "$AUTH_PID" takptt_auth.py
+        stop_pid "$MURMUR_PID" mumble-server
+        echo "PORTABLETAK_VOICE=STOPPED"
+        ;;
+    restart)
+        "$0" stop >/dev/null
+        exec "$0" start
+        ;;
+    status)
+        if running "$MURMUR_PID" mumble-server && running "$AUTH_PID" takptt_auth.py; then echo "PORTABLETAK_VOICE=RUNNING"
+        elif wanted; then echo "PORTABLETAK_VOICE=STOPPED"
+        else echo "PORTABLETAK_VOICE=OFF"; fi
+        ;;
+    *) echo "usage: portabletak-voice start|stop|restart|status" >&2; exit 2 ;;
+esac

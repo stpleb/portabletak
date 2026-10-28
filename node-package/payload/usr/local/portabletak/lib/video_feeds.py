@@ -13,7 +13,7 @@ TAK ICU wraps its video in MPEG-TS, which MediaMTX passes on from an RTSP push b
 cannot turn into HLS or WebRTC, and its plain UDP loses packets over Wi-Fi. A TAK
 ICU feed ("udp_port") therefore takes TAK ICU's RTSP push (over TCP) at the hidden
 path _in/<feed>; ts_relay.py unwraps it into the feed's internal UDP port
-(5600-5615, loopback only), where MediaMTX unpacks it into the feed itself.
+(5600-5615, on internal_address.HOST only), where MediaMTX unpacks it into the feed itself.
 
 A feed can also pull from a camera or another server (an RTSP Wi-Fi/IP camera,
 RTMP, SRT or an HLS link): MediaMTX connects to the URL itself and passes the
@@ -33,11 +33,11 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from portabletak_provision import atomic_write
+from internal_address import HOST, MEDIAMTX_API
 
 FEEDS = 'config/video-feeds.json'
 NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,31}')   # Skydio stream names: letters, digits, dashes
 MAX_FEEDS = 16
-MEDIAMTX_API = 'http://127.0.0.1:9997'
 UDP_PORTS = range(5600, 5600 + MAX_FEEDS)
 # TAK ICU's RTSP for a UDP feed arrives here; ts_relay.py unwraps it into the feed's UDP port.
 INPUT = '_in/'
@@ -141,15 +141,16 @@ def webrtc_hosts(root):
 
 
 def udp_source(port):
-    # Loopback only: just ts_relay.py feeds it. TAK ICU also keeps sending plain UDP
-    # to the server in RTSP mode, which would otherwise mix into the feed.
-    return 'udp://127.0.0.1:%d' % port
+    # Internal address only: just ts_relay.py feeds it. TAK ICU also keeps sending plain
+    # UDP to the server in RTSP mode, which would otherwise mix into the feed.
+    return 'udp://%s:%d' % (HOST, port)
 
 
 def _ours(source):
-    """A path configuration this module made for a UDP feed (also the older form that
-    listened on every address)."""
-    return any(source in (udp_source(p), 'udp://0.0.0.0:%d' % p) for p in UDP_PORTS)
+    """A path configuration this module made for a UDP feed (also the older forms that
+    listened on every address or on 127.0.0.1)."""
+    return any(source in (udp_source(p), 'udp://0.0.0.0:%d' % p, 'udp://127.0.0.1:%d' % p)
+               for p in UDP_PORTS)
 
 
 def _request(method, path, body=None, opener=urllib.request.urlopen):

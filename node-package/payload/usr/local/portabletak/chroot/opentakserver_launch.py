@@ -221,6 +221,85 @@ def install_profile(module):
     return True
 
 
+# ---------------------------------------------------------------- enrollment name check
+# Upstream signs whatever common name (CN) a CSR carries once the sign-in passes, and
+# a QR token passes for any user name. The CN is the TAK identity (OTS, voice sign-in),
+# so mallory could get a certificate for alice. Refuse (403) unless the CN is the user
+# who signed in (any case) and a QR token belongs to that same user.
+ENROLL_PATH = '/Marti/api/tls/signClient/v2'
+
+
+def csr_common_name(data):
+    """The CSR's CN, read the way upstream reads it (ATAK sends bare base64)."""
+    from OpenSSL import crypto
+    csr = data.decode('utf-8')
+    if 'BEGIN CERTIFICATE REQUEST' not in csr:
+        csr = '-----BEGIN CERTIFICATE REQUEST-----\n' + csr
+    if not csr.endswith('\n'):
+        csr += '\n'
+    csr += '-----END CERTIFICATE REQUEST-----'
+    return crypto.load_certificate_request(crypto.FILETYPE_PEM, csr.encode()).get_subject().CN
+
+
+def token_subject(app, token):
+    """The user a QR token was made for (signature checked, no use counted), or None."""
+    import jwt
+    with open(os.path.join(app.config.get('OTS_CA_FOLDER'), 'certs', 'opentakserver', 'opentakserver.pub')) as key:
+        try:
+            return str(jwt.decode(token, key.read(), algorithms=['RS256'], audience='OpenTAKServer').get('sub') or '')
+        except jwt.exceptions.InvalidTokenError:
+            return None
+
+
+def enrollment_refusal(app, header, data):
+    """Why this enrollment must be refused, or None to let upstream handle it
+    (upstream still checks the password or token and answers 401 itself)."""
+    import base64
+    import bleach
+    try:
+        username, password = base64.b64decode(header.split(' ', 1)[-1].encode('utf-8')).decode('utf-8').split(':', 1)
+        common_name = csr_common_name(data)
+    except Exception:
+        return None
+    username = bleach.clean(username)
+    if not common_name or common_name.lower() != username.lower():
+        return 'certificate name %r is not the signed-in user %r' % (common_name, username)
+    if app.config.get('OTS_ENABLE_LDAP'):
+        return None
+    user = app.security.datastore.find_user(username=username)
+    if not user:
+        return None
+    from flask_security import verify_password
+    if verify_password(bleach.clean(password), user.password):
+        return None
+    subject = token_subject(app, bleach.clean(password))
+    if subject is not None and subject.lower() != username.lower():
+        return 'enrollment token for %r used as %r' % (subject, username)
+    return None
+
+
+def install_enrollment_check(app, logger):
+    """Wrap the signing view (found by its URL: the blueprint is nested under Marti's).
+    True when the check is in place."""
+    from flask import request
+    endpoints = {rule.endpoint for rule in app.url_map.iter_rules() if rule.rule == ENROLL_PATH}
+    for endpoint in endpoints:
+        original = app.view_functions[endpoint]
+        if getattr(original, '_portabletak_cn_check', False):
+            continue
+
+        def sign_csr_v2(*args, _original=original, **kwargs):
+            reason = enrollment_refusal(app, request.headers.get('Authorization') or '', request.get_data())
+            if reason:
+                logger.warning('PortableTAK: certificate enrollment refused: %s', reason)
+                return '', 403
+            return _original(*args, **kwargs)
+
+        sign_csr_v2._portabletak_cn_check = True
+        app.view_functions[endpoint] = sign_csr_v2
+    return bool(endpoints)
+
+
 def main():
     if len(sys.argv) < 2:
         print('usage: opentakserver_launch.py ENTRY_POINT [args...]', file=sys.stderr)
@@ -239,6 +318,12 @@ def main():
         # unused here). The drive's Tailscale delivers every remote connection from
         # 127.0.0.1, so keep the sign-in for everyone; drone feeds are opened explicitly.
         app.config['OTS_IP_WHITELIST'] = []
+        # Certificate names must match the sign-in. Unlike the profile hook, a
+        # failure here stops the server: enrollment must never run unchecked.
+        from opentakserver.extensions import logger
+        if not install_enrollment_check(app, logger):
+            raise RuntimeError('PortableTAK: certificate enrollment check not installed')
+        logger.info('PortableTAK: certificate enrollment name check installed')
         try:
             from opentakserver.blueprints.marti_api import device_profile_marti_api
             install_profile(device_profile_marti_api)

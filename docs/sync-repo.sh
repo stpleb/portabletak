@@ -7,7 +7,8 @@ X=(--exclude=__pycache__ --exclude=.DS_Store --exclude='*.before-*' --exclude='*
    --exclude='share/pmtiles/*/pmtiles' --exclude='share/readsb/*/readsb')   # downloaded/built tools: in release assets
 rsync -a --delete "${X[@]}" --exclude='vendor/mediamtx/mediamtx' "$W/portabletak-provision/" "$R/provision/"
 rsync -a --delete "${X[@]}" --exclude='payload/usr/local/portabletak/share/tailscale/tailscale*' --exclude='*.tar.gz' \
-    --exclude='payload/usr/local/portabletak/share/mediamtx/mediamtx' "$W/host-installer-20260929/" "$R/node-package/"
+    --exclude='payload/usr/local/portabletak/share/mediamtx/mediamtx' --exclude='payload/usr/local/portabletak/share/murmur/*.tar.gz' \
+    "$W/host-installer-20260929/" "$R/node-package/"
 rsync -a --delete "${X[@]}" "$W/wsl-host/" "$R/windows-host/"
 rsync -a --delete "${X[@]}" "$W/mac-vm/" "$R/mac-vm/"
 rsync -a --delete "${X[@]}" "$W/mac-setup/" "$R/mac-setup/"
@@ -16,6 +17,7 @@ rsync -a --delete "${X[@]}" --exclude='*.tar.gz' --exclude='*.tar.gz.sha256' --e
     --exclude=vmlinuz --exclude=initrd.img --exclude='*.msi' --exclude='.portabletak/node/' "$W/start-here/" "$R/start-here/"
 rsync -a --delete "${X[@]}" "$W/guides/" "$R/guides/"
 rsync -a --delete "${X[@]}" "$W/node-loader/" "$R/node-loader/"
+rsync -a --delete "${X[@]}" --exclude=out --exclude=gen --exclude=takptt_auth.py "$W/voice/" "$R/voice/"   # Murmur bundle builder
 rsync -a --delete "${X[@]}" --exclude=ots --exclude=wheels --exclude='*.deb' --exclude=e2e/A --exclude=e2e/B \
     --exclude=e2e/payload --exclude=e2e/ptapi --exclude='e2e/*.pem' --exclude='e2e/invite.out*' --exclude=testimg \
     --exclude='takserver/build.log' --exclude=secrets --exclude=e2e/charlie --exclude=e2e/L --exclude=e2e/D --exclude=e2e/C "$W/federation/" "$R/federation/"

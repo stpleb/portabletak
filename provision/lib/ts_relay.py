@@ -4,7 +4,7 @@ TAK ICU ("Local Area Network" with delivery "RTSP") pushes RTSP reliably, but as
 MPEG-TS track that MediaMTX passes on without unpacking, so browsers cannot play it.
 Its plain UDP delivery is unpacked, but loses packets over Wi-Fi. MediaMTX runs this
 when TAK ICU starts pushing to _in/<feed>: it reads that stream over RTSP (TCP, on
-this machine) and sends the MPEG-TS to the feed's UDP port on 127.0.0.1, where
+this machine) and sends the MPEG-TS to the feed's UDP port on 127.0.0.2, where
 MediaMTX unpacks it as the feed itself.
 
     python3 ts_relay.py PATH UDP_PORT   (RTSP_PORT from MediaMTX's environment, else 8554)
@@ -16,7 +16,7 @@ import socket
 import sys
 import urllib.request
 
-API = 'http://127.0.0.1:9997'
+from internal_address import HOST as INTERNAL, MEDIAMTX_API as API   # not reachable over Tailscale
 
 
 def request(sock, method, url, cseq, headers=()):
@@ -100,7 +100,7 @@ def relay(path, udp_port, rtsp_port=8554):
     read_response(stream)
     sock.settimeout(30)
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    target = ('127.0.0.1', udp_port)
+    target = (INTERNAL, udp_port)
     while True:
         first = stream.read(1)
         if not first:

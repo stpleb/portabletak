@@ -417,6 +417,9 @@ mkdir -p "$LOGDIR"
 # OpenTAKServer's internal port: 18081 (8081 is openmanetd's on OpenMANET 1.8).
 # Drives made earlier are moved here, before any service starts (lib/ots_port.py).
 /usr/bin/python3 /usr/local/portabletak/lib/ots_port.py migrate /mnt/asgard 2>/dev/null | grep CHANGED || true
+# Machine-only services listen on 127.0.0.2, which the drive's Tailscale (userspace
+# mode, it hands tailnet connections to 127.0.0.1) never reaches (lib/internal_address.py).
+/usr/bin/python3 /usr/local/portabletak/lib/internal_address.py migrate /mnt/asgard 2>/dev/null | grep CHANGED || true
 # User packages made with mismatched certificate passwords (2026.10.23 - .3) are set aside.
 /usr/bin/python3 /usr/local/portabletak/lib/client_package_check.py /mnt/asgard 2>/dev/null || true
 # A newer node package on the Start Here partition (refreshed on a Mac or PC) goes to
@@ -443,7 +446,7 @@ chmod 2775 "$ROOT/run/postgresql"
 
 if /usr/sbin/chroot "$ROOT" \
     /usr/bin/pg_isready \
-    -h 127.0.0.1 \
+    -h /run/postgresql \
     -p 5432 >/dev/null 2>&1
 then
     echo "POSTGRESQL=ALREADY_RUNNING"
@@ -483,7 +486,7 @@ else
     while [ "$i" -lt 15 ]; do
         if /usr/sbin/chroot "$ROOT" \
             /usr/bin/pg_isready \
-            -h 127.0.0.1 \
+            -h /run/postgresql \
             -p 5432 >/dev/null 2>&1
         then
             echo "POSTGRESQL=READY"
@@ -594,7 +597,7 @@ else
     while [ "$i" -lt 15 ]; do
         MEDIAMTX_PID="$(cat "$MEDIAMTX_PIDFILE" 2>/dev/null)"
 
-        if pid_matches "$MEDIAMTX_PID" "$MEDIAMTX_BIN" &&            grep -E "\[API\] (started with listener|listener opened) on 127\.0\.0\.1:9997"                "$MEDIAMTX_LOG" >/dev/null 2>&1
+        if pid_matches "$MEDIAMTX_PID" "$MEDIAMTX_BIN" &&            grep -E "\[API\] (started with listener|listener opened) on 127\.0\.0\.2:9997"                "$MEDIAMTX_LOG" >/dev/null 2>&1
         then
             echo "MEDIAMTX=READY"
             break
@@ -685,7 +688,7 @@ else
 
         if /usr/sbin/chroot "$ROOT" \
             /asgard/opentak/venv/bin/python3 -c \
-            'import socket; s=socket.socket(); s.settimeout(1); rc=s.connect_ex(("127.0.0.1",18081)); s.close(); raise SystemExit(0 if rc == 0 else 1)' \
+            'import socket; s=socket.socket(); s.settimeout(1); rc=s.connect_ex(("127.0.0.2",18081)); s.close(); raise SystemExit(0 if rc == 0 else 1)' \
             >/dev/null 2>&1
         then
             echo "OPENTAKSERVER=READY"
@@ -1065,5 +1068,7 @@ echo "ASGARD_TAK_SERVER=READY"
 /usr/local/portabletak/bin/portabletak-federation start </dev/null 2>/dev/null | grep '^PORTABLETAK_FEDERATION' || true
 # Live feeds (ADS-B / AIS), when turned on in the dashboard.
 /usr/local/portabletak/bin/portabletak-feeds start </dev/null 2>/dev/null | grep '^PORTABLETAK_FEEDS' || true
+# Voice server (Mumble) for TAK PTT; on by default, never fails the TAK start.
+/usr/local/portabletak/bin/portabletak-voice start </dev/null 2>/dev/null | grep '^PORTABLETAK_VOICE' || true
 
 exit 0

@@ -17,6 +17,8 @@ import tempfile
 import time
 import uuid
 
+from internal_address import HOST as INTERNAL_HOST
+
 VERSION = 1
 COMPLETE = {'existing', 'provisioned'}
 INCOMPLETE = {'new', 'provisioning', 'failed'}
@@ -337,16 +339,17 @@ def render_stage(stage, journal, private, original):
     config = {
         'SECRET_KEY': private['flask_secret'], 'DEBUG': False,
         'SECURITY_PASSWORD_SALT': private['password_salt'],
-        'SQLALCHEMY_DATABASE_URI': 'postgresql+psycopg://ots:' + private['database_password'] + '@127.0.0.1/ots',
+        'SQLALCHEMY_DATABASE_URI': 'postgresql+psycopg://ots:' + private['database_password'] + '@' + INTERNAL_HOST + '/ots',
         'OTS_DATA_FOLDER': '/asgard/opentak/data',
         'OTS_CA_FOLDER': '/asgard/opentak/data/ca',
         'OTS_CA_NAME': ca_name, 'OTS_CA_SUBJECT': '/O=PortableTAK/OU=TAK',
         'OTS_CA_PASSWORD': private['ca_password'],
         'PORTABLETAK_TRUSTSTORE_PASSWORD': private['client_password'],
         'PORTABLETAK_CLIENT_PASSWORD': private['client_password'],
-        'OTS_LISTENER_ADDRESS': '127.0.0.1',
+        'OTS_LISTENER_ADDRESS': INTERNAL_HOST,
         'OTS_LISTENER_PORT': 18081, 'OTS_NODE_ID': private['node_id'],
-        'OTS_RABBITMQ_SERVER_ADDRESS': '127.0.0.1',
+        'OTS_RABBITMQ_SERVER_ADDRESS': INTERNAL_HOST,
+        'OTS_MEDIAMTX_API_ADDRESS': 'http://' + INTERNAL_HOST + ':9997',
         'OTS_RABBITMQ_USERNAME': 'portabletak',
         'OTS_RABBITMQ_PASSWORD': private['rabbitmq_password'],
         'OTS_MEDIAMTX_TOKEN': private['mediamtx_token'],

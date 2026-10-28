@@ -105,7 +105,7 @@ def _publish(app, bodies):
     credentials = pika.PlainCredentials(app.config.get('OTS_RABBITMQ_USERNAME', 'guest'),
                                         app.config.get('OTS_RABBITMQ_PASSWORD', 'guest'))
     connection = pika.BlockingConnection(pika.ConnectionParameters(
-        host=app.config.get('OTS_RABBITMQ_SERVER_ADDRESS', '127.0.0.1'), credentials=credentials))
+        host=app.config.get('OTS_RABBITMQ_SERVER_ADDRESS', '127.0.0.2'), credentials=credentials))
     try:
         channel = connection.channel()
         for routing_key, body in bodies:

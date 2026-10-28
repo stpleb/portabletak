@@ -17,8 +17,8 @@ RULE=/etc/udev/rules.d/60-portabletak.rules
 # which keeps the radio software (readsb) from opening them.
 TUNER_CONF=/etc/modprobe.d/portabletak-rtl-sdr.conf
 TUNER_MODULES="dvb_usb_rtl28xxu rtl2832_sdr rtl2832 rtl2830"
-TCP_PORTS="8089 8443 8444 8446 8554 1935 8888 8889 8890 9000 9001 1883"
-UDP_PORTS="8000 8001 8189 8890"
+TCP_PORTS="8089 8443 8444 8446 8554 1935 8888 8889 8890 9000 9001 1883 64738"
+UDP_PORTS="8000 8001 8189 8890 64738"
 
 say() { printf '%s\n' "$*"; }
 die() { printf '\nPortableTAK: %s\n' "$*" >&2; exit 1; }

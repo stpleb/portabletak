@@ -3,7 +3,9 @@
 # Runs only if the host has the binaries and the cartridge has joined a tailnet
 # (config/tailscale exists). State lives on the cartridge, so the server keeps
 # its tailnet address when the cartridge moves hosts. Userspace networking: no
-# TUN device, firewall or route changes; tailnet TCP is handed to local ports.
+# TUN device, firewall or route changes; tailnet TCP/UDP is handed to the same port
+# on 127.0.0.1. Machine-only services listen on 127.0.0.2 so the tailnet cannot reach
+# them (lib/internal_address.py).
 #   portabletak-tailscale start|stop|status|enable|apply-address
 #   enable: opt this cartridge in and print a login link for the owner to approve.
 #   apply-address: after approval, add the tailnet address/name to the server

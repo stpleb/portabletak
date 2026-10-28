@@ -49,6 +49,11 @@ TAK_TLS = ('ssl_client_certificate %s; ssl_verify_client optional; ssl_verify_de
            'underscores_in_headers on; ' % CA)
 CERT_HEADER = 'proxy_set_header X-Ssl-Cert $ssl_client_escaped_cert; '
 HLS = 'location /hls/ { proxy_pass http://127.0.0.1:8888/; proxy_buffering off; } '
+# Voice history (TAK PTT): the recorder's clip API. nginx has already checked the phone's TAK
+# certificate (optional on 8443), so it passes on the result and the certificate.
+VOICE = ('location /voice/ { proxy_pass http://unix:/asgard/opentak/voice/api.sock:/; proxy_buffering off; '
+         'proxy_set_header X-Ssl-Verify $ssl_client_verify; '
+         'proxy_set_header X-Ssl-Cert $ssl_client_escaped_cert; } ')
 
 
 def upgrade_tak_site(text):
@@ -63,6 +68,9 @@ def upgrade_tak_site(text):
     # Video feeds that OpenTAKServer lists for TAK clients point at /hls/<feed>/ on 8443.
     if HLS not in text:
         text = re.sub(r'(server \{ listen (?:\S+:)?8443 ssl; .*?)(location / \{)', r'\1' + HLS.replace('\\', '\\\\') + r'\2', text)
+    if VOICE not in text:
+        text = re.sub(r'location /voice/ \{[^}]*\} ', '', text)       # an older voice location
+        text = re.sub(r'(server \{ listen (?:\S+:)?8443 ssl; .*?)(location / \{)', lambda m: m.group(1) + VOICE + m.group(2), text)
     return text
 
 

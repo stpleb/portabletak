@@ -144,6 +144,8 @@ fi
 
 # Federation links first (they feed the services stopped below).
 /usr/local/portabletak/bin/portabletak-feeds stop </dev/null 2>/dev/null | grep '^PORTABLETAK_FEEDS' || true
+# Voice server (Mumble) for TAK PTT; on by default, never fails the TAK stop.
+/usr/local/portabletak/bin/portabletak-voice stop </dev/null 2>/dev/null | grep '^PORTABLETAK_VOICE' || true
 /usr/local/portabletak/bin/portabletak-federation stop </dev/null 2>/dev/null | grep '^PORTABLETAK_FEDERATION' || true
 
 # ---------------------------------------------------------
@@ -422,7 +424,7 @@ if mount | grep -F " on $ROOT/dev " >/dev/null 2>&1; then
 
 if /usr/sbin/chroot "$ROOT" \
     /usr/bin/pg_isready \
-    -h 127.0.0.1 \
+    -h /run/postgresql \
     -p 5432 >/dev/null 2>&1
 then
     echo "ASGARD_ACTION=stopping_postgresql"
@@ -441,7 +443,7 @@ then
 
     while [ "$i" -lt 10 ]
     do
-        if ! /usr/sbin/chroot "$ROOT"             /usr/bin/pg_isready             -h 127.0.0.1             -p 5432 >/dev/null 2>&1
+        if ! /usr/sbin/chroot "$ROOT"             /usr/bin/pg_isready             -h /run/postgresql             -p 5432 >/dev/null 2>&1
         then
             break
         fi
@@ -455,7 +457,7 @@ fi
 
 if /usr/sbin/chroot "$ROOT" \
     /usr/bin/pg_isready \
-    -h 127.0.0.1 \
+    -h /run/postgresql \
     -p 5432 >/dev/null 2>&1
 then
     echo "ASGARD_ERROR=postgresql_still_running"

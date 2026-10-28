@@ -377,7 +377,41 @@ the card shows; encryption on, JSON off, TLS off. Then for each channel: Channel
 <p>A Meshtastic radio plugged into a node by USB (for example one used by the ManetNode field extension) is not used by
 this feature; it connects over MQTT only.</p>
 
-<h2>13. Linking servers (federation)</h2>
+<h2>13. Voice (push to talk)</h2>
+<p>The server runs a voice server (Mumble, port 64738) for push to talk. It starts with PortableTAK; there is
+nothing to set up. Phones use the <b>TAK PTT</b> ATAK plugin, which signs in with the same certificate the phone
+uses for TAK, so there are no extra accounts or passwords. Other Mumble apps (such as Vx) sign in with a
+PortableTAK user name and password. Turning a user off or deleting them on the dashboard also locks them out of voice.</p>
+<ol>
+<li>Install the <b>TAK PTT</b> plugin in ATAK (dashboard → <b>ATAK Plugins</b>, or the plugin file) and load it.</li>
+<li>Connect ATAK to this server as usual. TAK PTT finds the voice server and signs in by itself (the pill at the
+top shows <b>CONNECTED</b>; tap it to see the server and your user name).</li>
+<li>Allow the microphone when asked. <b>PTT</b> tab: hold the ring to talk (or set tap to start, tap to stop under
+<b>SET</b>). A short beep means you may talk; talking stops after the time limit (60 seconds, 20 to 90 under SET).</li>
+<li><b>CHANNELS</b> tab: tap a channel's name to move there, <b>+ NEW CHANNEL</b> to make one. <b>RX</b> listens to a
+channel without leaving yours; <b>TX</b> picks the channels you talk on (several at once).</li>
+<li><b>HISTORY</b> tab: transmissions from the last 7 days, newest first, with who, when and from where. Tap one to
+play it; <b>PLAY UNHEARD</b> plays the new ones in order; <b>MAP</b> shows where each was sent from (on your map only).
+Live traffic always pauses playback.</li>
+</ol>
+<p><b>SOS</b> (the red circle beside the PTT ring): hold it for 3 seconds to send ATAK's 911 emergency alert to everyone; tap it again to cancel.
+When the voice server cannot be reached, TAK PTT keeps working over the local network (OpenMANET or Wi-Fi) between
+phones that have connected to this server before; the pill shows <b>MESH</b>. It goes back to the server by itself.</p>
+<p><b>OpenMANET talk groups</b>: tap <b>CHANNELS</b> again to switch to <b>OPENMANET</b> (cyan): talk groups CH 1 to CH 5,
+the same ones OpenMANET nodes and the ManetNode plugin use, each with RX and TX. They work without the server too.
+The server also joins its <b>LOBBY</b> to talk group 1 (the user <b>OpenMANET CH 1</b> in LOBBY), so people on the server
+and people only on the mesh hear each other. To link other channels, set <code>"talkGroups": "LOBBY=1,Ops=2"</code> in
+<code>opentak/voice.json</code> on the drive (<code>""</code> turns the link off), then restart PortableTAK. One person
+talks at a time across the link, like a radio. Talk groups are not encrypted: anyone on the mesh can listen. The link
+needs the server on the mesh's network (an OpenMANET node or a Linux computer on it); on a Mac or Windows computer,
+where PortableTAK runs in a virtual machine, talk groups may not get through.</p>
+<p>Talking with ATAK in the background: under <b>SET</b>, turn on the <b>floating PTT button</b> (Android asks to let
+TAK PTT appear on top) or <b>volume key as PTT</b> (Android's accessibility settings: turn on <b>TAK PTT buttons</b>;
+it only watches that key). While voice is not connected the volume key works normally.</p>
+<p>Ports: the launchers on Mac, Windows and Linux open 64738 (TCP and UDP). Voice history is served on 8443 at
+<code>/voice/</code> to phones with a PortableTAK certificate only. Clips are kept 7 days (and at most 2 GB).</p>
+
+<h2>14. Linking servers (federation)</h2>
 <p>Federation shares positions, markers, alerts and chat between two TAK servers, so each team sees the other on
 its map. It works with another PortableTAK, OpenTAKServer with PortableTAK's federation add-on, and the official
 TAK Server (tak.gov). Dashboard &rarr; <b>Federation</b> (under Remote Access).</p>
@@ -415,7 +449,7 @@ if you trust it.</li>
 (or remove the link and invite again).</li>
 <li>Moving the drive to another node or computer keeps its links: the federation certificate belongs to the drive.</li>
 </ul>
-<h2>14. Backups, moving and erasing</h2>
+<h2>15. Backups, moving and erasing</h2>
 <ul>
 <li><b>Backups:</b> <b>Backup / Restore</b> creates checked backups on the drive. Download important ones and keep them elsewhere.</li>
 <li><b>Moving the drive</b> to another node or computer: stop or safely remove it, plug it in elsewhere. It adapts by itself.</li>
@@ -424,7 +458,7 @@ settings, remote access, data and on-drive backups. It asks for the administrato
 and cannot be undone. Set the drive up again with PortableTAK Setup afterwards.</li>
 </ul>
 
-<h2 class="pb">15. Troubleshooting</h2>
+<h2 class="pb">16. Troubleshooting</h2>
 <table>
 <tr><th style="width:32%">Problem</th><th>What to do</th></tr>
 <tr><td>Phone says "host unreachable" or never connects</td><td>Check the phone is on the node's Wi-Fi (or the same network as the Windows computer).
@@ -435,6 +469,9 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <tr><td>iPhone sees only one server</td><td>Expected: iTAK reads one server per package. Import the <b>iTAK Remote Package</b> as well.</td></tr>
 <tr><td>ATAK says "registration failed" or "TAK Server profile request failed" after QR setup</td><td>The phone scanned a QR made before an update, or the server's address changed since. Delete the server in ATAK, then scan a fresh <b>ATAK QR Setup</b>. If the server still turns green, it is harmless.</td></tr>
 <tr><td>iTAK QR: "There was an error connecting to the server"</td><td>The iPhone does not fully trust this drive yet. Installing the <b>iPhone Trust Profile</b> is not enough: also go to Settings → General → About → <b>Certificate Trust Settings</b> and switch <b>on</b> this server's certificate. Each drive has its own profile (one made for another drive does not count). The <b>iTAK Package</b> works without this.</td></tr>
+<tr><td>TAK PTT says OFFLINE or "Connect ATAK to your PortableTAK server first"</td><td>ATAK must be connected to this server (green) first; TAK PTT uses that connection and its certificate. Then tap the pill and <b>Reconnect</b>. Over the network, port 64738 must be reachable (the launchers open it).</td></tr>
+<tr><td>TAK PTT: "Voice sign-in refused"</td><td>The user is turned off or was deleted on the dashboard, or the phone's certificate is from another server. Turn the user back on, or re-enroll the phone with this server.</td></tr>
+<tr><td>TAK PTT: no sound or nothing sent with ATAK in the background</td><td>Allow the microphone for TAK PTT (tap the status line). For the floating button, allow <b>Appear on top</b>; for the volume key, turn on <b>TAK PTT buttons</b> in Android's accessibility settings.</td></tr>
 <tr><td>"Invalid credentials" / QR enrollment fails</td><td>Use the user's own name and password, not the administrator. ATAK must trust the server first (import the ATAK Trust Package once). Generate a new QR (each works 3 times).</td></tr>
 <tr><td>Certificate warning in the browser</td><td>Normal: the server uses its own certificate authority. Choose Advanced → Continue. To remove it, install the drive's trust certificate on that device.</td></tr>
 <tr><td>Dashboard sign-in refused after several tries</td><td>Wait a few minutes (sign-in is rate-limited per device), then use the administrator password chosen at setup.</td></tr>
@@ -467,7 +504,7 @@ forget and rejoin the network. Over cellular, the Tailscale app must be on.</td>
 <p><b>Linux:</b> <code>journalctl -u portabletak</code> and <code>/opt/portabletak/root/tmp/portabletak/</code>. <b>Windows:</b> <code>%LOCALAPPDATA%\PortableTAK\portabletak.log</code>. <b>Node</b> (administrators, over SSH):
 <code>/usr/local/portabletak/bin/portabletak-health</code> and the logs under <code>/mnt/asgard/opentak/data/logs</code>.</p>
 
-<h2>16. Security notes</h2>
+<h2>17. Security notes</h2>
 <ul>
 <li>The dashboard requires sign-in. It is reachable on the TAK network at port 8444 (HTTPS), and with remote access
 also from devices signed in to your Tailscale account (nobody else can reach it). It is protected against

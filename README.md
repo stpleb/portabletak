@@ -18,6 +18,9 @@ A portable OpenTAKServer on a USB drive. The same drive runs on OpenMANET nodes,
 - **Data packages**: upload any file or ATAK data package and send it to phones; packages phones share are listed.
 - **Desktop layout**: on a computer screen the dashboard is a sidebar of pages; on phones it is one scrolling page.
 - **Meshtastic**: radios over MQTT on the map and in ATAK.
+- **Voice (push to talk)**: a Mumble voice server (port 64738) for the TAK PTT ATAK plugin, which signs in with the
+  phone's TAK certificate (no extra accounts); other Mumble apps such as Vx sign in with a PortableTAK user name and
+  password. Every transmission is kept for 7 days (voice history) with who, when and from where.
 - **Federation** with other PortableTAK servers, OpenTAKServer and the official TAK Server.
 
 ## Download (Releases)
@@ -47,10 +50,12 @@ Setup and Troubleshooting Guide, Skydio X10D Guide).
 | `windows-setup/`, `mac-setup/` | Drive-making tools |
 | `start-here/` | Files on the drive's visible partition (launchers; large images come from the builds) |
 | `guides/` | Guide sources (HTML) and PDFs |
+| `voice/` | Builds the voice server bundle (Murmur and ZeroC Ice from Ubuntu packages) |
 | `docs/` | Runbook, plans and design notes |
 | `third-party/` | Provenance of bundled third-party binaries |
 
 Third-party software keeps its own license: OpenTAKServer (GPL-3.0), Ubuntu base, MediaMTX (MIT),
 Tailscale (BSD-3-Clause), usbipd-win (MIT), MapLibre GL JS (BSD-3-Clause), PMTiles and Protomaps basemaps
 (BSD-3-Clause; map data © OpenStreetMap contributors, ODbL), hls.js (Apache-2.0), readsb (GPL-3.0),
-rtl-sdr (GPL-2.0), libusb (LGPL-2.1).
+rtl-sdr (GPL-2.0), libusb (LGPL-2.1), Mumble server (BSD-3-Clause), ZeroC Ice (GPL-2.0), Qt 5 (LGPL-3.0),
+Protocol Buffers (BSD-3-Clause).

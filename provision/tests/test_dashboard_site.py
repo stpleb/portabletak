@@ -43,7 +43,8 @@ class TakSiteTests(unittest.TestCase):
     def test_upgrade_adds_client_cert_passthrough_once(self):
         new = dashboard_site.upgrade_tak_site(self.OLD)
         self.assertEqual(new.count('ssl_verify_client optional;'), 2)
-        self.assertEqual(new.count('X-Ssl-Cert $ssl_client_escaped_cert;'), 2)
+        # One per TAK server block, plus the voice history location on 8443.
+        self.assertEqual(new.count('X-Ssl-Cert $ssl_client_escaped_cert;'), 2 + new.count(dashboard_site.VOICE))
         self.assertEqual(new.count('underscores_in_headers on;'), 2)
         self.assertEqual(dashboard_site.upgrade_tak_site(new), new)
 
@@ -93,6 +94,27 @@ class HlsTests(unittest.TestCase):
         self.assertEqual(text.count(dashboard_site.HLS), 1)
         self.assertLess(text.index(dashboard_site.HLS), text.index('listen 8446'))
         self.assertEqual(dashboard_site.upgrade_tak_site(text), text)
+
+
+class VoiceTests(unittest.TestCase):
+    def test_voice_location_added_to_8443_only_once_and_passes_the_certificate(self):
+        import dashboard_site
+        site = ('server { listen 8443 ssl; location / { proxy_pass http://127.0.0.1:8081; } }\n'
+                'server { listen 8446 ssl; location / { return 404; } }\n')
+        text = dashboard_site.upgrade_tak_site(site)
+        self.assertEqual(text.count(dashboard_site.VOICE), 1)
+        self.assertLess(text.index(dashboard_site.VOICE), text.index('listen 8446'))
+        self.assertIn('X-Ssl-Verify $ssl_client_verify', dashboard_site.VOICE)
+        self.assertIn('unix:/asgard/opentak/voice/api.sock', dashboard_site.VOICE)
+        self.assertEqual(dashboard_site.upgrade_tak_site(text), text)
+
+    def test_older_voice_location_is_replaced_not_duplicated(self):
+        import dashboard_site
+        old = ('server { listen 8443 ssl; location /voice/ { proxy_pass http://127.0.0.1:18096/; proxy_buffering off; } '
+               'location / { proxy_pass http://127.0.0.1:8081; } }\n')
+        text = dashboard_site.upgrade_tak_site(old)
+        self.assertEqual(text.count('location /voice/'), 1)
+        self.assertNotIn('18096', text)
 
 
 if __name__ == '__main__':
