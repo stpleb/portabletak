@@ -9,10 +9,12 @@ only on the mesh (OpenMANET nodes, the ManetNode plugin, TAK PTT's OPENMANET gro
 other. The Opus packets are passed on as they are (no re-encoding).
 
 Talk groups use OpenMANET's own comms format: RTP, payload type 111 (Opus 48 kHz mono), sent to
-the multicast address (239.41.0.1) on port 38799 + 2 x group (talk group 1 = 38801). One speaker
+a multicast address on port 38799 + 2 x group (talk group 1 = 38801). Two addresses are in use:
+239.192.41.1 (openmanetd: the node's web PTT and audio modules) and 239.41.0.1 (the ManetNode
+plugin). The bridge listens on and sends to both; a packet heard on both counts once. One speaker
 at a time each way, like a radio. Talk groups are not encrypted.
 
-    takptt_bridge.py --data /asgard/opentak/voice --links LOBBY=1[,Ops=2] [--address 239.41.0.1]
+    takptt_bridge.py --data /asgard/opentak/voice --links LOBBY=1[,Ops=2] [--address 239.192.41.1,239.41.0.1]
                      [--interfaces br-ahwlan,wlan0] [--host 127.0.0.1] [--port 64738]
 
 Only the Python standard library; the Mumble protocol is spoken directly (helpers shared with
@@ -41,6 +43,7 @@ from takptt_recorder import (VERSION, VERSION_MSG, AUTHENTICATE, PING, REJECT, S
 log = logging.getLogger('takptt-bridge')
 
 PT_OPUS = 111
+ADDRESSES = ('239.192.41.1', '239.41.0.1')   # openmanetd (web PTT, audio modules); ManetNode plugin
 QUIET = 0.6                                # seconds without packets that end a transmission
 SKIP_INTERFACES = ('lo', 'tailscale', 'docker', 'veth', 'br-docker', 'virbr')
 
@@ -128,8 +131,9 @@ def parse_links(text):
 class TalkGroup:
     """The multicast side of a link: receives the talk group, sends to it."""
 
-    def __init__(self, address, group, interfaces):
-        self.address, self.group, self.port = address, group, talk_group_port(group)
+    def __init__(self, addresses, group, interfaces):
+        self.addresses, self.group, self.port = addresses, group, talk_group_port(group)
+        self.heard = {}                    # ssrc -> (last RTP sequence, when): one copy per packet
         self.interfaces = interfaces
         self.ssrc = random.getrandbits(32)
         self.seq = random.getrandbits(16)
@@ -141,11 +145,12 @@ class TalkGroup:
             self.rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         self.rx.bind(('', self.port))
         for name, addr in interfaces:
-            try:
-                self.rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                                   socket.inet_aton(address) + socket.inet_aton(addr))
-            except OSError as e:
-                log.warning('talk group %d: cannot join on %s: %s', group, name, e)
+            for address in addresses:
+                try:
+                    self.rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                                       socket.inet_aton(address) + socket.inet_aton(addr))
+                except OSError as e:
+                    log.warning('talk group %d: cannot join %s on %s: %s', group, address, name, e)
         self.tx = []
         for name, addr in interfaces:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -153,23 +158,35 @@ class TalkGroup:
             s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
             s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(addr))
             self.tx.append(s)
-        log.info('talk group %d on %s:%d via %s', group, address, self.port,
+        log.info('talk group %d on %s port %d via %s', group, ' and '.join(addresses), self.port,
                  ', '.join(n for n, _ in interfaces) or 'no interface')
 
     def send(self, opus):
         """One Opus packet out on the talk group (as this bridge's own RTP stream)."""
         hdr = struct.pack('>BBHII', 0x80, (0x80 if self.first else 0) | PT_OPUS, self.seq, self.ts, self.ssrc)
         for s in self.tx:
-            try:
-                s.sendto(hdr + opus, (self.address, self.port))
-            except OSError as e:
-                log.debug('talk group %d send: %s', self.group, e)
+            for address in self.addresses:
+                try:
+                    s.sendto(hdr + opus, (address, self.port))
+                except OSError as e:
+                    log.debug('talk group %d send: %s', self.group, e)
         self.first = False
         self.seq = (self.seq + 1) & 0xFFFF
         self.ts = (self.ts + (opus_samples(opus) or 960)) & 0xFFFFFFFF
 
     def end(self):
         self.first = True                  # the next transmission starts with the marker bit
+
+    def fresh(self, ssrc, seq, now):
+        """False for a packet already heard (the same one sent to the other address)."""
+        last = self.heard.get(ssrc)
+        if last is not None and now - last[1] < 2 and not 0 < (seq - last[0]) & 0xFFFF < 0x8000:
+            return False
+        self.heard[ssrc] = (seq, now)
+        if len(self.heard) > 64:
+            for k in [k for k, v in self.heard.items() if now - v[1] > 10]:
+                del self.heard[k]
+        return True
 
 
 class Link:
@@ -178,7 +195,7 @@ class Link:
     def __init__(self, args, channel, group):
         self.args, self.channel_name, self.group = args, channel, group
         self.name = name_for(group)
-        self.tg = TalkGroup(args.address, group, args.ifaces)
+        self.tg = TalkGroup(args.addresses, group, args.ifaces)
         self.sock = None
         self.send_lock = threading.Lock()
         self.session = None
@@ -343,6 +360,8 @@ class Link:
             if ssrc == self.tg.ssrc:
                 continue                           # our own (looped back by another interface)
             now = time.time()
+            if not self.tg.fresh(ssrc, struct.unpack('>H', data[2:4])[0], now):
+                continue                           # the same packet on the other address
             if self.in_ssrc not in (None, ssrc) and now - self.in_last < QUIET:
                 continue                           # one speaker at a time
             if self.out_speaker is not None and now - self.out_last < QUIET:
@@ -380,7 +399,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--data', required=True)
     p.add_argument('--links', default='LOBBY=1', help='CHANNEL=GROUP[,CHANNEL=GROUP...]')
-    p.add_argument('--address', default='239.41.0.1')
+    p.add_argument('--address', default=','.join(ADDRESSES), help='multicast addresses (comma separated)')
     p.add_argument('--interfaces', help='only these network interfaces (comma separated)')
     p.add_argument('--host', default='127.0.0.1')
     p.add_argument('--port', type=int, default=64738)
@@ -396,6 +415,7 @@ def main():
         if g in seen:
             sys.exit('talk group %d is linked twice' % g)
         seen.add(g)
+    args.addresses = [a.strip() for a in args.address.split(',') if a.strip()]
     args.ifaces = interface_addresses(set(args.interfaces.split(',')) if args.interfaces else None)
     args.identity_lock = threading.Lock()
     for channel, group in links:

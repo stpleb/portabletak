@@ -7,7 +7,9 @@
 # certificate ATAK enrolled with this server (TAK PTT plugin), or a PortableTAK user name and
 # password (other Mumble apps such as Vx). On by default; "enabled": false in
 # opentak/voice.json turns it off.
-# While it runs, a watchdog (portabletak-voice watch) starts again any part that stopped, every 30 s.
+# While it runs, a watchdog (portabletak-voice watch) starts again any part that stopped, every 30 s,
+# and every 5 minutes moves a node's clock forward from the phones' reports if it is behind and
+# makes the daily automatic backup when it is due (Backup / Restore on the dashboard).
 #   portabletak-voice start|stop|restart|status
 ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
 ARCH="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard --arch)"
@@ -244,9 +246,17 @@ start_watch()
 case "${1:-status}" in
     watch)
         # Exits when stopped (its pid file is removed or replaced) or when the drive is gone.
+        n=0
         while sleep 30; do
             [ "$(cat "$WATCH_PID" 2>/dev/null)" = "$$" ] || exit 0
             [ -d /mnt/asgard/opentak ] && wanted || exit 0
+            # Every 5 minutes: a node's clock that is behind is set from the phones' reports.
+            # and the daily automatic backup is made when it is due.
+            n=$((n + 1))
+            if [ $((n % 10)) = 1 ]; then
+                /usr/local/portabletak/bin/portabletak-clock check >/dev/null 2>&1
+                /usr/local/portabletak/bin/portabletak-backup-auto >/dev/null 2>&1
+            fi
             all_running && continue
             echo "$(date '+%Y-%m-%d %H:%M:%S') watchdog: a voice part stopped, starting it again" >> "$LOG"
             "$0" start-parts >/dev/null 2>&1

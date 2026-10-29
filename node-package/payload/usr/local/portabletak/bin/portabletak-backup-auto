@@ -1,0 +1,9 @@
+#!/usr/bin/python3
+"""Make today's automatic backup when it is due (see lib/backup_auto.py). Run by the watchdog."""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+import backup_auto
+
+print('PORTABLETAK_BACKUP_AUTO=' + backup_auto.run().upper())

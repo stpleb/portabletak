@@ -73,6 +73,14 @@ after every reboot or power loss.</li>
 </ol>
 <p><b>Addresses on a node:</b> <code>10.41.250.10</code> works on every node, from the node's own Wi-Fi and from anywhere on the
 mesh. Older CicadaTAK nodes also answer at <code>10.41.254.1</code> on their own Wi-Fi. Client packages and QR codes pick the right one.</p>
+<p><b>Two servers on one mesh</b> (two teams link their meshes): each PortableTAK server needs its own address. A server
+that starts while another already answers on its address takes the next free one (<code>10.41.250.11</code> and up) and
+keeps it; set its phones up again from its dashboard (new package or QR). If both were already running when the meshes
+linked, the dashboard says so in red: stop and start the server that joined later, then set up its phones. Federate the
+two (section 14) to share positions, chat and files. Over Tailscale instead, the meshes stay apart and nothing changes.</p>
+<p><b>Heat:</b> the dashboard shows the node's temperature at the top, and a warning above 75 &deg;C. Above 80 &deg;C the node
+slows down and a hot USB drive can drop off, which stops the server: keep the node out of the sun, give it airflow, and
+keep the drive cool and well seated. Warm periods are noted in <code>logs/temperature.log</code> on the drive.</p>
 <p><b>Internet sharing:</b> if the node's Ethernet port has internet, the node shares it with its Wi-Fi clients
 automatically and stops when the uplink goes away (phones then use cellular for internet).</p>
 <p><b>Unplugging:</b> press <b>Safe Remove</b> in the dashboard and wait for "safe to remove". Pulling the drive or
@@ -398,7 +406,12 @@ play it; <b>PLAY UNHEARD</b> plays the new ones in order; <b>MAP</b> shows where
 When the voice server cannot be reached, TAK PTT keeps working over the local network (OpenMANET or Wi-Fi) between
 phones that have connected to this server before; the pill shows <b>MESH</b>. It goes back to the server by itself.</p>
 <p><b>OpenMANET talk groups</b>: tap <b>CHANNELS</b> again to switch to <b>OPENMANET</b> (cyan): talk groups CH 1 to CH 5,
-the same ones OpenMANET nodes and the ManetNode plugin use, each with RX and TX. They work without the server too.
+the same ones OpenMANET nodes (their web page's <b>COMMS</b> push to talk) and the ManetNode plugin use, each with RX and
+TX. They work without the server too. A node's own push to talk only works with <b>comms</b> turned on in its OpenMANET
+settings (<code>comms: enable: true</code> in <code>/etc/openmanetd/config.yml</code>, <code>controlSource: web</code> for the web page).
+Browsers only allow the microphone on <code>https://</code> pages, so to talk from a phone's browser open the node's page
+through PortableTAK at <code>https://10.41.250.10:8445</code> (accept the certificate warning, or install the drive's trust
+certificate) instead of <code>http://&lt;node&gt;:8080</code>.
 The server also joins its <b>LOBBY</b> to talk group 1 (the user <b>OpenMANET CH 1</b> in LOBBY), so people on the server
 and people only on the mesh hear each other. To link other channels, set <code>"talkGroups": "LOBBY=1,Ops=2"</code> in
 <code>opentak/voice.json</code> on the drive (<code>""</code> turns the link off), then restart PortableTAK. One person
@@ -422,8 +435,9 @@ it only watches that key). While voice is not connected the volume key works nor
 its map. It works with another PortableTAK, OpenTAKServer with PortableTAK's federation add-on, and the official
 TAK Server (tak.gov). Dashboard &rarr; <b>Federation</b> (under Remote Access).</p>
 <p><b>Data packages</b> an ATAK user sends to someone on the other server also cross between PortableTAK servers:
-the file moves over the federation link and the receiving phone downloads it from its own server. Not yet with an
-official TAK Server, and Data Sync missions are not shared.</p>
+the file moves over the federation link and the receiving phone downloads it from its own server. With an official
+TAK Server this needs its administrator to turn on <b>mission federation</b> (<code>allowMissionFederation="true"</code>
+on <code>&lt;federation&gt;</code> in CoreConfig.xml). Data Sync missions are not shared yet.</p>
 <h3>Two PortableTAK servers: one code</h3>
 <ol>
 <li>On the first server: <b>Invite a server</b>. Copy the code (or download the invite file) and send it to the

@@ -19,16 +19,22 @@ import arch_sync
 from portabletak_provision import atomic_write
 
 PORT = 8444
+# A node's OpenMANET web page (openmanetd, plain http on 8080) again over HTTPS on 8445, so a
+# phone's browser lets its push to talk use the microphone (browsers only allow it on https
+# pages or localhost).
+OPENMANET_PORT, OPENMANET_UPSTREAM, OPENMANETD = 8445, '127.0.0.1:8080', '/usr/bin/openmanetd'
 SITE = 'etc/nginx/sites-available/portabletak-dashboard'
 LINK = 'etc/nginx/sites-enabled/portabletak-dashboard'
 CERTS = '/asgard/opentak/data/ca/certs/opentakserver'
 
 
-def render(port=PORT, certs=CERTS):
+def render(port=PORT, certs=CERTS, openmanet=None):
+    if openmanet is None:
+        openmanet = os.path.exists(OPENMANETD)
     return ('server { listen %d ssl; '
             'ssl_certificate %s/opentakserver.pem; '
             'ssl_certificate_key %s/opentakserver.nopass.key; '
-            'client_max_body_size 256m; '
+            'client_max_body_size 4096m; '
             # Offline map areas (PMTiles): nginx serves the byte ranges the map asks for.
             'location /maps/ { alias /asgard/opentak/maps/; '
             'types { application/octet-stream pmtiles; } add_header Cache-Control no-cache; } '
@@ -36,7 +42,19 @@ def render(port=PORT, certs=CERTS):
             'proxy_set_header Host $http_host; '
             'proxy_set_header X-Forwarded-Proto https; '
             'proxy_set_header X-Forwarded-For $remote_addr; '
-            'proxy_read_timeout 900s; } }\n' % (port, certs, certs))
+            'proxy_read_timeout 900s; } }\n' % (port, certs, certs)) + (openmanet_block(certs) if openmanet else '')
+
+
+def openmanet_block(certs=CERTS):
+    return ('server { listen %d ssl; '
+            'ssl_certificate %s/opentakserver.pem; '
+            'ssl_certificate_key %s/opentakserver.nopass.key; '
+            'location / { proxy_pass http://%s; proxy_http_version 1.1; '
+            'proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; '
+            'proxy_set_header Host $http_host; '
+            'proxy_set_header X-Forwarded-Proto https; '
+            'proxy_set_header X-Forwarded-For $remote_addr; '
+            'proxy_read_timeout 3600s; } }\n' % (OPENMANET_PORT, certs, certs, OPENMANET_UPSTREAM))
 
 
 TAK_SITE = 'etc/nginx/sites-available/portabletak'

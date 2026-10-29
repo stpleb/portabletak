@@ -1,0 +1,26 @@
+#!/usr/bin/python3
+"""Move an OpenMANET node's clock forward from the phones' newest position reports when it is
+behind (no clock battery, no internet after a reboot). Run every few minutes by the voice
+watchdog; does nothing elsewhere, or when the clock is right.
+  portabletak-clock check"""
+from pathlib import Path
+import sys
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
+import node_clock
+
+try:
+    offset = node_clock.from_phones(node_clock.newest_report_times())
+except Exception as error:                      # no database yet, chroot not mounted...
+    print('PORTABLETAK_CLOCK=UNKNOWN')
+    sys.exit(0)
+if offset is None:
+    print('PORTABLETAK_CLOCK=OK')
+else:
+    print('PORTABLETAK_CLOCK=SET_FROM_PHONES offset=%+d' % round(offset))
+    try:
+        with open('/mnt/asgard/opentak/data/logs/clock.log', 'a') as log:
+            log.write('%s set forward %+d s from phone reports\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), round(offset)))
+    except OSError:
+        pass

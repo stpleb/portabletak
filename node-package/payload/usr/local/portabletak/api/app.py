@@ -176,7 +176,37 @@ def status():
         "address_gone": address_gone(),
         "opentakserver_version": opentakserver_version(),
         "portabletak_version": portabletak_version(),
+        "temperature": heat_status(),
+        "address_conflict": address_conflict(),
     }
+
+
+def address_conflict():
+    """Another PortableTAK server answering on this node's service address (linked meshes)."""
+    if host_kind() not in (None, "node"):
+        return None
+    try:
+        conf = {}
+        for line in open("/mnt/asgard/config/tak-network.conf"):
+            key, sep, value = line.strip().partition("=")
+            if sep:
+                conf[key] = value.strip().strip('"')
+        address, interface = conf.get("PORTABLETAK_SERVICE_IP"), conf.get("PORTABLETAK_SERVICE_DEV")
+        if not address or not interface:
+            return None
+        import address_conflict as ac
+        others = ac.check(address, interface)
+        return {"address": address, "others": others} if others else None
+    except Exception:
+        return None
+
+
+def heat_status():
+    try:
+        import heat
+        return heat.status()
+    except Exception:
+        return {"c": None, "level": None}
 
 
 def portabletak_version():
@@ -700,6 +730,79 @@ def restore_backup(name: str):
 @app.get("/api/backups")
 def list_backups():
     return backup_catalog.list_backups("/mnt/asgard/portabletak/backups/recovery")
+
+
+BACKUP_DIR = Path("/mnt/asgard/portabletak/backups/recovery")
+BACKUP_SCHEDULE = Path("/mnt/asgard/config/backup-schedule.json")
+MAX_UPLOAD = 4 * 1024 ** 3
+
+
+@app.post("/api/backup/upload")
+async def upload_backup(request: Request, name: str = Query(...)):
+    """A backup file from another drive or a computer (e.g. onto a replacement drive). Kept
+    only if it verifies, like Verify does."""
+    import hashlib
+    if not backup_catalog.valid_name(name):
+        raise HTTPException(status_code=400, detail="invalid_backup_name")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    final = BACKUP_DIR / name
+    if final.exists():
+        raise HTTPException(status_code=409, detail="backup_exists")
+    part = BACKUP_DIR / (name + ".upload")
+    digest, size = hashlib.sha256(), 0
+    try:
+        with open(part, "wb") as out:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_UPLOAD:
+                    raise HTTPException(status_code=413, detail="backup_too_large")
+                digest.update(chunk)
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="empty_upload")
+        os.replace(part, final)
+    finally:
+        if part.exists():
+            part.unlink()
+    result = run_command_args("restore", ["verify", name], timeout=180)
+    if result["return_code"] != 0:
+        final.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=parse_status(result["output"]).get("ERROR", "backup_invalid"))
+    stamp = backup_catalog.NAME.fullmatch(name).group(1)
+    sidecar = {"format": 1, "id": name[:-7], "created_utc": "",
+               "created_local": "%s-%s-%sT%s:%s:%s" % (stamp[0:4], stamp[4:6], stamp[6:8], stamp[9:11], stamp[11:13], stamp[13:15]),
+               "note": "Uploaded", "sha256": digest.hexdigest(), "size": size}
+    # Compact: portabletak-restore reads the checksum with sed.
+    (BACKUP_DIR / (name + ".json")).write_text(json.dumps(sidecar, separators=(",", ":")) + "\n")
+    return {"ok": True, "name": name, "size": size}
+
+
+def backup_schedule():
+    try:
+        data = json.loads(BACKUP_SCHEDULE.read_text())
+    except (OSError, ValueError):
+        data = {}
+    return {"enabled": data.get("enabled") is True,
+            "hour": data.get("hour") if isinstance(data.get("hour"), int) and 0 <= data.get("hour") <= 23 else 3,
+            "keep": data.get("keep") if isinstance(data.get("keep"), int) and 1 <= data.get("keep") <= 60 else 7}
+
+
+@app.get("/api/backup/schedule")
+def get_backup_schedule():
+    return {"ok": True, "schedule": backup_schedule()}
+
+
+@app.post("/api/backup/schedule")
+def set_backup_schedule(payload: dict = Body(...)):
+    enabled, hour, keep = payload.get("enabled"), payload.get("hour"), payload.get("keep")
+    if (not isinstance(enabled, bool) or not isinstance(hour, int) or isinstance(hour, bool) or not 0 <= hour <= 23
+            or not isinstance(keep, int) or isinstance(keep, bool) or not 1 <= keep <= 60):
+        raise HTTPException(status_code=400, detail="invalid_backup_schedule")
+    BACKUP_SCHEDULE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = BACKUP_SCHEDULE.with_suffix(".json.new")
+    tmp.write_text(json.dumps({"enabled": enabled, "hour": hour, "keep": keep}) + "\n")
+    os.replace(tmp, BACKUP_SCHEDULE)
+    return {"ok": True, "schedule": backup_schedule()}
 
 
 @app.delete("/api/backup/{name}")

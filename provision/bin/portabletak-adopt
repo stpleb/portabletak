@@ -26,6 +26,13 @@ def main(argv):
         return 2
     try:
         adapter = select_adapter(read_profile())
+        if adapter.profile == 'openmanet':
+            # Another PortableTAK server on this mesh may hold the drive's address already.
+            from adapters.openmanet.provision import choose_service_address
+            chosen = choose_service_address(binding(ROOT)['address'], adapter.interface)
+            if chosen != adapter.address:
+                adapter.address = chosen
+                print('PORTABLETAK_SERVICE_ADDRESS=' + chosen)
         if not needs_adoption(ROOT, adapter):
             print('PORTABLETAK_ADOPTION=CURRENT')
             return 0

@@ -1,6 +1,7 @@
 """OpenMANET-specific provisioning adapter."""
 
 import json
+import re
 import subprocess
 
 from host_adapter import HostAdapter
@@ -22,6 +23,35 @@ def detect_node_local(run=subprocess.run):
     except (OSError, subprocess.SubprocessError):
         return LEGACY_NODE_ADDRESS
     return LEGACY_NODE_ADDRESS if ' 10.41.254.' in out else None
+
+
+SERVICE_POOL = ['10.41.250.%d' % n for n in range(10, 20)]   # one per PortableTAK server on a mesh
+
+
+def _held(address, interface, run):
+    """'local' (this node has it), 'taken' (another host answers on it) or 'free'."""
+    out = run(['ip', '-4', '-o', 'addr', 'show', 'dev', interface], capture_output=True, text=True, timeout=5).stdout
+    if (' inet %s/' % address) in out:
+        return 'local'
+    run(['ip', 'neigh', 'del', address, 'dev', interface], capture_output=True, timeout=5)
+    run(['ping', '-c', '1', '-W', '1', address], capture_output=True, timeout=5)
+    neigh = run(['ip', 'neigh', 'show', address, 'dev', interface], capture_output=True, text=True, timeout=5).stdout
+    return 'taken' if re.search(r'REACHABLE|STALE|DELAY|PROBE|PERMANENT', neigh) else 'free'
+
+
+def choose_service_address(current, interface='br-ahwlan', run=subprocess.run):
+    """The service address for this drive on this mesh: its own (current) when free or already
+    here, else the first free one of 10.41.250.10 to .19, so a second PortableTAK server on the
+    same mesh starts on its own address (federate the two to share). Keeps `current` when all
+    are taken (the claim then reports the collision) or the network cannot be checked."""
+    candidates = ([current] if current else []) + [a for a in SERVICE_POOL if a != current]
+    try:
+        for address in candidates:
+            if _held(address, interface, run) in ('local', 'free'):
+                return address
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return current or SERVICE_POOL[0]
 
 
 class OpenManetAdapter(HostAdapter):

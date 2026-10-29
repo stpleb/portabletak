@@ -44,5 +44,23 @@ class NodeClockTests(unittest.TestCase):
         self.assertIsNone(self.set((NOW + 27000) * 1000, run=Run(rc=1)))
 
 
+class FromPhonesTests(unittest.TestCase):
+    def go(self, times, profile=NODE):
+        run = Run()
+        return node_clock.from_phones(times, profile, now=lambda: NOW, run=run), run.calls
+
+    def test_node_behind_moves_forward(self):
+        offset, calls = self.go([NOW + 27000, NOW + 26990, NOW + 26800])
+        self.assertAlmostEqual(offset, 27000)
+        self.assertEqual(calls, [['date', '-s', '@%d' % (NOW + 27000)]])
+
+    def test_never_back_and_needs_three_close_reports(self):
+        self.assertEqual(self.go([NOW - 27000] * 3), (None, []))           # old reports: nothing
+        self.assertEqual(self.go([NOW + 30] * 3), (None, []))              # close enough
+        self.assertEqual(self.go([NOW + 27000, NOW + 27000]), (None, []))  # too few
+        self.assertEqual(self.go([NOW + 27000, NOW + 27000, NOW - 9000]), (None, []))
+        self.assertEqual(self.go([NOW + 27000] * 3, LINUX), (None, []))    # not a node
+
+
 if __name__ == '__main__':
     unittest.main()

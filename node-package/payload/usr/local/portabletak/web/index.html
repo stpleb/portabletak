@@ -384,9 +384,12 @@ button.danger {
     </div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <a href="/map" class="badge" style="text-decoration:none;color:var(--text);border-color:var(--accent)">&#128506; Live Map</a>
+        <div id="heatBadge" class="badge" style="display:none" title="Hottest temperature sensor on this host"></div>
         <div id="runtimeBadge" class="badge">Loading...</div>
     </div>
 </header>
+<div id="heatNote" class="card" style="display:none;margin:0 0 16px;border-color:var(--warn)"></div>
+<div id="conflictNote" class="card" style="display:none;margin:0 0 16px;border-color:var(--bad)"></div>
 
 <section class="grid">
 
@@ -742,9 +745,21 @@ button.danger {
         </summary>
 
         <div style="margin-top:14px">
+            <input id="backupNote" maxlength="120" placeholder="Note (optional), e.g. before the trip" style="max-width:320px">
             <button onclick="createPortableTakBackup()">
                 Create Backup
             </button>
+            <label class="label" style="display:block;margin-top:12px">Upload a backup (a .tar.gz from Download, e.g. onto a replacement drive):
+                <input id="backupUpload" type="file" accept=".tar.gz,application/gzip" onchange="uploadPortableTakBackup(this)">
+            </label>
+            <div style="margin-top:12px">
+                <label><input id="backupAuto" type="checkbox"> Automatic backup every day after</label>
+                <select id="backupHour"></select>
+                <label>keep the last</label>
+                <select id="backupKeep"></select>
+                <button onclick="saveBackupSchedule()">Save</button>
+                <div class="label" style="margin-top:4px">Only automatic backups are removed to keep that number; ones you make or upload stay.</div>
+            </div>
 
             <div id="backupStatus" class="label" style="margin-top:12px">
                 No backup action in progress.
@@ -780,6 +795,34 @@ function yesNo(v) {
     if (v === "1") return "Yes";
     if (v === "0") return "No";
     return value(v);
+}
+
+// Node temperature: a badge, and a note while warm or hot (a hot node or drive can drop the drive off USB).
+function showHeat(t) {
+    const badge = document.getElementById("heatBadge"), note = document.getElementById("heatNote");
+    if (!t || t.c === null || t.c === undefined) { badge.style.display = "none"; note.style.display = "none"; return; }
+    badge.style.display = "";
+    badge.textContent = t.c.toFixed(0) + " \u00b0C";
+    badge.className = "badge " + (t.level === "hot" ? "bad" : t.level === "warm" ? "warn" : "good");
+    if (t.level === "ok") { note.style.display = "none"; return; }
+    note.style.display = "";
+    note.style.borderColor = t.level === "hot" ? "var(--bad)" : "var(--warn)";
+    note.innerHTML = "<b class=\"" + (t.level === "hot" ? "bad" : "warn") + "\">" +
+        (t.level === "hot" ? "This node is hot" : "This node is running warm") + " (" + t.c.toFixed(0) + " \u00b0C).</b> " +
+        "Move it out of the sun, give it airflow, and keep the USB drive cool and well seated. " +
+        (t.level === "hot" ? "It slows down at this temperature, and a hot drive can drop off USB, which stops the server." :
+            "Above 80 \u00b0C it slows down and the drive can drop off USB.");
+}
+
+// Another PortableTAK server on this mesh with the same service address (two teams linked up).
+function showConflict(c) {
+    const note = document.getElementById("conflictNote");
+    if (!c) { note.style.display = "none"; return; }
+    note.style.display = "";
+    note.innerHTML = '<b class="bad">Another server on this mesh is using ' + c.address + '.</b> ' +
+        "Phones may reach either server. Stop and start the server that joined the mesh later: it moves to the next " +
+        "free address (10.41.250.11 and up). Then set its phones up again from its dashboard, and federate the two " +
+        "servers (Federation) to share. Other device: " + (c.others || []).join(", ");
 }
 
 function stateClass(state) {
@@ -860,6 +903,8 @@ async function refreshStatus() {
         const n = networkResponse.network || {};
 
         lastStatus = s;
+        showHeat(statusResponse.temperature);
+        showConflict(statusResponse.address_conflict);
         showHostActions(statusResponse.host_kind, statusResponse.address_gone);
 
         const runtime = value(s.PORTABLETAK_RUNTIME, "UNAVAILABLE");
@@ -1244,12 +1289,16 @@ async function createPortableTakBackup() {
     status.textContent = "Creating backup...";
 
     try {
+        const note = document.getElementById("backupNote").value.trim();
         const response = await fetchJson(
             "/api/backup",
             {
-                method: "POST"
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(note ? {note: note} : {})
             }
         );
+        document.getElementById("backupNote").value = "";
 
         const backup = response.backup || {};
 
@@ -1261,6 +1310,58 @@ async function createPortableTakBackup() {
     } catch (err) {
         status.textContent =
             "Backup failed: " + err.message;
+    }
+}
+
+async function uploadPortableTakBackup(input) {
+    const status = document.getElementById("backupStatus");
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!/^portabletak-\d{8}_\d{6}\.tar\.gz$/.test(file.name)) {
+        status.textContent = "Upload failed: pick a PortableTAK backup file (portabletak-YYYYMMDD_HHMMSS.tar.gz).";
+        input.value = "";
+        return;
+    }
+    status.textContent = "Uploading and checking " + file.name + "...";
+    try {
+        await fetchJson("/api/backup/upload?name=" + encodeURIComponent(file.name),
+            {method: "POST", headers: {"Content-Type": "application/octet-stream"}, body: file});
+        status.textContent = "Uploaded and verified: " + file.name + ". Restore it from the list below.";
+        await refreshBackups();
+    } catch (err) {
+        status.textContent = "Upload failed: " + err.message;
+    }
+    input.value = "";
+}
+
+async function loadBackupSchedule() {
+    const hour = document.getElementById("backupHour"), keep = document.getElementById("backupKeep");
+    if (!hour.options.length) {
+        for (let h = 0; h < 24; h++) hour.add(new Option(String(h).padStart(2, "0") + ":00", h));
+        for (const k of [3, 5, 7, 14, 30]) keep.add(new Option(k + " days", k));
+    }
+    try {
+        const s = (await fetchJson("/api/backup/schedule")).schedule;
+        document.getElementById("backupAuto").checked = s.enabled;
+        hour.value = s.hour;
+        if (![...keep.options].some(o => Number(o.value) === s.keep)) keep.add(new Option(s.keep + " days", s.keep));
+        keep.value = s.keep;
+    } catch (err) {
+    }
+}
+
+async function saveBackupSchedule() {
+    const status = document.getElementById("backupStatus");
+    try {
+        await fetchJson("/api/backup/schedule", {method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({enabled: document.getElementById("backupAuto").checked,
+                hour: Number(document.getElementById("backupHour").value),
+                keep: Number(document.getElementById("backupKeep").value)})});
+        status.textContent = document.getElementById("backupAuto").checked
+            ? "Automatic backups on: every day after " + document.getElementById("backupHour").selectedOptions[0].text + "."
+            : "Automatic backups off.";
+    } catch (err) {
+        status.textContent = "Could not save: " + err.message;
     }
 }
 
@@ -1979,6 +2080,7 @@ refreshStatus();
 refreshClientInfo();
 refreshUsers();
 refreshBackups();
+loadBackupSchedule();
 
 setInterval(refreshStatus, 3000);
 

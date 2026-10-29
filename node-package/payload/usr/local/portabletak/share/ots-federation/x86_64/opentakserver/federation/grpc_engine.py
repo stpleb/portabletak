@@ -11,8 +11,9 @@ implements the SA subset:
 
 The CoT mapping, group filtering, loop guard, and federated-EUD registration
 are shared with v1 (engine.build_outbound_event / apply_inbound_event), so v2
-is purely a different transport. ROL (mission federation) and group-mapping
-RPCs are declared in the proto for wire compatibility but not served.
+is purely a different transport. ROL is served for files (PortableTAK: an official
+TAK Server federates data packages as ROL "create resource", see files.py); ROL for
+missions and the group-mapping RPCs are not handled.
 
 Trust uses the same federation truststore as v1: mutual TLS where peer server
 certificates are validated against the peer-CA truststore. gRPC identifies the
@@ -210,6 +211,33 @@ class FederationServicer(fig_pb2_grpc.FederatedChannelServicer):
         yield from _outbound_event_stream(self.manager, federate, context)
         self.logger.info(f"Federation v2 outbound stream to '{name}' closed")
 
+    def ClientROLStream(self, request, context):
+        """A federate (an official TAK Server) subscribes to our ROL: files we send it."""
+        from opentakserver.federation import files
+
+        federate = self._resolve_federate(context)
+        if not federate.get("enabled") or files.RELAY is None:
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, "federate disabled")
+        files.RELAY.mark_rol_peer(federate)
+        yield from files.RELAY.rol_messages(federate["id"], context.is_active)
+
+    def ServerROLStream(self, request_iterator, context):
+        """A federate streams ROL to us: its files become data packages here."""
+        from opentakserver.federation import files
+
+        federate = self._resolve_federate(context)
+        if not federate.get("enabled"):
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, "federate disabled")
+        if files.RELAY is not None:
+            files.RELAY.mark_rol_peer(federate)
+        try:
+            for rol in request_iterator:
+                if files.RELAY is not None:
+                    files.RELAY.rol_inbound(rol, self.directory.federate_config(federate["id"]) or federate)
+        except Exception as e:  # noqa: BLE001
+            self.logger.debug(f"Federation v2 ROL stream from '{federate['name']}' ended: {e}")
+        return fig_pb2.Subscription(identity=self._identity_message())
+
 
 def _outbound_event_stream(manager, federate, context):
     """Generator of FederatedEvents to send to a subscribed federate.
@@ -265,6 +293,10 @@ def _outbound_event_stream(manager, federate, context):
             from opentakserver.federation import files
 
             envelope = json.loads(body)
+            if files.RELAY is not None and envelope.get("cot"):
+                envelope["cot"] = files.RELAY.before_outbound(federate, envelope["cot"])
+                if envelope["cot"] is None:
+                    continue                        # went as ROL (TAK Server)
             fed_event = build_outbound_event(envelope, federate, directory, node_id)
             if fed_event is not None:
                 yield fed_event
@@ -334,6 +366,12 @@ class GrpcClient:
 
             config = self.directory.federate_config(self.federate["id"]) or self.federate
             envelope = json.loads(body)
+            from opentakserver.federation import files as _files
+
+            if _files.RELAY is not None and envelope.get("cot"):
+                envelope["cot"] = _files.RELAY.before_outbound(config, envelope["cot"])
+                if envelope["cot"] is None:
+                    continue                        # went as ROL (TAK Server)
             fed_event = build_outbound_event(envelope, config, self.directory, self.node_id)
             if fed_event is not None:
                 yield fed_event
@@ -398,6 +436,8 @@ class GrpcClient:
 
             if files.RELAY is not None:
                 files.RELAY.channels[config["id"]] = channel   # PortableTAK: file transfers ride this link
+                if self._speaks_rol(channel, config):
+                    self._start_rol(stub, config)
 
             # Send our events to the peer on a worker thread
             def send():
@@ -450,6 +490,47 @@ class GrpcClient:
             bridge.close()
             channel.close()
             self.logger.info(f"Federation v2 link with '{name}' closed")
+
+    def _speaks_rol(self, channel, config):
+        """PortableTAK's file service answers; an official TAK Server does not know it and
+        exchanges files as ROL instead."""
+        from opentakserver.federation import files
+
+        call = channel.unary_stream("/%s/Get" % files.SERVICE, request_serializer=files._identity,
+                                    response_deserializer=files._identity)
+        try:
+            next(call(b'{"sha256": ""}', timeout=10))
+            return False
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                files.RELAY.mark_rol_peer(config)
+                return True
+            return False
+        except StopIteration:
+            return False
+
+    def _start_rol(self, stub, config):
+        from opentakserver.federation import files
+
+        name = config["name"]
+
+        def send():
+            try:
+                stub.ServerROLStream(files.RELAY.rol_messages(config["id"], lambda: not self._stop.is_set()))
+            except grpc.RpcError as e:
+                self.logger.debug(f"Federation v2 ROL send to '{name}' ended: {e.code()}")
+
+        def receive():
+            try:
+                for rol in stub.ClientROLStream(fig_pb2.Subscription(identity=self._identity_message())):
+                    if self._stop.is_set():
+                        break
+                    files.RELAY.rol_inbound(rol, self.directory.federate_config(config["id"]) or config)
+            except grpc.RpcError as e:
+                self.logger.debug(f"Federation v2 ROL receive from '{name}' ended: {e.code()}")
+
+        threading.Thread(target=send, name=f"fedv2c-rol-out-{name}", daemon=True).start()
+        threading.Thread(target=receive, name=f"fedv2c-rol-in-{name}", daemon=True).start()
 
     def stop(self):
         self._stop.set()

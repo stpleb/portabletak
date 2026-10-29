@@ -19,6 +19,17 @@ serve it:
 Only files offered over a link can be fetched through it, only in the directions
 the link shares, and up to ``OTS_FEDERATION_MAX_FILE_BYTES``. v1 links pass the
 file-share CoT through unchanged.
+
+An official TAK Server does not know that service. It federates files with ROL
+("create resource\n<JSON>;" plus the file bytes), on the ClientROLStream /
+ServerROLStream calls, whenever it stores an upload with mission federation on.
+It does not send file-share CoT over federation either: it sends "announce package"
+ROL (sha256, file name, size, sender, and who it is for), and the receiving server
+makes its own file-share CoT pointing at itself. So with a peer that speaks ROL (it
+subscribed to our ClientROLStream, or our service is unknown to it): its files are
+stored here like the ones above and its announcements become file-share CoT for our
+phones, held until the file is here; a file share going to it goes as the file
+("create resource") then the announcement, instead of the CoT.
 """
 
 import datetime
@@ -41,9 +52,99 @@ PENDING_SECONDS = 600
 FILESHARE = re.compile(r"<fileshare\b[^>]*>", re.S)
 
 
+def resource_json(sha256: str, filename: str, size: int, sender_uid: str | None) -> str:
+    """TAK Server's enterprise-sync Resource, as its ROL "create resource" carries it.
+    toMetadata() on the other side needs keywords, size and submissionTime."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    resource = {
+        "uid": sha256,
+        "hash": sha256,
+        "name": filename,
+        "filename": filename,
+        "keywords": ["missionpackage"],
+        "mimeType": "application/x-zip-compressed",
+        "submissionTime": now.strftime("%Y-%m-%dT%H:%M:%S.") + str(now.microsecond // 100000) + "Z",
+        "submitter": "federation",
+        "size": size,
+        "tool": "public",
+    }
+    if sender_uid:
+        resource["creatorUid"] = sender_uid
+    return json.dumps(resource, separators=(",", ":"))
+
+
+def destinations(cot: str) -> dict:
+    """Who a file share is for: <marti><dest callsign=... uid=...>."""
+    callsigns, uids = [], []
+    for tag in re.findall(r"<dest\b[^>]*>", cot or ""):
+        if _attr(tag, "callsign"):
+            callsigns.append(_attr(tag, "callsign"))
+        if _attr(tag, "uid"):
+            uids.append(_attr(tag, "uid"))
+    return {"callsigns": callsigns, "uids": uids}
+
+
+def announce_json(info: dict, sender_callsign: str | None, dests: dict) -> str:
+    """TAK Server's ResourceDetails for "announce package" (senderUid carries the destinations)."""
+    return json.dumps({
+        "sha256": info["sha256"],
+        "senderUid": json.dumps(dests, separators=(",", ":")),
+        "name": info.get("name") or info["filename"],
+        "filename": info["filename"],
+        "senderUrl": "",
+        "tsStored": int(time.time() * 1000),
+        "sizeInBytes": info.get("size") or 0,
+        "senderCallsign": sender_callsign or "",
+    }, separators=(",", ":"))
+
+
+def announce_cot(details: dict, port: int) -> str | None:
+    """A file-share CoT for our phones from a TAK Server "announce package" (as TAK Server
+    builds it, pointing at this server)."""
+    sha256 = str(details.get("sha256") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        return None
+    try:
+        dests = json.loads(details.get("senderUid") or "{}")
+    except ValueError:
+        dests = {}
+    esc = lambda v: str(v or "").replace("&", "&amp;").replace("'", "&apos;").replace("<", "&lt;")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    t = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    filename = os.path.basename(str(details.get("filename") or sha256 + ".zip"))
+    marti = "".join("<dest uid='%s'/>" % esc(u) for u in (dests.get("uids") or []))
+    marti += "".join("<dest callsign='%s'/>" % esc(c) for c in (dests.get("callsigns") or []))
+    return ("<?xml version='1.0' encoding='UTF-8' standalone='yes'?><event version='2.0' uid='%s' type='b-f-t-r' "
+            "time='%s' start='%s' stale='%s' how='h-e'><point lat='0.0' lon='0.0' hae='9999999.0' ce='9999999' "
+            "le='9999999'/><detail><fileshare sha256='%s' senderUid='%s' name='%s' filename='%s' senderUrl='%s' "
+            "sizeInBytes='%s' senderCallsign='%s'/>%s</detail></event>") % (
+        sha256, t(now), t(now), t(now + datetime.timedelta(minutes=10)), sha256, sha256,
+        esc(details.get("name") or filename), esc(filename),
+        "https://%s:%d/Marti/sync/content?hash=%s" % (PLACEHOLDER_HOST, port, sha256),
+        int(details.get("sizeInBytes") or 0), esc(details.get("senderCallsign")),
+        "<marti>%s</marti>" % marti if marti else "")
+
+
+def parse_rol(program: str):
+    """(operation, resource, parameters dict) of a ROL program, or None."""
+    match = re.match(r"\s*(create|update|delete|assign|announce)\s+(\w+)\s*\n?(.*?);?\s*$", program or "", re.S)
+    if not match:
+        return None
+    try:
+        params = json.loads(match.group(3)) if match.group(3).strip() else {}
+    except ValueError:
+        return None
+    return match.group(1), match.group(2), params if isinstance(params, dict) else {}
+
+
+def rewrite_sender_url_to(cot: str, url: str) -> str:
+    return re.sub(r"""(<fileshare\b[^>]*\bsenderUrl=)(?:"[^"]*"|'[^']*')""", lambda m: m.group(1) + '"' + url + '"', cot, count=1)
+
+
 def _attr(tag: str, name: str) -> str | None:
-    match = re.search(r'\b%s="([^"]*)"' % name, tag)
-    return match.group(1) if match else None
+    """An attribute in double or single quotes (TAK Server writes single quotes)."""
+    match = re.search(r"""\b%s=(?:"([^"]*)"|'([^']*)')""" % name, tag)
+    return (match.group(1) if match.group(1) is not None else match.group(2)) if match else None
 
 
 def fileshare_info(cot: str) -> dict | None:
@@ -77,7 +178,7 @@ def fileshare_info(cot: str) -> dict | None:
 def rewrite_sender_url(cot: str, sha256: str, port: int) -> str:
     """Point the file share at this server (host filled in per phone by the EUD handler)."""
     url = "https://%s:%d/Marti/sync/content?hash=%s" % (PLACEHOLDER_HOST, port, sha256)
-    return re.sub(r'(<fileshare\b[^>]*\bsenderUrl=")[^"]*(")', lambda m: m.group(1) + url + m.group(2), cot, count=1)
+    return rewrite_sender_url_to(cot, url)
 
 
 def _identity(data):
@@ -97,6 +198,8 @@ class FileRelay:
         self.channels = {}          # federate id -> gRPC channel we dialed
         self.offered = {}           # federate id -> {sha256}: files we offered over that link
         self.pending = {}           # sha256 -> [(envelope, federate dict, time)]
+        self.rol_peers = set()      # federate ids that speak ROL (official TAK Server)
+        self.rol_out = {}           # federate id -> queue of ROL messages to send
         self._lock = threading.Lock()
         self._work = queue.Queue()
         self._bridge = None
@@ -163,12 +266,96 @@ class FileRelay:
         self.logger.info(f"Federated data package '{name}' ({size} bytes) received from '{federate_name}'")
         return True
 
+    # ---------------------------------------------------------------- ROL (TAK Server)
+    def mark_rol_peer(self, federate: dict):
+        with self._lock:
+            new = federate["id"] not in self.rol_peers
+            self.rol_peers.add(federate["id"])
+        if new:
+            self.logger.info(f"Federation peer '{federate['name']}' exchanges files as ROL (TAK Server)")
+
+    def rol_queue(self, federate_id) -> queue.Queue:
+        with self._lock:
+            return self.rol_out.setdefault(federate_id, queue.Queue(maxsize=64))
+
+    def rol_messages(self, federate_id, active):
+        """ROL messages queued for a federate, while active() (one sender at a time)."""
+        q = self.rol_queue(federate_id)
+        while active():
+            try:
+                yield q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+    def before_outbound(self, federate: dict, cot: str) -> str | None:
+        """A file-share CoT is about to go to a ROL peer: send the file and its announcement as
+        ROL instead, and None (the CoT itself is not sent). Other CoT (and other peers) unchanged."""
+        if federate["id"] not in self.rol_peers:
+            return cot
+        info = fileshare_info(cot)
+        if not info:
+            return cot
+        path = self._upload_path(info["sha256"])
+        if not os.path.exists(path) or os.path.getsize(path) > self.max_bytes:
+            return cot
+        from opentakserver.federation.proto import fig_pb2
+
+        with open(path, "rb") as source:
+            data = source.read()
+        program = "create resource\n" + resource_json(info["sha256"], info["filename"], len(data), info["sender_uid"]) + ";"
+        tag = FILESHARE.search(cot).group(0)
+        info = dict(info, size=len(data), name=_attr(tag, "name"))
+        announce = "announce package\n" + announce_json(info, _attr(tag, "senderCallsign"), destinations(cot)) + ";"
+        groups = list(federate.get("outbound_groups") or [])
+        try:
+            q = self.rol_queue(federate["id"])
+            q.put(fig_pb2.ROL(program=program, payload=[fig_pb2.BinaryBlob(data=data)], federateGroups=groups), timeout=5)
+            q.put(fig_pb2.ROL(program=announce, federateGroups=groups), timeout=5)
+        except queue.Full:
+            self.logger.warning(f"ROL queue to '{federate['name']}' full: file {info['sha256'][:12]} not sent")
+            return cot
+        self.logger.info(f"Data package {info['sha256'][:12]} sent to '{federate['name']}' as ROL")
+        return None
+
+    def rol_inbound(self, rol, federate: dict):
+        """A ROL message from a peer: files ("create resource" with content) become data packages."""
+        parsed = parse_rol(rol.program)
+        if not parsed:
+            self.logger.debug(f"ROL from '{federate['name']}' not understood")
+            return
+        operation, resource, params = parsed
+        if operation == "announce" and resource == "package":
+            cot = announce_cot(params, self.port)
+            if cot and federate.get("enabled") and federate.get("inbound_groups"):
+                # The parser stores CoT "from this server" (no sender device) for our node id.
+                self.hold({"uid": self.config.get("OTS_NODE_ID"), "cot": cot, "user_id": None,
+                           "groups": federate.get("inbound_groups"), "federate": federate["name"]}, federate)
+            return
+        if operation != "create" or resource != "resource":
+            self.logger.debug(f"ROL '{operation} {resource}' from '{federate['name']}' not handled")
+            return
+        if not federate.get("enabled") or not federate.get("inbound_groups"):
+            return
+        if not rol.payload:
+            return
+        data = rol.payload[0].data
+        sha256 = hashlib.sha256(data).hexdigest()
+        stated = str(params.get("hash") or "").lower()
+        if stated and stated != sha256:
+            self.logger.warning(f"ROL file from '{federate['name']}' refused: SHA-256 does not match")
+            return
+        name = params.get("filename") or params.get("name") or sha256 + ".zip"
+        if self.have(sha256) or self.store(sha256, name, [data], params.get("creatorUid"), federate["name"]):
+            self._work.put(("release", federate, {"sha256": sha256}))
+
     # ---------------------------------------------------------------- outbound
     def outbound(self, federate: dict, cot: str):
         """A file-share CoT just went to a federate: remember the offer, push if we dialed."""
         info = fileshare_info(cot)
         if not info or int(federate.get("protocol_version") or 1) != 2:
             return
+        if federate["id"] in self.rol_peers:
+            return                                  # sent as ROL before the CoT
         with self._lock:
             self.offered.setdefault(federate["id"], set()).add(info["sha256"])
             dialed = federate["id"] in self.channels
@@ -184,6 +371,7 @@ class FileRelay:
         with self._lock:
             self.pending.setdefault(info["sha256"], []).append((envelope, federate, time.monotonic()))
             dialed = federate["id"] in self.channels
+        self.logger.info(f"File share {info['sha256'][:12]} from '{federate['name']}' held until its file is here")
         self._work.put(("check", federate, info))
         if dialed:
             self._work.put(("pull", federate, info))
@@ -241,9 +429,17 @@ class FileRelay:
         channel = self.channels.get(federate["id"])
         if channel is None:
             return
+        if federate["id"] in self.rol_peers:
+            return                                  # a ROL peer sends its files itself
         call = channel.unary_stream("/%s/Get" % SERVICE, request_serializer=_identity, response_deserializer=_identity)
         stream = call(json.dumps({"sha256": info["sha256"]}).encode(), timeout=600)
-        meta = json.loads(next(stream))
+        try:
+            meta = json.loads(next(stream))
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                self.mark_rol_peer(federate)        # an official TAK Server: files come as ROL
+                return
+            raise
         if not meta.get("ok"):
             raise RuntimeError(meta.get("error") or "refused")
         if self.store(info["sha256"], info["filename"], stream, info["sender_uid"], federate["name"]):
@@ -266,7 +462,13 @@ class FileRelay:
                     yield data
 
         call = channel.stream_unary("/%s/Put" % SERVICE, request_serializer=_identity, response_deserializer=_identity)
-        reply = json.loads(call(chunks(), timeout=600))
+        try:
+            reply = json.loads(call(chunks(), timeout=600))
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                self.mark_rol_peer(federate)        # later file shares go as ROL
+                return
+            raise
         if reply.get("ok"):
             self.logger.info(f"Data package {info['sha256'][:12]} sent to '{federate['name']}'")
         elif reply.get("error") == "not_expected" and attempt < 4:
