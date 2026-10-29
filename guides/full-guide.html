@@ -437,7 +437,12 @@ TAK Server (tak.gov). Dashboard &rarr; <b>Federation</b> (under Remote Access).<
 <p><b>Data packages</b> an ATAK user sends to someone on the other server also cross between PortableTAK servers:
 the file moves over the federation link and the receiving phone downloads it from its own server. With an official
 TAK Server this needs its administrator to turn on <b>mission federation</b> (<code>allowMissionFederation="true"</code>
-on <code>&lt;federation&gt;</code> in CoreConfig.xml). Data Sync missions are not shared yet.</p>
+on <code>&lt;federation&gt;</code> in CoreConfig.xml).</p>
+<p><b>Data Sync missions</b> are shared with an official TAK Server (the same setting turns it on): a public
+mission made on either server appears on the other, with its files and map items, and adding or removing files and
+items follows. Missions with a password are not shared. Deleting a mission, or removing something from it, only
+crosses when the TAK Server administrator also allows federated deletes (<code>allowFederatedDelete="true"</code>,
+same place). Missions are not shared between two PortableTAK servers.</p>
 <h3>Two PortableTAK servers: one code</h3>
 <ol>
 <li>On the first server: <b>Invite a server</b>. Copy the code (or download the invite file) and send it to the

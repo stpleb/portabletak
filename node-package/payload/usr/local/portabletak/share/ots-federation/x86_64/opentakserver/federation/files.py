@@ -52,17 +52,19 @@ PENDING_SECONDS = 600
 FILESHARE = re.compile(r"<fileshare\b[^>]*>", re.S)
 
 
-def resource_json(sha256: str, filename: str, size: int, sender_uid: str | None) -> str:
+def resource_json(sha256: str, filename: str, size: int, sender_uid: str | None,
+                  keywords=None, mime_type=None) -> str:
     """TAK Server's enterprise-sync Resource, as its ROL "create resource" carries it.
-    toMetadata() on the other side needs keywords, size and submissionTime."""
+    toMetadata() on the other side needs keywords, size and submissionTime. Defaults are
+    a data package's; a mission file passes its own keywords and type."""
     now = datetime.datetime.now(datetime.timezone.utc)
     resource = {
         "uid": sha256,
         "hash": sha256,
         "name": filename,
         "filename": filename,
-        "keywords": ["missionpackage"],
-        "mimeType": "application/x-zip-compressed",
+        "keywords": ["missionpackage"] if keywords is None else list(keywords),
+        "mimeType": mime_type or "application/x-zip-compressed",
         "submissionTime": now.strftime("%Y-%m-%dT%H:%M:%S.") + str(now.microsecond // 100000) + "Z",
         "submitter": "federation",
         "size": size,
@@ -200,6 +202,8 @@ class FileRelay:
         self.pending = {}           # sha256 -> [(envelope, federate dict, time)]
         self.rol_peers = set()      # federate ids that speak ROL (official TAK Server)
         self.rol_out = {}           # federate id -> queue of ROL messages to send
+        self.rol_streaming = {}     # federate id -> ROL senders running (the peer is connected)
+        self.missions = None        # missions.MissionSync once the manager attaches it
         self._lock = threading.Lock()
         self._work = queue.Queue()
         self._bridge = None
@@ -281,11 +285,28 @@ class FileRelay:
     def rol_messages(self, federate_id, active):
         """ROL messages queued for a federate, while active() (one sender at a time)."""
         q = self.rol_queue(federate_id)
-        while active():
-            try:
-                yield q.get(timeout=1.0)
-            except queue.Empty:
-                continue
+        with self._lock:
+            self.rol_streaming[federate_id] = self.rol_streaming.get(federate_id, 0) + 1
+        try:
+            while active():
+                try:
+                    yield q.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+        finally:
+            with self._lock:
+                self.rol_streaming[federate_id] -= 1
+
+    def streaming_rol_peers(self) -> list:
+        with self._lock:
+            return [fid for fid, count in self.rol_streaming.items() if count > 0]
+
+    def attach_missions(self, lookup):
+        """Data Sync missions with ROL peers (missions.py); lookup: federate id -> federate."""
+        if self.missions is None and self.config.get("OTS_FEDERATION_MISSIONS", True):
+            from opentakserver.federation.missions import MissionSync
+
+            self.missions = MissionSync(self, self.app, self.logger, self.config, lookup)
 
     def before_outbound(self, federate: dict, cot: str) -> str | None:
         """A file-share CoT is about to go to a ROL peer: send the file and its announcement as
@@ -324,6 +345,8 @@ class FileRelay:
             self.logger.debug(f"ROL from '{federate['name']}' not understood")
             return
         operation, resource, params = parsed
+        if self.missions is not None and self.missions.inbound(operation, resource, params, federate):
+            return
         if operation == "announce" and resource == "package":
             cot = announce_cot(params, self.port)
             if cot and federate.get("enabled") and federate.get("inbound_groups"):
@@ -347,6 +370,8 @@ class FileRelay:
         name = params.get("filename") or params.get("name") or sha256 + ".zip"
         if self.have(sha256) or self.store(sha256, name, [data], params.get("creatorUid"), federate["name"]):
             self._work.put(("release", federate, {"sha256": sha256}))
+            if self.missions is not None:
+                self.missions.resource_arrived(sha256, params)
 
     # ---------------------------------------------------------------- outbound
     def outbound(self, federate: dict, cot: str):

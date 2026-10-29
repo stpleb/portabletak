@@ -712,6 +712,19 @@ def delete_mission(mission_name: str):
                 403,
             )
 
+        delete_cot = tostring(generate_mission_delete_cot(mission)).decode("utf-8")
+
+        # PortableTAK: the group and file links do not cascade, and the group link blocks the
+        # delete (500). The files stay, as when they are removed from a mission; they may be in
+        # other missions.
+        db.session.execute(
+            sqlalchemy.delete(GroupMission).where(GroupMission.mission_name == mission_name)
+        )
+        db.session.execute(
+            sqlalchemy.delete(MissionContentMission).where(
+                MissionContentMission.mission_name == mission_name
+            )
+        )
         db.session.delete(mission)
         db.session.commit()
 
@@ -729,7 +742,7 @@ def delete_mission(mission_name: str):
             body=json.dumps(
                 {
                     "uid": app.config.get("OTS_NODE_ID"),
-                    "cot": tostring(generate_mission_delete_cot(mission)).decode("utf-8"),
+                    "cot": delete_cot,
                 }
             ),
         )

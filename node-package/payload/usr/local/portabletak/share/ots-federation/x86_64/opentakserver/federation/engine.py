@@ -682,6 +682,7 @@ class FederationManager:
 
         if files.RELAY is None:   # PortableTAK: carries data packages over v2 links
             files.RELAY = files.FileRelay(app, logger, self.bridge_factory, self.config)
+        files.RELAY.attach_missions(self.directory.federate_config)   # Data Sync missions (ROL peers)
         self.connections: dict[int, FederationConnection] = {}
         self._lock = threading.Lock()
         self._dialing: set[int] = set()

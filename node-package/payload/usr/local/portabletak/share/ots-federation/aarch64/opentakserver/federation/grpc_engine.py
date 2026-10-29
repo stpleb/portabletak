@@ -11,9 +11,10 @@ implements the SA subset:
 
 The CoT mapping, group filtering, loop guard, and federated-EUD registration
 are shared with v1 (engine.build_outbound_event / apply_inbound_event), so v2
-is purely a different transport. ROL is served for files (PortableTAK: an official
-TAK Server federates data packages as ROL "create resource", see files.py); ROL for
-missions and the group-mapping RPCs are not handled.
+is purely a different transport. ROL is served for files and Data Sync missions
+(PortableTAK: an official TAK Server federates data packages as ROL "create resource",
+see files.py, and missions as "create/delete/update mission", see missions.py); the
+group-mapping RPCs are not handled.
 
 Trust uses the same federation truststore as v1: mutual TLS where peer server
 certificates are validated against the peer-CA truststore. gRPC identifies the
