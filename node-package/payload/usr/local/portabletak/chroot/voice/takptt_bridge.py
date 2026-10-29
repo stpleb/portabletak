@@ -88,8 +88,9 @@ def rtp_payload(b):
 
 def interface_addresses(only=None):
     """IPv4 addresses of the interfaces to use for talk groups: the ones named, or every
-    interface that has one except loopback, Tailscale, Docker and VM bridges."""
-    out = []
+    interface that has one except loopback, Tailscale, Docker and VM bridges. One address per
+    interface: an interface with two (a node's br-ahwlan) would otherwise send everything twice."""
+    out, seen = [], set()
     try:
         text = subprocess.run(['ip', '-4', '-o', 'addr', 'show'], capture_output=True, text=True).stdout
     except OSError:
@@ -99,11 +100,14 @@ def interface_addresses(only=None):
         if not m:
             continue
         name, addr = m.group(1).split('@')[0], m.group(2)
-        if only:
-            if name in only:
-                out.append((name, addr))
-        elif not name.startswith(SKIP_INTERFACES) and not addr.startswith('127.'):
-            out.append((name, addr))
+        if name in seen:
+            continue
+        if only and name not in only:
+            continue
+        if not only and (name.startswith(SKIP_INTERFACES) or addr.startswith('127.')):
+            continue
+        seen.add(name)
+        out.append((name, addr))
     return out
 
 

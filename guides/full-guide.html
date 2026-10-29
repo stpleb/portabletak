@@ -392,7 +392,7 @@ top shows <b>CONNECTED</b>; tap it to see the server and your user name).</li>
 channel without leaving yours; <b>TX</b> picks the channels you talk on (several at once).</li>
 <li><b>HISTORY</b> tab: transmissions from the last 7 days, newest first, with who, when and from where. Tap one to
 play it; <b>PLAY UNHEARD</b> plays the new ones in order; <b>MAP</b> shows where each was sent from (on your map only).
-Live traffic always pauses playback.</li>
+<b>TEXT</b> shows what was said under each one (see Transcripts below). Live traffic always pauses playback.</li>
 </ol>
 <p><b>SOS</b> (the red circle beside the PTT ring): hold it for 3 seconds to send ATAK's 911 emergency alert to everyone; tap it again to cancel.
 When the voice server cannot be reached, TAK PTT keeps working over the local network (OpenMANET or Wi-Fi) between
@@ -405,6 +405,12 @@ and people only on the mesh hear each other. To link other channels, set <code>"
 talks at a time across the link, like a radio. Talk groups are not encrypted: anyone on the mesh can listen. The link
 needs the server on the mesh's network (an OpenMANET node or a Linux computer on it); on a Mac or Windows computer,
 where PortableTAK runs in a virtual machine, talk groups may not get through.</p>
+<p><b>Transcripts</b>: with <b>TEXT ON</b> in HISTORY, the phone turns each recorded transmission into text and shows
+it under the clip. OpenMANET talk-group transmissions the phone hears are turned into text too: the newest shows on the
+PTT tab's status line (in cyan) for 20 seconds, and the last ones are listed at the top of HISTORY under
+<b>HEARD ON THIS PHONE</b>, also without the server. It all happens on the phone, without internet, using Android's
+on-device speech recognition (Android 13 or later; on phones without it, TEXT says so). Nothing is sent anywhere.
+Clear speech works best; noise, radio static and several people at once give gaps or wrong words.</p>
 <p>Talking with ATAK in the background: under <b>SET</b>, turn on the <b>floating PTT button</b> (Android asks to let
 TAK PTT appear on top) or <b>volume key as PTT</b> (Android's accessibility settings: turn on <b>TAK PTT buttons</b>;
 it only watches that key). While voice is not connected the volume key works normally.</p>
