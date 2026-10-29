@@ -7,6 +7,7 @@
 # certificate ATAK enrolled with this server (TAK PTT plugin), or a PortableTAK user name and
 # password (other Mumble apps such as Vx). On by default; "enabled": false in
 # opentak/voice.json turns it off.
+# While it runs, a watchdog (portabletak-voice watch) starts again any part that stopped, every 30 s.
 #   portabletak-voice start|stop|restart|status
 ROOT="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard)"
 ARCH="$(/usr/local/portabletak/lib/pt-rootfs /mnt/asgard --arch)"
@@ -22,6 +23,15 @@ MURMUR_PID=$RUN/murmur.pid
 AUTH_PID=$RUN/voice-auth.pid
 REC_PID=$RUN/voice-recorder.pid
 BRIDGE_PID=$RUN/voice-bridge.pid
+WATCH_PID=$RUN/voice-watch.pid
+
+# n random bytes as hex. OpenWrt has no od (an empty secret here once left the voice server
+# without its password), so use hexdump there.
+randhex()   # bytes
+{
+    if command -v od >/dev/null 2>&1; then head -c "$1" /dev/urandom | od -An -tx1
+    else head -c "$1" /dev/urandom | hexdump -v -e '/1 "%02x"'; fi | tr -d ' \n'
+}
 
 running()   # pidfile needle
 {
@@ -106,12 +116,13 @@ prepare_data()
         ' || { echo "PORTABLETAK_VOICE_ERROR=certificate_not_made"; return 1; }
     fi
     cp "$CA/ca.pem" "$DATA/tls/ca.pem"
-    [ -s "$DATA/ice-secret" ] || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DATA/ice-secret"
+    [ -s "$DATA/ice-secret" ] || randhex 24 > "$DATA/ice-secret"
     SECRET="$(cat "$DATA/ice-secret")"
     # A server password nobody is given: only users the sign-in check lets in (registered users,
     # who skip it) get on. While the check is not attached (starting, or stopped) nobody does.
-    [ -s "$DATA/server-password" ] || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$DATA/server-password"
+    [ -s "$DATA/server-password" ] || randhex 24 > "$DATA/server-password"
     SERVERPW="$(cat "$DATA/server-password")"
+    if [ -z "$SECRET" ] || [ -z "$SERVERPW" ]; then echo "PORTABLETAK_VOICE_ERROR=no_random_secret"; return 1; fi
     {
         echo "database=/asgard/opentak/voice/murmur/murmur.sqlite"
         echo "port=64738"
@@ -214,12 +225,44 @@ start_service()
     fi
 }
 
+# Every part that should be running is.
+all_running()
+{
+    running "$MURMUR_PID" mumble-server && running "$AUTH_PID" takptt_auth.py &&
+        running "$REC_PID" takptt_recorder.py &&
+        { [ -z "$(talk_groups)" ] || running "$BRIDGE_PID" takptt_bridge.py; }
+}
+
+start_watch()
+{
+    running "$WATCH_PID" "portabletak-voice watch" && return 0
+    if command -v setsid >/dev/null 2>&1; then setsid "$0" watch </dev/null >/dev/null 2>&1 &
+    else (trap '' HUP; exec "$0" watch) </dev/null >/dev/null 2>&1 & fi
+    echo $! > "$WATCH_PID"
+}
+
 case "${1:-status}" in
-    start)
-        wanted || { stop_pid "$BRIDGE_PID" takptt_bridge.py; stop_pid "$REC_PID" takptt_recorder.py; stop_pid "$AUTH_PID" takptt_auth.py; stop_pid "$MURMUR_PID" mumble-server; echo "PORTABLETAK_VOICE=OFF"; exit 0; }
+    watch)
+        # Exits when stopped (its pid file is removed or replaced) or when the drive is gone.
+        while sleep 30; do
+            [ "$(cat "$WATCH_PID" 2>/dev/null)" = "$$" ] || exit 0
+            [ -d /mnt/asgard/opentak ] && wanted || exit 0
+            all_running && continue
+            echo "$(date '+%Y-%m-%d %H:%M:%S') watchdog: a voice part stopped, starting it again" >> "$LOG"
+            "$0" start-parts >/dev/null 2>&1
+        done
+        ;;
+    start-parts)
         start_service; exit $?
         ;;
+    start)
+        wanted || { stop_pid "$WATCH_PID" "portabletak-voice watch"; stop_pid "$BRIDGE_PID" takptt_bridge.py; stop_pid "$REC_PID" takptt_recorder.py; stop_pid "$AUTH_PID" takptt_auth.py; stop_pid "$MURMUR_PID" mumble-server; echo "PORTABLETAK_VOICE=OFF"; exit 0; }
+        start_service; RC=$?
+        start_watch
+        exit $RC
+        ;;
     stop)
+        stop_pid "$WATCH_PID" "portabletak-voice watch"
         stop_pid "$BRIDGE_PID" takptt_bridge.py
         stop_pid "$REC_PID" takptt_recorder.py
         stop_pid "$AUTH_PID" takptt_auth.py

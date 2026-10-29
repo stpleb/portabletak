@@ -205,6 +205,24 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/auth/login',
                                       {'username': 'administrator', 'password': PASSWORD}, cross)['status'], 403)
 
+    def test_login_sets_node_clock_before_session(self):
+        self.initialize()
+        seen = []
+        self.guard = ManagementGuard(inner, self.auth, self.revocations, AuditLog(self.audit_path, clock=self.clock),
+                                     'enforce', self.throttle, set_clock=lambda ms: seen.append(ms) or 3600.0)
+        body = {'username': 'administrator', 'password': PASSWORD, 'client_time_ms': 1793232000000}
+        ok = self.request('POST', '/api/auth/login', body, [('content-type', 'application/json')])
+        self.assertEqual(ok['status'], 200)
+        self.assertEqual(seen, [1793232000000])
+        self.assertEqual(self.events(), ['clock_set', 'login_succeeded'])
+        wrong = dict(body, password='nope')
+        self.assertEqual(self.request('POST', '/api/auth/login', wrong,
+                                      [('content-type', 'application/json')])['status'], 401)
+        self.assertEqual(seen, [1793232000000])          # never for a wrong password
+        extra = dict(body, other=1)
+        self.assertEqual(self.request('POST', '/api/auth/login', extra,
+                                      [('content-type', 'application/json')])['status'], 400)
+
     def test_login_before_initialization_is_unavailable(self):
         self.assertEqual(self.login()['status'], 503)
 

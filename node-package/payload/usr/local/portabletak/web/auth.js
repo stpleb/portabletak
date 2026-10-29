@@ -59,7 +59,8 @@
         const response = await nativeFetch('/api/auth/login', {
           method: 'POST', credentials: 'same-origin',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({username: 'administrator', password: password.value})
+          // client_time_ms: a node with no internet sets its clock from this (when it is off).
+          body: JSON.stringify({username: 'administrator', password: password.value, client_time_ms: Date.now()})
         });
         const body = await response.json().catch(() => ({}));
         if (response.ok) { window.location.reload(); return; }

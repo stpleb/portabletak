@@ -139,12 +139,15 @@ def guard_settings(root=None):
 
 
 class ManagementGuard:
-    def __init__(self, app, auth, revocations, audit, mode='off', throttle=None):
+    def __init__(self, app, auth, revocations, audit, mode='off', throttle=None, set_clock=None):
         if mode not in {'off', 'enforce'}:
             raise ValueError('invalid_management_auth_mode')
         self.app, self.auth, self.revocations, self.audit = app, auth, revocations, audit
         self.mode = mode
         self.throttle = throttle or LoginThrottle()
+        if set_clock is None:
+            from node_clock import set_from_client as set_clock
+        self.set_clock = set_clock
 
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http':
@@ -232,8 +235,9 @@ class ManagementGuard:
             data = json.loads(raw) if raw is not None else None
         except (ValueError, UnicodeError):
             data = None
-        if (not isinstance(data, dict) or set(data) != {'username', 'password'}
-                or not all(isinstance(v, str) for v in data.values())):
+        # client_time_ms (optional): the browser's clock, to set a node's clock that is off.
+        if (not isinstance(data, dict) or set(data) - {'client_time_ms'} != {'username', 'password'}
+                or not all(isinstance(data[k], str) for k in ('username', 'password'))):
             return await respond(send, 400, {'detail': 'invalid_login_request'})
         try:
             valid = await asyncio.to_thread(self.auth.verify_password,
@@ -245,6 +249,10 @@ class ManagementGuard:
             self.audit.record('login_failed', client)
             return await respond(send, 401, {'detail': 'invalid_credentials'})
         self.throttle.succeeded(client)
+        # Before the session, so it starts and ends by the corrected clock.
+        offset = await asyncio.to_thread(self.set_clock, data.get('client_time_ms'))
+        if offset is not None:
+            self.audit.record('clock_set', client, offset_s=round(offset))
         token = self.auth.create_session(USERNAME)
         session = self.auth.verify_session(token)
         self.audit.record('login_succeeded', client)
