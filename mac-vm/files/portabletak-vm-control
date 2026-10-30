@@ -34,12 +34,13 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 log = ''
             # PortableTAK's own lines from the server log (no passwords are logged there).
-            try:
-                with open('/mnt/asgard/opentak/data/logs/opentakserver.log', errors='replace') as stream:
-                    ours = [line for line in stream.read()[-2000000:].splitlines() if 'PortableTAK:' in line]
-                log += '\n--- server (PortableTAK) ---\n' + '\n'.join(ours[-20:]) + '\n'
-            except OSError:
-                pass
+            for name in ('opentakserver.log', 'federation_server.log'):
+                try:
+                    with open('/mnt/asgard/opentak/data/logs/' + name, errors='replace') as stream:
+                        ours = [line for line in stream.read()[-2000000:].splitlines() if 'PortableTAK:' in line]
+                    log += '\n--- %s (PortableTAK) ---\n' % name + '\n'.join(ours[-60:]) + '\n'
+                except OSError:
+                    pass
             # Which enrollment requests the TAK apps made (paths and status codes only).
             import glob
             for access in glob.glob('/mnt/asgard/rootfs/var/log/nginx/access.log') + glob.glob('/mnt/asgard/arch/amd64/rootfs/var/log/nginx/access.log'):

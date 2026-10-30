@@ -19,6 +19,11 @@ def builtin(app):
             app.config.get("OTS_MESHTASTIC_GROUP", "Meshtastic"): 'Meshtastic feed'}
 
 
+def receive_only(app):
+    """Feed channels: phones cannot post into them, and ATAK would pick them as its default."""
+    return {app.config.get("OTS_ADSB_GROUP", "ADS-B"), app.config.get("OTS_AIS_GROUP", "AIS")}
+
+
 def _fail(error):
     return {"ok": False, "error": error}
 
@@ -127,11 +132,12 @@ def handle(app, db, request):
             return _fail("invalid_channels")
         groups = {g.name: g for g in db.session.query(Group).all()}
         rows = []
+        feeds = receive_only(app)
         for item in wanted:
             if not isinstance(item, dict) or item.get("name") not in groups:
                 return _fail("unknown_channel")
             for direction, key in (("IN", "send"), ("OUT", "receive")):
-                if item.get(key):
+                if item.get(key) and not (direction == "IN" and item["name"] in feeds):
                     rows.append((groups[item["name"]].id, direction))
         db.session.query(GroupUser).filter_by(user_id=user.id).delete()
         for group_id, direction in rows:

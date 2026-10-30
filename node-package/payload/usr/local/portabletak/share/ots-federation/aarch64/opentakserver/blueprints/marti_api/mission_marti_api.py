@@ -438,6 +438,22 @@ def all_invitations(mission_name: str | None = None, mission_guid: str | None = 
     return jsonify(response)
 
 
+def mission_groups_arg(username):
+    """PortableTAK: the "group" argument, without feed channels. Nobody posts into ADS-B or AIS,
+    but ATAK offers them as a default, and a feed there would never federate."""
+    groups = [g for g in (request.args.get("group") or "").split(",") if g]
+    feeds = {app.config.get("OTS_ADSB_GROUP", "ADS-B"), app.config.get("OTS_AIS_GROUP", "AIS")}
+    kept = [g for g in groups if g not in feeds]
+    if kept or not groups:
+        return ",".join(kept)
+    user = app.security.datastore.find_user(username=username)
+    rows = db.session.execute(
+        db.session.query(GroupUser).filter_by(user_id=user.id, direction=Group.IN)
+    ).scalars()
+    names = [row.group.name for row in rows if row.group.name not in feeds] if user else []
+    return "__ANON__" if "__ANON__" in names or not names else names[0]
+
+
 @mission_marti_api.route("/Marti/api/missions/<mission_name>", methods=["PUT", "POST"])
 def put_mission(mission_name: str):
     """Used by the Data Sync plugin to create or change a mission"""
@@ -500,7 +516,8 @@ def put_mission(mission_name: str):
     )
     mission.description = request.args.get("description") or mission.description or None
     mission.tool = request.args.get("tool") or mission.tool or "public"
-    mission.group = request.args.get("group") or mission.group or "__ANON__"
+    groups = mission_groups_arg(cert.get_subject().commonName)
+    mission.group = groups or mission.group or "__ANON__"
     mission.default_role = (
         request.args.get("defaultRole") or mission.default_role or MissionRole.MISSION_SUBSCRIBER
     )
@@ -514,7 +531,6 @@ def put_mission(mission_name: str):
         # Will raise IntegrityError if the mission exists, meaning we should update it
         db.session.commit()
 
-        groups = request.args.get("group")
         if groups:
             for group_name in groups.split(","):
                 group = db.session.execute(

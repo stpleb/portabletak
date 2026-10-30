@@ -236,7 +236,7 @@ class FederationServicer(fig_pb2_grpc.FederatedChannelServicer):
                 if files.RELAY is not None:
                     files.RELAY.rol_inbound(rol, self.directory.federate_config(federate["id"]) or federate)
         except Exception as e:  # noqa: BLE001
-            self.logger.debug(f"Federation v2 ROL stream from '{federate['name']}' ended: {e}")
+            self.logger.warning(f"PortableTAK: Federation v2 ROL stream from '{federate['name']}' ended: {e}")
         return fig_pb2.Subscription(identity=self._identity_message())
 
 
@@ -528,7 +528,7 @@ class GrpcClient:
                         break
                     files.RELAY.rol_inbound(rol, self.directory.federate_config(config["id"]) or config)
             except grpc.RpcError as e:
-                self.logger.debug(f"Federation v2 ROL receive from '{name}' ended: {e.code()}")
+                self.logger.warning(f"PortableTAK: Federation v2 ROL receive from '{name}' ended: {e.code()}")
 
         threading.Thread(target=send, name=f"fedv2c-rol-out-{name}", daemon=True).start()
         threading.Thread(target=receive, name=f"fedv2c-rol-in-{name}", daemon=True).start()

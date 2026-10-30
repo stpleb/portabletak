@@ -342,9 +342,11 @@ class FileRelay:
         """A ROL message from a peer: files ("create resource" with content) become data packages."""
         parsed = parse_rol(rol.program)
         if not parsed:
-            self.logger.debug(f"ROL from '{federate['name']}' not understood")
+            self.logger.warning(f"PortableTAK: ROL from '{federate['name']}' not understood: {(rol.program or '')[:120]!r}")
             return
         operation, resource, params = parsed
+        self.logger.info(f"PortableTAK: ROL from '{federate['name']}': {operation} {resource} "
+                         f"{params.get('changeType') or ''} {params.get('missionName') or params.get('name') or ''}")
         if self.missions is not None and self.missions.inbound(operation, resource, params, federate):
             return
         if operation == "announce" and resource == "package":

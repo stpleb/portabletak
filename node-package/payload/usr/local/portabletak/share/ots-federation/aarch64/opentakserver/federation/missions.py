@@ -104,7 +104,9 @@ def plan(desired: dict, sent: dict, existing) -> list[tuple]:
         for kind, key in (("hash", "hashes"), ("uid", "uids")):
             for value in sorted(set(want[key]) - set(had[key])):
                 ops.append(("add", name, kind, value))
-            for value in sorted(set(had[key]) - set(want[key])):
+            # A phone on both servers flips between local and federated, which hides its
+            # items from "uids": only an item really gone from the mission is removed there.
+            for value in sorted(set(had[key]) - set(want[key]) - set(want.get("all_" + key) or [])):
                 ops.append(("remove", name, kind, value))
     for name in sorted(set(sent) - set(desired)):
         # Still here but no longer shared (password, group, tool): stop, do not delete there.
@@ -163,6 +165,7 @@ class MissionStore:
                                         "keywords": c.keywords or [], "creator_uid": c.creator_uid}
                                for c in m.contents},
                     "uids": {u.uid for u in m.uids if u.creator_uid not in federated},
+                    "all_uids": {u.uid for u in m.uids},
                 }
         return out, existing
 
@@ -609,7 +612,7 @@ class MissionSync:
             with self._lock:
                 self._inbound(operation, params, federate)
         except Exception as e:  # noqa: BLE001
-            self.logger.warning(f"Mission ROL '{operation} mission' from '{federate['name']}' failed: {e}")
+            self.logger.warning(f"PortableTAK: Mission ROL '{operation} mission' from '{federate['name']}' failed: {e}")
             self.logger.debug(traceback.format_exc())
         return True
 
@@ -668,7 +671,7 @@ class MissionSync:
             record(sent, (kind, name, "uid", value))
         if hashes or uids:
             self._save(federate["id"])
-            self.logger.info(f"Mission '{name}': {len(hashes)} file(s) and {len(uids)} item(s) "
+            self.logger.info(f"PortableTAK: Mission '{name}': {len(hashes)} file(s) and {len(uids)} item(s) "
                              f"{'added' if kind == 'add' else 'removed'} by '{federate['name']}'")
 
     def _retry_waiting(self):

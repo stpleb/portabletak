@@ -96,6 +96,7 @@
       const boxes = [];
       channels.forEach(c => {
         const s = el('input'); s.type = 'checkbox'; s.checked = !!(mine[c.name] && mine[c.name].send);
+        if (c.name === 'ADS-B' || c.name === 'AIS') { s.checked = false; s.disabled = true; s.title = 'Feed channels are receive only.'; }
         const v = el('input'); v.type = 'checkbox'; v.checked = !!(mine[c.name] && mine[c.name].receive);
         boxes.push([c.name, s, v]);
         grid.append(el('span', '', c.name), s, v);

@@ -77,6 +77,9 @@ case "${1:-status}" in
         mount | grep -F " on /mnt/asgard " >/dev/null 2>&1 || { echo "PORTABLETAK_FEEDS_ERROR=cartridge_not_mounted"; exit 21; }
         mkdir -p /mnt/asgard/opentak/run /mnt/asgard/opentak/adsb "$ROOT/usr/local/portabletak"
         cp /usr/local/portabletak/chroot/feeds_service.py "$ROOT/usr/local/portabletak/feeds_service.py" || exit 22
+        # The chroot's resolv.conf is empty, which only works where the host answers DNS on
+        # localhost (a node's dnsmasq), not in the Mac VM. Give it the host's DNS server.
+        [ -s /etc/resolv.conf ] && { rm -f "$ROOT/etc/resolv.conf"; cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf"; }
         /usr/sbin/chroot "$ROOT" /bin/sh -c '
             cd /asgard/opentak
             /usr/bin/nohup /asgard/opentak/venv/bin/python /usr/local/portabletak/feeds_service.py \

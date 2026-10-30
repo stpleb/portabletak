@@ -97,6 +97,9 @@ def get_all_groups():
             elif group["cn"].lower().endswith("_read"):
                 response["data"].append(g.to_marti_json_out())
 
+    # PortableTAK: ATAK defaults to an early group. Public first, feed channels last.
+    feeds = {app.config.get("OTS_ADSB_GROUP", "ADS-B"), app.config.get("OTS_AIS_GROUP", "AIS")}
+    response["data"].sort(key=lambda g: (g.get("name") != "__ANON__", g.get("name") in feeds))
     return jsonify(response)
 
 

@@ -77,7 +77,9 @@
         'When this server connects it appears as "' + (me.our_common_name || 'PortableTAK') + '" in their federates: ' +
           'they set its inbound and outbound groups (users without a group are __ANON__).',
         tak ? 'TAK Server users who have a certificate but no group only federate if "x509addAnonymous" is on, or once they are in a shared group.' : '',
-        tak ? 'For data packages to cross, turn on mission federation: allowMissionFederation="true" on <federation> in CoreConfig.xml, then restart TAK Server.' : ''
+        tak ? 'For data packages to cross, turn on mission federation: allowMissionFederation="true" on <federation> in CoreConfig.xml, then restart TAK Server.' : '',
+        tak ? 'On the new federate, add at least one group for both directions (for example __ANON__). Data Sync feeds do not cross until it has one.' : '',
+        'Data Sync feeds cross only when they are public, have no password, and are in a channel shared with that server. Use the Public channel to share with __ANON__.'
       ].filter(Boolean).forEach(t => steps.appendChild(el('li', 'margin:3px 0', t)));
       box.append(el('div', 'font-weight:600', 'For the other server\'s admin'), ours, steps,
         el('div', 'font-family:monospace;font-size:0.8em;word-break:break-all;margin-top:6px',
