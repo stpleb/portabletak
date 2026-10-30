@@ -89,6 +89,9 @@ if [ "$ARCH" = x86_64 ] && ! is_mounted "$ROOT/asgard/opentak/venv"; then
 fi
 
 echo "PORTABLETAK_RUNTIME_PREPARED=1"
+# The chroot's resolv.conf is empty, which only works where the host answers DNS on
+# localhost (a node's dnsmasq), not in the Mac VM or WSL. Give it the host's DNS server.
+[ -s /etc/resolv.conf ] && { rm -f "$ROOT/etc/resolv.conf"; cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf"; }
 echo "PORTABLETAK_CHROOT_MOUNTS=READY"
 
 return 0 2>/dev/null

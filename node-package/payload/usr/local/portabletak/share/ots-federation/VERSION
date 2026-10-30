@@ -1,1 +1,1 @@
-opentakserver 1.7.13 + federation (PR #343) pt-fed e884ef9 + base patches; grpcio 1.82.1
+opentakserver 1.7.13 + federation (PR #343) pt-fed bd3d457 + base patches; grpcio 1.82.1

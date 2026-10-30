@@ -1,5 +1,5 @@
 """Set an OpenMANET node's clock from the administrator's browser at dashboard sign-in, or
-from the position reports phones send (from_phones).
+from the position reports phones send (from_phones), or from its GPS (from_gps).
 
 A node has no clock that keeps time while off and usually no internet for NTP, so after a
 reboot its time can be hours off (voice history, logs and certificates then carry wrong times).
@@ -7,6 +7,8 @@ Only on OpenMANET nodes, only after the password checked out, and only when more
 minutes off.
 """
 
+import datetime
+import json
 import subprocess
 import time
 
@@ -66,3 +68,34 @@ def from_phones(times, profile=None, now=time.time, run=subprocess.run):
     if min(times) - now() <= TOLERANCE:
         return None
     return set_from_client(max(times) * 1000, profile, now=now, run=run)
+
+
+def read_gps_time(run=subprocess.run):
+    """The newest time from gpsd as ms since 1970, or None without a GPS fix."""
+    try:
+        out = run(['gpspipe', '-w', '-n', '12'], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    newest = None
+    for line in (out or '').splitlines():
+        try:
+            report = json.loads(line)
+        except ValueError:
+            continue
+        if report.get('class') != 'TPV' or report.get('mode', 0) < 2 or not report.get('time'):
+            continue
+        try:
+            stamp = datetime.datetime.fromisoformat(report['time'].replace('Z', '+00:00'))
+        except (TypeError, ValueError):
+            continue
+        newest = stamp.timestamp() * 1000
+    return newest
+
+
+def from_gps(profile=None, now=time.time, run=subprocess.run):
+    """Set a node's clock from its GPS, either way: a fix is the best time it can have.
+    Returns the correction in seconds, or None."""
+    if (profile or read_profile())['PT_PROFILE'] != 'openmanet':
+        return None
+    gps_ms = read_gps_time(run)
+    return None if gps_ms is None else set_from_client(gps_ms, profile, now=now, run=run)

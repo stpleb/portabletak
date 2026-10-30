@@ -62,5 +62,39 @@ class FromPhonesTests(unittest.TestCase):
         self.assertEqual(self.go([NOW + 27000] * 3, LINUX), (None, []))    # not a node
 
 
+
+class FromGpsTests(unittest.TestCase):
+    class Gps(Run):
+        def __init__(self, out):
+            super().__init__()
+            self.out = out
+
+        def __call__(self, cmd, **kw):
+            if cmd[0] == 'gpspipe':
+                return type('R', (), {'stdout': self.out, 'returncode': 0})()
+            return super().__call__(cmd, **kw)
+
+    FIX = '{"class":"TPV","mode":3,"time":"2026-10-30T12:00:00.000Z"}\n'
+    TARGET = 1793361600.0
+
+    def test_fix_sets_the_clock_either_way(self):
+        for now in (self.TARGET - 3000, self.TARGET + 3000):
+            run = self.Gps(self.FIX)
+            self.assertEqual(node_clock.from_gps(NODE, now=lambda: now, run=run), self.TARGET - now)
+            self.assertEqual(run.calls[-1][-1], '@%d' % self.TARGET)
+
+    def test_no_fix_or_no_gps_changes_nothing(self):
+        run = self.Gps('{"class":"TPV","mode":1}\n{"class":"SKY"}\nnot json\n')
+        self.assertIsNone(node_clock.from_gps(NODE, now=lambda: NOW, run=run))
+        self.assertEqual(run.calls, [])
+
+        def missing(cmd, **kw):
+            raise FileNotFoundError(cmd[0])
+        self.assertIsNone(node_clock.from_gps(NODE, now=lambda: NOW, run=missing))
+
+    def test_only_on_nodes(self):
+        self.assertIsNone(node_clock.from_gps(LINUX, now=lambda: NOW, run=self.Gps(self.FIX)))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -363,6 +363,9 @@ class FileRelay:
             return
         if not rol.payload:
             return
+        keywords = next((v for k, v in params.items() if k.lower() == "keywords"), None) or []
+        if "ARCHIVED_MISSION" in keywords:
+            return                                  # TAK Server's copy of a deleted mission, not a package
         data = rol.payload[0].data
         sha256 = hashlib.sha256(data).hexdigest()
         stated = str(params.get("hash") or "").lower()
