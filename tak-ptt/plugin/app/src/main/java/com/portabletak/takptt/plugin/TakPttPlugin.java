@@ -372,7 +372,7 @@ public class TakPttPlugin implements IPlugin {
         content.addView(chPage, new LinearLayout.LayoutParams(-1, -2));
 
         // HISTORY page: transmissions saved by the PortableTAK voice recorder
-        history = new HistoryView(ctx, () -> {
+        history = new HistoryView(ctx, pluginContext, () -> {
             try {
                 return TakVoice.fromAtak();
             } catch (Exception e) {

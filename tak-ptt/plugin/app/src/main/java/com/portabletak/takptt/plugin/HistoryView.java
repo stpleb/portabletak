@@ -2,12 +2,15 @@ package com.portabletak.takptt.plugin;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.format.DateUtils;
+import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
@@ -22,10 +25,10 @@ import com.atakmap.android.maps.MapGroup;
 import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.maps.Marker;
-import com.atakmap.android.util.ATAKUtilities;
 import com.atakmap.coremap.maps.assets.Icon;
 import com.atakmap.coremap.maps.coords.GeoPoint;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -57,6 +60,8 @@ final class HistoryView extends LinearLayout {
     private final Source source;
     private final VoiceHistory history;
     private final SharedPreferences prefs;
+    private final Context plugin;
+    private String markerImage;
     private final float d;
     private final LinearLayout list;
     private final TextView status, mapToggle, unheardButton, clearButton, textToggle;
@@ -73,8 +78,9 @@ final class HistoryView extends LinearLayout {
     java.util.function.Consumer<Boolean> onTextToggle;
     private ArrayList<String> heardLog = new ArrayList<>();
 
-    HistoryView(Context ctx, Source source) {
+    HistoryView(Context ctx, Context plugin, Source source) {
         super(ctx);
+        this.plugin = plugin;
         setOrientation(VERTICAL);
         this.source = source;
         this.d = ctx.getResources().getDisplayMetrics().density;
@@ -502,6 +508,17 @@ final class HistoryView extends LinearLayout {
         return g != null ? g : root.addGroup(GROUP);
     }
 
+    /** The icon inside its URI: the plugin's own resources are not on the map's context. */
+    private String markerImage() {
+        if (markerImage == null) {
+            Bitmap icon = BitmapFactory.decodeResource(plugin.getResources(), R.drawable.takptt_marker);
+            ByteArrayOutputStream png = new ByteArrayOutputStream();
+            icon.compress(Bitmap.CompressFormat.PNG, 100, png);
+            markerImage = "base64://" + Base64.encodeToString(png.toByteArray(), Base64.NO_WRAP | Base64.URL_SAFE);
+        }
+        return markerImage;
+    }
+
     /** Markers where each clip was sent from (this phone's map only; nothing is sent out). */
     private void showOnMap() {
         try {
@@ -512,10 +529,11 @@ final class HistoryView extends LinearLayout {
                 if (c.lat == null || c.lon == null || !GeoPoint.isValid(c.lat, c.lon)) continue;
                 Marker m = new Marker(MARKER + c.id);
                 m.setPoint(new GeoPoint(c.lat, c.lon));
-                m.setType("b-m-p-s-m");
-                m.setMetaBoolean("adapt_marker_icon", false);                     // keep this icon, not the type's tiny dot
-                m.setIcon(new Icon.Builder().setImageUri(0, ATAKUtilities.getResourceUri(getContext(), R.drawable.takptt_marker))
-                        .setSize(48, 48).setAnchor(24, 24).build());
+                m.setType("takptt-clip");                                         // not a spot map type: those draw a small dot
+                m.setMetaBoolean("adapt_marker_icon", false);
+                int size = dp(9);                                                  // ATAK draws it about twice this: matches the self marker
+                m.setIcon(new Icon.Builder().setImageUri(0, markerImage())
+                        .setSize(size, size).setAnchor(size / 2, size / 2).build());
                 m.setTitle(c.sender + " · " + c.channel + " · " + ago(c.start));
                 m.setMetaString("callsign", c.sender + " " + ago(c.start));
                 m.setMetaBoolean("editable", false);
