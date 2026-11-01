@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TAK PTT in ATAK's tool menu: line art only (ATAK tints tool icons, like its own white ones). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- antenna -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M25.5,5 V13.5" />
+    <!-- radio body -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.6"
+        android:pathData="M16.5,13.5 H29.5 A2.8,2.8 0 0 1 32.3,16.3 V40.2 A2.8,2.8 0 0 1 29.5,43 H16.5 A2.8,2.8 0 0 1 13.7,40.2 V16.3 A2.8,2.8 0 0 1 16.5,13.5 Z" />
+    <!-- speaker grille -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M18,20.5 H28 M18,24.5 H28 M18,28.5 H28" />
+    <!-- talk button on the side -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M9.6,19 H12.2 V28.5 H9.6 A1.1,1.1 0 0 1 8.5,27.4 V20.1 A1.1,1.1 0 0 1 9.6,19 Z" />
+    <!-- signal waves -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M30.5,4.5 A5,5 0 0 1 30.5,12.5 M34.5,1.8 A9.5,9.5 0 0 1 34.5,15.2" />
+</vector>

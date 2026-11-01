@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    TAK PTT for WinTAK. Builds on Windows with WinTAK installed (dotnet build, or Visual Studio), and on any
+    computer with the WinTAK DLLs in a folder:  dotnet build -c Release -p:WinTakDir=/path/to/dlls
+    The view is written in code, not XAML, so no WPF build tools are needed.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>TakPtt.WinTak</AssemblyName>
+    <RootNamespace>TakPtt.WinTak</RootNamespace>
+    <Version>1.0.0</Version>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <WinTakDir Condition="'$(WinTakDir)' == ''">C:\Program Files\WinTAK</WinTakDir>
+    <!-- WinTAK's DLLs were built against MIL or CIV Prism builds; those warnings are expected. -->
+    <NoWarn>$(NoWarn);MSB3277;NU1701</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="*.cs" />
+    <Compile Include="..\Voice\*.cs" Link="Voice\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Assets\TakPtt.WinTak.g.resources" LogicalName="TakPtt.WinTak.g.resources" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Concentus" Version="1.1.7" />
+    <PackageReference Include="NAudio.Core" Version="2.2.1" />
+    <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="System.ComponentModel.Composition" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Speech" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="WindowsBase" />
+  </ItemGroup>
+
+  <!-- WinTAK provides these at run time, so none of them is copied into the plugin. -->
+  <ItemGroup>
+    <Reference Include="Prism"><HintPath>$(WinTakDir)\Prism.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Prism.Mef.Wpf"><HintPath>$(WinTakDir)\Prism.Mef.Wpf.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Prism.Wpf"><HintPath>$(WinTakDir)\Prism.Wpf.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.Common"><HintPath>$(WinTakDir)\WinTak.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.CursorOnTarget.Placement"><HintPath>$(WinTakDir)\WinTak.CursorOnTarget.Placement.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.Framework"><HintPath>$(WinTakDir)\WinTak.Framework.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.Framework.Preferences"><HintPath>$(WinTakDir)\WinTak.Framework.Preferences.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="TAK.Engine"><HintPath>$(WinTakDir)\TAK.Engine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.Graphics"><HintPath>$(WinTakDir)\WinTak.Graphics.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.Location"><HintPath>$(WinTakDir)\WinTak.Location.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.Net"><HintPath>$(WinTakDir)\WinTak.Net.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <!-- On Windows, every build goes straight into WinTAK's plugin folder, as in the WinTAK template. -->
+  <Target Name="InstallForWinTak" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
+    <ItemGroup><PluginFile Include="$(TargetDir)*.dll;$(TargetDir)*.pdb" /></ItemGroup>
+    <Copy SourceFiles="@(PluginFile)" DestinationFolder="$(AppData)\wintak\plugins\TakPtt" />
+  </Target>
+</Project>

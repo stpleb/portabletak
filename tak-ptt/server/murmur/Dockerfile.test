@@ -1,0 +1,7 @@
+# Test image: Murmur 1.5 (Ubuntu 24.04, as on the PortableTAK drive) plus the TAK PTT sign-in check.
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends mumble-server python3-zeroc-ice openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY gen /auth/gen
+COPY takptt_auth.py run-test.sh /auth/
+ENTRYPOINT ["/bin/sh", "/auth/run-test.sh"]

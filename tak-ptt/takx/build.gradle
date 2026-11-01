@@ -1,0 +1,86 @@
+// TAK PTT for TAKX. Build on a machine with TAKX installed: ./gradlew install
+// Set the three properties below for your install (gradle.properties or -P on the command line).
+plugins {
+    id "java"
+}
+
+group = "com.portabletak.takptt"
+description = "TAK PTT for TAKX"
+version = "0.1.0"
+
+ext {
+    // The TAKX install. Default for Windows; on a Mac /Applications/TAKX-GOV, on Linux /opt/TAKX-GOV.
+    takxInstallDir = findProperty("takxInstallDir") ?: "C:/Program Files/TAKX-GOV"
+    // From the install's load folder: bootstrap-5.8.0.jar means 5.8.0.
+    takxVersion = findProperty("takxVersion") ?: "5.8.0"
+    // 'win', 'macos' or 'linux'
+    platform = findProperty("platform") ?: "win"
+    // From modules/gov/tak/kernel/main: takkernel-all-9.11.5.jar means 9.11.5.
+    takKernelVersion = findProperty("takKernelVersion") ?: "9.11.5"
+    worldwindVersion = findProperty("worldwindVersion") ?: "2.2.1-TAKX-4"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    flatDir {
+        dirs "${takxInstallDir}/load", "${takxInstallDir}/lib", "${takxInstallDir}/plugins",
+                "${takxInstallDir}/modules/gov/tak/kernel/main"
+    }
+    mavenCentral()
+}
+
+configurations {
+    includeInJar { transitive = true }
+    implementation.extendsFrom includeInJar
+}
+
+dependencies {
+    // This library defines the TAKX API
+    implementation "gov.takx:platform:$takxVersion"
+
+    // Dependencies that are provided at runtime by TAKX
+    implementation group: 'jakarta.annotation', name: 'jakarta.annotation-api', version: '2.1.1'
+    implementation group: 'jakarta.enterprise', name: 'jakarta.enterprise.cdi-api', version: '4.0.1'
+    implementation group: 'org.slf4j', name: 'slf4j-api', version: '2.0.3'
+    implementation "gov.tak.kernel:takkernel-shared:$takKernelVersion"
+    implementation group: 'gov.tak.kernel', name: "takkernel-engine", version: takKernelVersion
+    implementation group: 'gov.tak.kernel', name: "takkernel-engine-rt-${platform}64", version: takKernelVersion
+    implementation "gov.nasa:worldwind:$worldwindVersion"
+
+    // Carried inside the plugin jar (lib/)
+    includeInJar 'io.github.jaredmdobson:concentus:1.0.2'
+    includeInJar 'org.bouncycastle:bcprov-jdk18on:1.80'
+    includeInJar 'org.bouncycastle:bcpkix-jdk18on:1.80'
+}
+
+// The end-to-end test runs with tools/run-e2e.sh, not in the build.
+sourceSets.test.java.srcDirs = []
+
+wrapper {
+    gradleVersion = "7.3.3"
+}
+
+jar {
+    into('lib') {
+        from configurations.includeInJar
+    }
+}
+
+tasks.create(name: 'install', group: 'Build', description: 'Copy jar to <takxInstallDir>/plugins') {
+    dependsOn 'build'
+    doLast {
+        File dir = new File("${takxInstallDir}")
+        if (dir.exists()) {
+            copy {
+                from tasks.jar.archiveFile
+                into new File(dir, "plugins")
+            }
+        } else {
+            println "Specified TAKX installation directory does not exist; skipping the jar install!"
+        }
+    }
+}

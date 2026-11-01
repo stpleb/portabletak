@@ -39,6 +39,12 @@ Ready-to-use files are attached to the newest release (Releases, on the right):
 Guides (also on every drive's Start-here partition): `guides/` (Quick Start, Quick Reference,
 Setup and Troubleshooting Guide, Skydio X10D Guide).
 
+## TAK PTT for WinTAK
+
+The WinTAK push to talk plugin is in its own release, `tak-ptt-v1.0`: install `TakPtt-1.0.0.0-5.8.0.146.wpk` on
+WinTAK 5.8. It talks with TAK PTT on ATAK, and has channels, voice history, map markers and offline transcripts.
+See `tak-ptt/wintak/README.md`.
+
 ## Layout
 
 | Folder | Contents |
@@ -51,6 +57,7 @@ Setup and Troubleshooting Guide, Skydio X10D Guide).
 | `start-here/` | Files on the drive's visible partition (launchers; large images come from the builds) |
 | `guides/` | Guide sources (HTML) and PDFs |
 | `voice/` | Builds the voice server bundle (Murmur and ZeroC Ice from Ubuntu packages) |
+| `tak-ptt/` | TAK PTT source: ATAK and WinTAK plugins, TAKX port, voice server scripts |
 | `docs/` | Runbook, plans and design notes |
 | `third-party/` | Provenance of bundled third-party binaries |
 
@@ -59,3 +66,7 @@ Tailscale (BSD-3-Clause), usbipd-win (MIT), MapLibre GL JS (BSD-3-Clause), PMTil
 (BSD-3-Clause; map data © OpenStreetMap contributors, ODbL), hls.js (Apache-2.0), readsb (GPL-3.0),
 rtl-sdr (GPL-2.0), libusb (LGPL-2.1), Mumble server (BSD-3-Clause), ZeroC Ice (GPL-2.0), Qt 5 (LGPL-3.0),
 Protocol Buffers (BSD-3-Clause).
+
+TAK PTT for WinTAK bundles NAudio (MIT), Concentus (BSD-3-Clause), Whisper.net (MIT), whisper.cpp (MIT) and the
+Whisper base.en model (MIT).
+TAK PTT for ATAK uses Humla (GPL-3.0 or later); the changes are in `tak-ptt/third_party/`.

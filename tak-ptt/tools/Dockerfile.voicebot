@@ -1,0 +1,5 @@
+FROM python:3.11-slim
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends libopus0 >/dev/null && rm -rf /var/lib/apt/lists/*
+RUN pip install -q --no-cache-dir pymumble==1.6.1 opuslib==3.0.1 "protobuf<4"
+COPY voicebot.py /voicebot.py
+ENTRYPOINT ["python", "/voicebot.py"]

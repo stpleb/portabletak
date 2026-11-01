@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App -->
+    <string name="app_name">TAK PTT</string>
+    <!-- description -->
+    <string name="app_desc">Push-to-talk voice over Mumble for PortableTAK</string>
+
+
+
+
+    <string name="keys_desc">Lets TAK PTT use a volume key as the push-to-talk button, also while ATAK is in the background. It only watches that key and does not read the screen.</string>
+    <string name="keys_label">TAK PTT buttons</string>
+</resources>

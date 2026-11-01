@@ -1,0 +1,75 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="GoogleAppIndexingWarning">
+
+    <!-- The voice service runs in this plugin's own process (not ATAK's) so it can keep the
+         microphone with ATAK in the background and draw the floating PTT button. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <!-- Mesh failover: UDP multicast on the local network. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <application tools:replace="android:allowBackup"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:description="@string/app_desc"
+        android:theme="@style/AppTheme" >
+        <meta-data android:name="plugin-api" android:value="${atakApiVersion}"/>
+        <meta-data android:name="app_desc" android:value="@string/app_desc"/>
+
+
+       <!-- This fictitious activity entry allow for ATAK 4.6.0.2 and newer to perform 
+            plugin discovery  android devices.  If this is removed, the plugin will 
+            not be able to be discovered or loaded.  -->
+       <activity android:name="com.atakmap.app.component"
+           android:exported="true"
+           tools:ignore="MissingClass">
+           <intent-filter android:label="@string/app_name">
+              <action android:name="com.atakmap.app.component" />
+           </intent-filter>
+       </activity>
+
+
+       <!-- Voice engine; only ATAK may use it (VoiceService checks the caller). -->
+       <service android:name="com.portabletak.takptt.plugin.VoiceService"
+           android:exported="true"
+           android:foregroundServiceType="microphone|mediaPlayback" />
+
+       <service android:name="com.portabletak.takptt.plugin.KeyService"
+           android:exported="false"
+           android:label="@string/keys_label"
+           android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+           <intent-filter>
+               <action android:name="android.accessibilityservice.AccessibilityService" />
+           </intent-filter>
+           <meta-data android:name="android.accessibilityservice" android:resource="@xml/takptt_keys" />
+       </service>
+
+       <!-- Radio traffic as short self-managed calls (PttCalls). -->
+       <service android:name="com.portabletak.takptt.plugin.PttCalls$Service"
+           android:exported="true"
+           android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+           <intent-filter>
+               <action android:name="android.telecom.ConnectionService" />
+           </intent-filter>
+       </service>
+
+       <activity android:name="com.portabletak.takptt.plugin.SetupActivity"
+           android:exported="true"
+           android:excludeFromRecents="true"
+           android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+    </application>
+
+</manifest>
