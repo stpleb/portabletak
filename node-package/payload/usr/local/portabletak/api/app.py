@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import backup_catalog
 import host_profile
+import site_logo
 
 app = FastAPI(
     title="PortableTAK Server",
@@ -150,7 +151,7 @@ def root():
     from fastapi.responses import HTMLResponse
     web = Path("/usr/local/portabletak/web")
     html = (web / "index.html").read_text()
-    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "feeds.js", "plugins.js", "datapackages.js", "meshtastic.js", "federation.js", "factory-reset.js", "section-icons.js", "desktop-layout.js"):
+    for name in ("auth.js", "remote-access.js", "video-feeds.js", "channels.js", "feeds.js", "plugins.js", "datapackages.js", "datasync.js", "meshtastic.js", "federation.js", "factory-reset.js", "section-icons.js", "desktop-layout.js", "logo.js"):
         try:
             tag = hashlib.sha256((web / name).read_bytes()).hexdigest()[:12]
         except OSError:
@@ -425,6 +426,26 @@ def qr_host(address, opened_at=None):
     if address in (record.get("addresses") or []):
         return None if address == record.get("advertise") else address
     raise HTTPException(status_code=400, detail="invalid_address")
+
+
+@app.get("/api/client/moved")
+def client_moved():
+    """Set when the drive moved to a device with a different address."""
+    import client_packages
+    import server_addresses
+    try:
+        note = json.loads(Path("/mnt/asgard/config/moved.json").read_text())
+    except (OSError, ValueError):
+        return {"moved": False}
+    record = server_addresses.current("/mnt/asgard")
+    return {"moved": True, "from": note.get("from"), "to": note.get("to"),
+            "remote": client_packages.remote_address(record)}
+
+
+@app.delete("/api/client/moved")
+def client_moved_clear():
+    Path("/mnt/asgard/config/moved.json").unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.get("/api/client/qr-addresses")
@@ -1031,6 +1052,48 @@ def datapackages_script():
     return FileResponse("/usr/local/portabletak/web/datapackages.js", media_type="text/javascript")
 
 
+@app.get("/logo.js")
+def logo_js():
+    return FileResponse("/usr/local/portabletak/web/logo.js", media_type="text/javascript")
+
+
+@app.get("/logo")
+def logo_image():
+    path, kind = site_logo.current()
+    return FileResponse(str(path), media_type=kind,
+                        headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/logo")
+def logo_state():
+    return {"custom": site_logo.is_custom()}
+
+
+@app.put("/api/logo")
+async def logo_set(request: Request):
+    """The image is the request body (no multipart)."""
+    content = bytearray()
+    async for chunk in request.stream():
+        content += chunk
+        if len(content) > site_logo.MAX_BYTES:
+            raise HTTPException(status_code=413, detail={"error": "logo_too_large"})
+    error = site_logo.save(bytes(content))
+    if error:
+        raise HTTPException(status_code=503 if error == "no_drive" else 400, detail={"error": error})
+    return {"ok": True, "custom": True}
+
+
+@app.delete("/api/logo")
+def logo_reset():
+    site_logo.clear()
+    return {"ok": True, "custom": False}
+
+
+@app.get("/datasync.js")
+def datasync_script():
+    return FileResponse("/usr/local/portabletak/web/datasync.js", media_type="text/javascript")
+
+
 @app.get("/section-icons.js")
 def section_icons_script():
     return FileResponse("/usr/local/portabletak/web/section-icons.js", media_type="text/javascript")
@@ -1398,6 +1461,18 @@ def datapackages_delete(sha256: str):
     if not re.fullmatch(r"[0-9a-f]{64}", sha256):
         raise HTTPException(status_code=404, detail="not_found")
     return run_users({"action": "dp_delete", "hash": sha256})
+
+
+@app.get("/api/datasync/feeds")
+def datasync_list():
+    """OpenTAKServer's Data Sync feeds (ATAK calls them missions)."""
+    return run_users({"action": "ds_list"})
+
+
+@app.delete("/api/datasync/feeds")
+def datasync_delete(name: str = Query(default="", max_length=255)):
+    """By query, not path: a feed name is whatever the phone typed, slashes included."""
+    return run_users({"action": "ds_delete", "name": name})
 
 
 FEEDS_CONF = Path("/mnt/asgard/opentak/feeds.json")

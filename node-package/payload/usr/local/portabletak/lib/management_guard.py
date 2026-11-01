@@ -26,6 +26,8 @@ COOKIE = 'ptak_session'
 UNSAFE = frozenset({'POST', 'PUT', 'PATCH', 'DELETE'})
 PUBLIC = frozenset({('GET', '/'), ('GET', '/auth.js'), ('GET', '/remote-access.js'), ('GET', '/factory-reset.js'), ('GET', '/wizard.html'),
                     ('GET', '/provision.js'),
+                    # The sign-in panel shows the logo, so it loads before sign-in.
+                    ('GET', '/logo'),
                     # Federation invites: the CA is public; accept is guarded by the invite secret.
                     ('GET', '/api/federation/public-ca'), ('POST', '/api/federation/accept')})
 MAX_LOGIN_BODY = 4096

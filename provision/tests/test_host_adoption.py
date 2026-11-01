@@ -55,6 +55,14 @@ class AdoptionTests(unittest.TestCase):
         root = cartridge('openmanet', '10.41.250.10', 'br-ahwlan', ['10.41.254.1'], '10.41.254.1')
         self.assertFalse(ha.needs_adoption(root, OpenManetAdapter(network_tool=None, node_local_address='10.41.254.1')))
 
+    def test_move_leaves_a_note_for_the_dashboard(self):
+        root = cartridge('linux', '192.168.1.20', 'eth0', ['192.168.1.20'], '192.168.1.20')
+        ha.adopt(root, LinuxAdapter('192.168.1.20', 'eth0'), reissue=self.reissue, listen=lambda r: None)
+        self.assertFalse((root / 'config/moved.json').exists())
+        ha.adopt(root, LinuxAdapter('10.5.0.9', 'eth0'), reissue=self.reissue, listen=lambda r: None)
+        note = json.loads((root / 'config/moved.json').read_text())
+        self.assertEqual((note['from'], note['to']), ('192.168.1.20', '10.5.0.9'))
+
     def test_linux_address_change_needs_adoption(self):
         root = cartridge('linux', '192.168.1.20', 'eth0', ['192.168.1.20'], '192.168.1.20')
         self.assertFalse(ha.needs_adoption(root, LinuxAdapter('192.168.1.20', 'eth0')))

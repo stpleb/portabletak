@@ -89,6 +89,19 @@ class ClientPackageTests(unittest.TestCase):
         self.assertEqual(pref.count('name="cot_streams"'), 1)
         self.assertIn('\n                    </preference>\n                    <preference version="1" name="com.atakmap', pref)
 
+    def test_package_id_follows_the_addresses(self):
+        manifest = '<MissionPackageManifest version="2"><Configuration><Parameter name="uid" value="u1"/></Configuration></MissionPackageManifest>'
+        inner = zip_of([('u1/preference.pref', ATAK_PREF)])
+        package = zip_of([('MANIFEST/manifest.xml', manifest), ('u1/droid1.zip', inner)])
+
+        def uid(record):
+            text = zipfile.ZipFile(io.BytesIO(cp.build(package, 'atak', record))).read('MANIFEST/manifest.xml').decode()
+            return cp.MANIFEST_UID.search(text).group(2)
+        moved = dict(RECORD, advertise='192.168.1.20', addresses=['192.168.1.20', '100.93.136.26'])
+        self.assertEqual(uid(RECORD), uid(RECORD))
+        self.assertNotEqual(uid(RECORD), uid(moved))
+        self.assertNotEqual(uid(RECORD), 'u1')
+
     def test_itak_package(self):
         pref = ATAK_PREF.replace('                ', '')
         data = zip_of([('config.pref', pref), ('droid1.p12', b'K'), ('truststore-root.p12', b'C')])

@@ -112,5 +112,11 @@ done
 /usr/local/portabletak/bin/portabletak-tailscale start </dev/null 2>/dev/null | sed -n "s/^PORTABLETAK_TAILSCALE=/PORTABLETAK_INSTALL_TAILSCALE=/p" || true
 # A phone's USB tethering can serve as the node's internet uplink (like Ethernet).
 command -v uci >/dev/null 2>&1 && /usr/local/portabletak/bin/portabletak-phone-uplink setup >/dev/null 2>&1
+# Console printing blocks the CPU that takes every interrupt, and a long boot message
+# then times out the HaLow, USB and I2C links. The kernel log (dmesg) is unaffected.
+if [ -d /etc/sysctl.d ]; then
+    echo 'kernel.printk = 3 4 1 7' > /etc/sysctl.d/90-portabletak-console.conf
+    sysctl -w kernel.printk='3 4 1 7' >/dev/null 2>&1
+fi
 echo "PORTABLETAK_INSTALL=COMPLETE"
 echo "PORTABLETAK_FIRST_RUN_GATE=CLOSED"

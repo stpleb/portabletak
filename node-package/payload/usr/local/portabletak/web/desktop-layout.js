@@ -23,7 +23,9 @@
     body.pt-desk .pt-page > details > div:first-of-type { margin-top: 0 !important; }
     #ptNav { position: fixed; top: 0; left: 0; bottom: 0; width: 250px; background: var(--panel, #121922);
       border-right: 1px solid var(--border, #293748); display: flex; flex-direction: column; z-index: 20; }
-    #ptNav .pt-brand { padding: 18px 18px 14px; border-bottom: 1px solid var(--border, #293748); }
+    #ptNav .pt-brand { display: flex; align-items: center; gap: 10px; padding: 16px 18px 14px; border-bottom: 1px solid var(--border, #293748); }
+    #ptNav .pt-brand button.pt-logo { width: 36px !important; height: 36px; }
+    body.pt-desk main > header .pt-logo { display: none; }   /* the menu beside it shows the logo */
     #ptNav .pt-brand b { display: block; font-size: 1.05rem; color: #fff; }
     #ptNav .pt-brand span { font-size: 0.85rem; color: var(--muted, #8fa1b5); }
     #ptNav .pt-items { flex: 1; overflow-y: auto; padding: 8px; }
@@ -43,7 +45,7 @@
 
   const main = () => document.querySelector('main');
   const ORDER = ['Controls', 'Remote Access', 'Federation', 'Client Setup', 'Users', 'Channels', 'Live Feeds',
-                 'Video Feeds', 'ATAK Plugins', 'Data Packages', 'Meshtastic', 'Backup / Restore', 'Activity'];
+                 'Video Feeds', 'ATAK Plugins', 'Data Packages', 'Data Sync', 'Meshtastic', 'Backup / Restore', 'Activity'];
 
   function order() {
     const byName = {};
@@ -136,7 +138,7 @@
     document.body.classList.add('pt-desk');
     nav = document.createElement('nav');
     nav.id = 'ptNav';
-    nav.innerHTML = '<div class="pt-brand"><b></b><span>PortableTAK</span></div><div class="pt-items"></div><div class="pt-foot"></div>';
+    nav.innerHTML = '<div class="pt-brand"><button type="button" class="pt-logo" aria-label="Change logo"><img src="/logo" alt=""></button><div><b></b><span>PortableTAK</span></div></div><div class="pt-items"></div><div class="pt-foot"></div>';
     const out = document.createElement('a');
     out.insertAdjacentHTML('afterbegin', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="color:var(--muted)"><path d="M14 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-3"/><path d="M9 12h12M18 9l3 3-3 3"/></svg>');
     out.appendChild(document.createTextNode('Sign out'));

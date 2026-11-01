@@ -8,11 +8,13 @@
 <script src="/feeds.js" defer></script>
 <script src="/plugins.js" defer></script>
 <script src="/datapackages.js" defer></script>
+<script src="/datasync.js" defer></script>
 <script src="/meshtastic.js" defer></script>
 <script src="/federation.js" defer></script>
 <script src="/factory-reset.js" defer></script>
 <script src="/section-icons.js" defer></script>
 <script src="/desktop-layout.js" defer></script>
+<script src="/logo.js" defer></script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PortableTAK Server</title>
@@ -65,6 +67,95 @@ h1 {
 .subtitle {
     color: var(--muted);
     margin-top: 5px;
+}
+
+.title-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+}
+
+/* The logo is its own control: three faint dots beside it show only to a signed-in administrator. */
+button.pt-logo {
+    position: relative;
+    flex: none;
+    width: 52px !important;   /* phones make every other button full width */
+    min-width: 0;
+    height: 52px;
+    min-height: 0;
+    margin-right: 6px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    cursor: default;
+}
+
+button.pt-logo:hover:not(:disabled) {
+    border-color: transparent;
+}
+
+.pt-logo img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+}
+
+.pt-logo-edit button.pt-logo {
+    cursor: pointer;
+}
+
+.pt-logo-edit button.pt-logo::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: -11px;
+    bottom: 0;
+    width: 8px;
+    opacity: .35;
+    transition: opacity .15s;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 16' fill='%23e8eef5'%3E%3Ccircle cx='2' cy='2' r='1.5'/%3E%3Ccircle cx='2' cy='8' r='1.5'/%3E%3Ccircle cx='2' cy='14' r='1.5'/%3E%3C/svg%3E") center / 3px 12px no-repeat;
+}
+
+.pt-logo-edit button.pt-logo:hover::after,
+.pt-logo-edit button.pt-logo:focus-visible::after {
+    opacity: 1;
+}
+
+.pt-logo-pop {
+    position: fixed;
+    z-index: 900;
+    display: flex;
+    flex-direction: column;
+    max-width: 240px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 13px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+
+.pt-logo-pop:not([role]) {
+    padding: 7px 10px;
+}
+
+.pt-logo-pop button {
+    padding: 6px 12px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    font-size: 13px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.pt-logo-pop button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, .08);
 }
 
 .badge {
@@ -378,9 +469,12 @@ button.danger {
 <main>
 
 <header>
-    <div>
-        <h1 id="serverName">PortableTAK Server</h1>
-        <div class="subtitle">Portable TAK Management</div>
+    <div class="title-row">
+        <button type="button" class="pt-logo" aria-label="Change logo"><img src="/logo" alt=""></button>
+        <div>
+            <h1 id="serverName">PortableTAK Server</h1>
+            <div class="subtitle">Portable TAK Management</div>
+        </div>
     </div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <a href="/map" class="badge" style="text-decoration:none;color:var(--text);border-color:var(--accent)">&#128506; Live Map</a>
@@ -390,6 +484,7 @@ button.danger {
 </header>
 <div id="heatNote" class="card" style="display:none;margin:0 0 16px;border-color:var(--warn)"></div>
 <div id="conflictNote" class="card" style="display:none;margin:0 0 16px;border-color:var(--bad)"></div>
+<div id="movedNote" class="card" style="display:none;margin:0 0 16px;border-color:var(--warn)"></div>
 
 <section class="grid">
 
@@ -1365,6 +1460,21 @@ async function saveBackupSchedule() {
     }
 }
 
+async function refreshMovedNote() {
+    const note = document.getElementById("movedNote");
+    let info = {};
+    try { info = await (await fetch("/api/client/moved")).json(); } catch (error) { return; }
+    note.style.display = info.moved ? "block" : "none";
+    if (!info.moved) { return; }
+    note.textContent = "This server's address changed from " + info.from + " to " + info.to +
+        ". Phones set up on the old address need a new package from Client Setup." +
+        (info.remote ? " Phones using Tailscale can keep working at " + info.remote + " without one." : "") + " ";
+    const done = document.createElement("button");
+    done.textContent = "Got it";
+    done.onclick = async () => { await fetch("/api/client/moved", {method: "DELETE"}); refreshMovedNote(); };
+    note.appendChild(done);
+}
+
 async function refreshClientInfo() {
     const status = byId("clientSetupStatus");
 
@@ -2105,6 +2215,7 @@ setInterval(refreshAbout, 30000);
 
 <script>
 document.addEventListener("DOMContentLoaded", function() {
+    refreshMovedNote();
     const collapsibleTitles = ["Client Setup", "Users"];
 
     for (const title of collapsibleTitles) {

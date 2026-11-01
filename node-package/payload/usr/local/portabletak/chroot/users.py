@@ -105,6 +105,12 @@ with app.app_context():
         print(json.dumps(result))
         raise SystemExit(0 if result.get("ok") else 4)
 
+    if str(request.get("action", "")).startswith("ds_"):
+        import datasync_actions
+        result = datasync_actions.handle(app, db, request)
+        print(json.dumps(result))
+        raise SystemExit(0 if result.get("ok") else 4)
+
     if str(request.get("action", "")).startswith("meshtastic_"):
         import meshtastic_actions
         result = meshtastic_actions.handle(app, db, request)

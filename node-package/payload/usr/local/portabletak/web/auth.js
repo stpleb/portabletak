@@ -35,6 +35,9 @@
     const box = element('form', 'width:100%;max-width:360px;background:var(--panel,#121922);' +
       'border:1px solid var(--border,#293748);border-radius:10px;padding:20px;color:var(--text,#e8eef5);' +
       'font-family:inherit');
+    const logo = element('img', 'display:block;width:56px;height:56px;object-fit:contain;margin:0 auto 12px');
+    logo.src = '/logo'; logo.alt = '';
+    box.appendChild(logo);
     box.appendChild(element('h2', 'margin:0 0 6px;font-size:18px', 'PortableTAK Server'));
     box.appendChild(element('div', 'color:var(--muted,#8fa1b5);font-size:13px;margin-bottom:14px',
       'Sign in with the administrator password chosen during setup.'));

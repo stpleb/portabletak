@@ -148,6 +148,10 @@ def handle_request(request):
                 import datapackages_actions
                 return datapackages_actions.handle(app, db, request)
 
+            if action.startswith("ds_"):
+                import datasync_actions
+                return datasync_actions.handle(app, db, request)
+
             if action.startswith("meshtastic_"):
                 import meshtastic_actions
                 return meshtastic_actions.handle(app, db, request)

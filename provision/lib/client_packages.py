@@ -13,9 +13,11 @@ included but disabled; the user switches them on in the client if needed.
 
 The stored package on the cartridge is never modified; callers serve the bytes.
 """
+import hashlib
 import io
 import ipaddress
 import re
+import uuid
 from xml.sax.saxutils import escape
 import zipfile
 
@@ -25,6 +27,8 @@ TAILSCALE = ipaddress.IPv4Network('100.64.0.0/10')
 MESH = ipaddress.IPv4Network('10.41.250.0/24')
 STREAMS = re.compile(r'(<preference\b[^>]*\bname="cot_streams"[^>]*>)(.*?)(</preference>)', re.S)
 PORT = 8089
+MANIFEST_UID = re.compile(r'(<Parameter\s+name="uid"\s+value=")([^"]*)(")')
+UID_SPACE = uuid.UUID('6f1d3c52-7a0e-4f7b-9c55-2e8a4b1d0c11')
 
 
 def _kind(kind, value, first=False):
@@ -112,17 +116,38 @@ def _rebuild(data, change):
     return out.getvalue()
 
 
+def package_uid(base, conns):
+    """The Data Package ID for these connections: new when the server's addresses change
+    (the drive moved to another device), so ATAK treats it as a new package rather than
+    the one it already holds. The same addresses keep the same ID."""
+    addresses = '|'.join(address for _, address, _ in conns)
+    return str(uuid.uuid5(UID_SPACE, base + '|' + addresses))
+
+
+def _manifest(conns):
+    def change(content):
+        text = content.decode('utf-8')
+        found = MANIFEST_UID.search(text)
+        if not found:
+            return None
+        return MANIFEST_UID.sub(lambda m: m.group(1) + package_uid(m.group(2), conns) + m.group(3),
+                                text).encode('utf-8')
+    return change
+
+
 def _pref(conns):
     return lambda content: rewrite_pref(content.decode('utf-8'), conns).encode('utf-8')
 
 
 def rewrite_atak(data, conns):
     """ATAK/WinTAK: <user>_CONFIG.zip holding <uid>/<user>.zip holding preference.pref."""
-    pref = _pref(conns)
+    pref, manifest = _pref(conns), _manifest(conns)
 
     def inner(name, content):
         if name.endswith('.zip'):
             return _rebuild(content, lambda n, c: pref(c) if n.rsplit('/', 1)[-1] == 'preference.pref' else None)
+        if name.rsplit('/', 1)[-1] == 'manifest.xml':
+            return manifest(content)
         return None
     return _rebuild(data, inner)
 
@@ -158,7 +183,6 @@ def trust_package(truststore, password, name='PortableTAK'):
     manifest lists the trust store and a preference file at the top level. (An
     earlier nested layout had no inner manifest, so ATAK could file it away
     without applying the trust.)"""
-    import uuid
     from xml.sax.saxutils import escape as _escape
     pref = ("<?xml version='1.0' standalone='yes'?>\n<preferences>\n"
             '<preference version="1" name="com.atakmap.app_preferences">'
@@ -167,7 +191,7 @@ def trust_package(truststore, password, name='PortableTAK'):
             '</preference>\n</preferences>\n')
     label = re.sub(r'[^A-Za-z0-9_.-]', '_', name)[:40] + '_TRUST'
     manifest = ('<MissionPackageManifest version="2"><Configuration>'
-                f'<Parameter name="uid" value="{uuid.uuid4()}"/>'
+                f'<Parameter name="uid" value="{uuid.uuid5(UID_SPACE, label + hashlib.sha256(truststore).hexdigest())}"/>'
                 f'<Parameter name="name" value="{_escape(label)}"/></Configuration><Contents>'
                 '<Content ignore="false" zipEntry="truststore-root.p12"/>'
                 '<Content ignore="false" zipEntry="trust.pref"/></Contents></MissionPackageManifest>\n')
@@ -186,7 +210,6 @@ def tls_package(data, record, name, username, uid=None):
     passwords) and the manifest, plus a README with the values to type in.
 
     Built from the user's server-generated ATAK package (<user>_CONFIG.zip)."""
-    import uuid
     outer = zipfile.ZipFile(io.BytesIO(data))
     inner_name = next((n for n in outer.namelist() if n.endswith('.zip')), None)
     if inner_name is None:
@@ -224,7 +247,7 @@ def tls_package(data, record, name, username, uid=None):
               '<entry key="displayServerConnectionWidget" class="class java.lang.Boolean">true</entry>'
               '</preference>\n</preferences>\n')
     manifest = ('<MissionPackageManifest version="2"><Configuration>'
-                f'<Parameter name="uid" value="{uid or uuid.uuid4()}"/>'
+                f'<Parameter name="uid" value="{uid or package_uid(username + '|' + name, conns)}"/>'
                 f'<Parameter name="name" value="{escape(username)} ({escape(name)})"/></Configuration><Contents>'
                 f'<Content ignore="false" zipEntry="{trust_file}"/>'
                 f'<Content ignore="false" zipEntry="{escape(client_file)}"/>'

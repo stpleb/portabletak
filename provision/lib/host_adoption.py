@@ -15,9 +15,10 @@ working; only the server certificate is re-signed (same key).
 import ipaddress
 import json
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
-from portabletak_provision import ProvisionError, read_json
+from portabletak_provision import ProvisionError, atomic_write, read_json
 import server_addresses
 
 TAILSCALE = ipaddress.IPv4Network('100.64.0.0/10')
@@ -114,12 +115,21 @@ def needs_adoption(root, adapter):
     return not set(getattr(adapter, 'extra', []) or []) <= listed
 
 
+def moved(root, before, after, clock=time.time):
+    """Note that the advertised address changed, so the dashboard can tell the user
+    which phones need a new package."""
+    if before and before != after:
+        atomic_write(Path(root) / 'config/moved.json',
+                     json.dumps({'from': before, 'to': after, 'at': int(clock())}) + '\n', 0o644)
+
+
 def adopt(root, adapter, reissue=server_addresses.reissue, listen=server_addresses.listen_everywhere):
     """Bind the cartridge to `adapter`'s host. Returns a summary dict."""
     root = Path(root)
     context = SimpleNamespace(root=root, request={'instance_name': instance_name(root)})
     advertise, addresses = adapter.validated_server_addresses(context)
-    kept = [a for a in server_addresses.current(root)['addresses'] if a and _is_vpn(a) and own_vpn(root, a)]
+    before = server_addresses.current(root)
+    kept = [a for a in before['addresses'] if a and _is_vpn(a) and own_vpn(root, a)]
     kept += [a for a in own_addresses(root) if a not in kept]
     wanted = list(dict.fromkeys(addresses + kept))[:server_addresses.MAX_ADDRESSES]
     previous = binding(root)
@@ -129,5 +139,6 @@ def adopt(root, adapter, reissue=server_addresses.reissue, listen=server_address
     result = adapter.validated_binding(context)
     if result.get('address') != adapter.address:
         raise ProvisionError('adoption_binding_mismatch')
+    moved(root, before.get('advertise'), record['advertise'])
     return {'from_profile': previous['profile'], 'to_profile': adapter.profile,
             'advertise': record['advertise'], 'addresses': record['addresses']}
