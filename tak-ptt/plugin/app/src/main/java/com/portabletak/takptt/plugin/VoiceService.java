@@ -1075,13 +1075,17 @@ public class VoiceService extends HumlaService {
             try {
                 int me = getSessionId();
                 int here = getSessionChannel().getId();
-                for (int id : heard()) {
+                List<Integer> heard = heard(), all = new ArrayList<>();
+                collectIds(getRootChannel(), all);
+                // Every channel, not just the heard ones: someone talking to one of ours with a TX
+                // pick stays in their own channel, and the server only sends audio we should hear.
+                for (int id : all) {
                     IChannel ch = getChannel(id);
                     if (ch == null) continue;
                     for (IUser u : ch.getUsers())
                         if (u.getSession() != me && (u.getTalkState() == TalkState.TALKING
                                 || u.getTalkState() == TalkState.SHOUTING || u.getTalkState() == TalkState.WHISPERING))
-                            who = id == here ? u.getName() : u.getName() + " · " + name(ch);
+                            who = id != here && heard.contains(id) ? u.getName() + " · " + name(ch) : u.getName();
                 }
             } catch (Exception ignored) {
             }

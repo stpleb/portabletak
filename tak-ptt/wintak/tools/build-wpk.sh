@@ -10,7 +10,7 @@ work=${2:-$(mktemp -d)}
 DOTNET=${DOTNET:-dotnet}
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 id=TakPtt
-version=1.0.0.0
+version=1.0.1.0
 sdk=5.8.0.146            # also in Plugin/AssemblyInfo.cs
 
 rm -rf "$work/bin" "$work/pack" "$work/whisper"

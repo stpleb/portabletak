@@ -13,7 +13,7 @@
     <Nullable>disable</Nullable>
     <AssemblyName>TakPtt.WinTak</AssemblyName>
     <RootNamespace>TakPtt.WinTak</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
@@ -53,6 +53,7 @@
     <Reference Include="Prism.Wpf"><HintPath>$(WinTakDir)\Prism.Wpf.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="WinTak.Common"><HintPath>$(WinTakDir)\WinTak.Common.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="WinTak.CursorOnTarget.Placement"><HintPath>$(WinTakDir)\WinTak.CursorOnTarget.Placement.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="WinTak.Display"><HintPath>$(WinTakDir)\WinTak.Display.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="WinTak.Framework"><HintPath>$(WinTakDir)\WinTak.Framework.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="WinTak.Framework.Preferences"><HintPath>$(WinTakDir)\WinTak.Framework.Preferences.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="TAK.Engine"><HintPath>$(WinTakDir)\TAK.Engine.dll</HintPath><Private>false</Private></Reference>

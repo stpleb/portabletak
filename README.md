@@ -41,7 +41,7 @@ Setup and Troubleshooting Guide, Skydio X10D Guide).
 
 ## TAK PTT for WinTAK
 
-The WinTAK push to talk plugin is in its own release, `tak-ptt-v1.0`: install `TakPtt-1.0.0.0-5.8.0.146.wpk` on
+The WinTAK push to talk plugin is in its own release, `tak-ptt-v1.0.1`: install `TakPtt-1.0.1.0-5.8.0.146.wpk` on
 WinTAK 5.8. It talks with TAK PTT on ATAK, and has channels, voice history, map markers and offline transcripts.
 See `tak-ptt/wintak/README.md`.
 

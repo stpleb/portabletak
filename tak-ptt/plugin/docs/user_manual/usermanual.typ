@@ -4,7 +4,7 @@
 
 #show: userguide.with(
    plugin-name: "Plugin Template",
-   plugin-version: "0.1",
+   plugin-version: "1",
    platform: "ATAK",
    platform-version: "5.6.0",
 )

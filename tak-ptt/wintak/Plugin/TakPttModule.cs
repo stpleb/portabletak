@@ -6,6 +6,7 @@ using Prism.Mef.Modularity;
 using Prism.Modularity;
 using WinTak.Common.Preferences;
 using WinTak.Common.Services;
+using WinTak.Display;
 using WinTak.Framework;
 using WinTak.Framework.Preferences;
 using WinTak.Graphics.Map;
@@ -22,6 +23,7 @@ namespace TakPtt.WinTak
         private readonly IEnumerable<Lazy<INetworkPreference>> _networkPreferences;
         private readonly IMapGroupManager _mapGroups;
         private readonly ILocationService _location;
+        private readonly IMapViewController _map;
 
         // Libraries beside the plugin DLL are found here: WinTAK loads the plugin itself by path.
         static TakPttModule()
@@ -39,13 +41,15 @@ namespace TakPtt.WinTak
             [Import(AllowDefault = true)] IDevicePreferences device,
             [ImportMany] IEnumerable<Lazy<INetworkPreference>> networkPreferences,
             [Import(AllowDefault = true)] IMapGroupManager mapGroups,
-            [Import(AllowDefault = true)] ILocationService location)
+            [Import(AllowDefault = true)] ILocationService location,
+            [Import(AllowDefault = true)] IMapViewController map)
         {
             _communication = communication;
             _device = device;
             _networkPreferences = networkPreferences;
             _mapGroups = mapGroups;
             _location = location;
+            _map = map;
         }
 
         public void Initialize()
@@ -55,7 +59,7 @@ namespace TakPtt.WinTak
         /// <summary>Called when the WinTAK splash screen has closed and startup is finished.</summary>
         public void Startup()
         {
-            TakPttService.Start(_communication, _device, _networkPreferences, _mapGroups, _location);
+            TakPttService.Start(_communication, _device, _networkPreferences, _mapGroups, _location, _map);
         }
 
         public void Terminate()

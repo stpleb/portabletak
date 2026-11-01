@@ -37,7 +37,7 @@ namespace TakPtt.WinTak
         public static event Action<VoiceState> Changed;
 
         public static void Start(ICommunicationService communication, IDevicePreferences device,
-            IEnumerable<Lazy<INetworkPreference>> networkPreferences, IMapGroupManager mapGroups, ILocationService location)
+            IEnumerable<Lazy<INetworkPreference>> networkPreferences, IMapGroupManager mapGroups, ILocationService location, global::WinTak.Display.IMapViewController map)
         {
             _communication = communication;
             _device = device;
@@ -53,7 +53,7 @@ namespace TakPtt.WinTak
             string clips = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "TakPtt", "clips");
             History = new VoiceHistory(new HistoryClient(clips), prefs, Engine.Output) { Login = () => _login, Transcriber = Speech(), Me = device?.Callsign };
             Engine.Position = () => PositionOf(location);
-            if (mapGroups != null) Markers = new HistoryMarkers(mapGroups, History);
+            if (mapGroups != null) Markers = new HistoryMarkers(mapGroups, History, map);
             _communication.Connected += OnConnected;
             UseTakServer();
         }

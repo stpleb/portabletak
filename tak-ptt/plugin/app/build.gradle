@@ -8,7 +8,7 @@
 
 buildscript {
 
-    ext.PLUGIN_VERSION = "0.1"
+    ext.PLUGIN_VERSION = "1"
     // ATAK version the plugin targets; -PatakVersion=5.6.0 (with -Psdk.path=<that SDK>) builds for another one.
     ext.ATAK_VERSION = project.findProperty('atakVersion') ?: '5.8.0'
 
@@ -211,7 +211,7 @@ android {
             // name logic to provide for consistency within the community.   
             setProperty("archivesBaseName", "ATAK-Plugin-" + rootProject.name + "-" + PLUGIN_VERSION + "-" + getVersionName() + "-" + ATAK_VERSION)
             defaultConfig.versionCode = getVersionCode()
-            defaultConfig.versionName = PLUGIN_VERSION + " (" + getVersionName() + ") - [" + ATAK_VERSION + "]"
+            defaultConfig.versionName = PLUGIN_VERSION + " [" + ATAK_VERSION.replaceAll(/\.\d+$/, "") + "]"   // shown as is in ATAK's plugin list
         }
 
         gov.java.srcDirs 'src/gov/java'

@@ -22,6 +22,8 @@ import com.atakmap.android.maps.MapGroup;
 import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.maps.Marker;
+import com.atakmap.android.util.ATAKUtilities;
+import com.atakmap.coremap.maps.assets.Icon;
 import com.atakmap.coremap.maps.coords.GeoPoint;
 
 import java.io.File;
@@ -511,8 +513,9 @@ final class HistoryView extends LinearLayout {
                 Marker m = new Marker(MARKER + c.id);
                 m.setPoint(new GeoPoint(c.lat, c.lon));
                 m.setType("b-m-p-s-m");
-                m.setIcon(new com.atakmap.coremap.maps.assets.Icon.Builder()      // the type's own dot is tiny
-                        .setImageUri(0, "asset://icons/audio.png").setSize(48, 48).setAnchor(24, 24).build());
+                m.setMetaBoolean("adapt_marker_icon", false);                     // keep this icon, not the type's tiny dot
+                m.setIcon(new Icon.Builder().setImageUri(0, ATAKUtilities.getResourceUri(getContext(), R.drawable.takptt_marker))
+                        .setSize(48, 48).setAnchor(24, 24).build());
                 m.setTitle(c.sender + " · " + c.channel + " · " + ago(c.start));
                 m.setMetaString("callsign", c.sender + " " + ago(c.start));
                 m.setMetaBoolean("editable", false);
