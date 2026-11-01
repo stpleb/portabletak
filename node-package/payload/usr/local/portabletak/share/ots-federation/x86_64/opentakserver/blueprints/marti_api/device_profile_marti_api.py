@@ -96,7 +96,7 @@ def create_profile_zip(enrollment=True, syncSecago=-1, clientUid: str | None = N
     SubElement(
         contents,
         "Content",
-        {"ignore": "false", "zipEntry": "5c2bfcae3d98c9f4d262172df99ebac5/truststore-root.p12"},
+        {"ignore": "false", "zipEntry": "5c2bfcae3d98c9f4d262172df99ebac5/update-server-ca.p12"},
     )
 
     enable_update_server = SubElement(
@@ -122,7 +122,7 @@ def create_profile_zip(enrollment=True, syncSecago=-1, clientUid: str | None = N
     ca_location = SubElement(
         pref, "entry", {"key": "updateServerCaLocation", "class": "class java.lang.String"}
     )
-    ca_location.text = "/storage/emulated/0/atak/cert/truststore-root.p12"
+    ca_location.text = "/storage/emulated/0/atak/cert/update-server-ca.p12"
 
     ca_password = SubElement(
         pref, "entry", {"key": "updateServerCaPassword", "class": "class java.lang.String"}
@@ -238,7 +238,7 @@ def create_profile_zip(enrollment=True, syncSecago=-1, clientUid: str | None = N
     with open(
         os.path.join(app.config.get("OTS_CA_FOLDER"), "truststore-root.p12"), "rb"
     ) as truststore:
-        zipf.writestr("5c2bfcae3d98c9f4d262172df99ebac5/truststore-root.p12", truststore.read())
+        zipf.writestr("5c2bfcae3d98c9f4d262172df99ebac5/update-server-ca.p12", truststore.read())
 
     return zip_buffer
 

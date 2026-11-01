@@ -57,12 +57,26 @@ def patch_ca(package, checkout):
         raise ValueError('generic CA module not written')
 
 
+def patch_profile(path):
+    """The Device Profile sent on every connection carried the CA as cert/truststore-root.p12,
+    the path the config package gives ATAK as caLocation. ATAK picks that file up on its next
+    start with no password and loses its stored certificates, so the phone cannot connect until
+    the config package is imported again. Send it under a name of its own."""
+    text = path.read_text()
+    if text.count('cert/truststore-root.p12') != 1 or text.count('ebac5/truststore-root.p12') != 2:
+        raise ValueError('device profile changed; review before patching')
+    path.write_text(text.replace('cert/truststore-root.p12', 'cert/update-server-ca.p12')
+                    .replace('ebac5/truststore-root.p12', 'ebac5/update-server-ca.p12'))
+
+
 def main(package, checkout):
     package = Path(package)
     patch_ca(package, checkout)
+    patch_profile(package / 'blueprints' / 'marti_api' / 'device_profile_marti_api.py')
     patch_queue(package / 'app.py')
     patch_queue(package / 'cot_parser' / 'cot_parser.py')
-    for name in ('certificate_authority.py', 'app.py', 'cot_parser/cot_parser.py'):
+    for name in ('certificate_authority.py', 'app.py', 'cot_parser/cot_parser.py',
+                 'blueprints/marti_api/device_profile_marti_api.py'):
         print('patched', name, hashlib.sha256((package / name).read_bytes()).hexdigest()[:16])
 
 
