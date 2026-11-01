@@ -86,6 +86,13 @@ class ManagementAuth:
         os.chmod(self.session_key_path, 0o600)
         return {'initialized': True, 'existing': False, 'username': USERNAME}
 
+    def change_password(self, password):
+        data = self._credential()[0]
+        salt = secrets.token_bytes(16)
+        data.update(salt=salt.hex(), digest=_password_digest(password, salt).hex())
+        write_json(self.credential_path, data)
+        os.chmod(self.credential_path, 0o600)
+
     def _credential(self):
         data = read_json(self.credential_path)
         expected = {'format', 'username', 'algorithm', 'n', 'r', 'p', 'salt', 'digest'}

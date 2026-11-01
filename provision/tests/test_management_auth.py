@@ -38,6 +38,22 @@ class ManagementAuthTests(unittest.TestCase):
         self.assertFalse(self.auth.verify_password('administrator', 'wrong-password-value'))
         self.assertTrue(self.auth.initialize(self.password, self.secret)['existing'])
 
+    def test_change_password_replaces_the_old_one(self):
+        self.initialize()
+        before = self.credentials.read_text()
+        self.auth.change_password('Different-password-456')
+        self.assertTrue(self.auth.verify_password('administrator', 'Different-password-456'))
+        self.assertFalse(self.auth.verify_password('administrator', self.password))
+        self.assertNotIn('Different-password-456', self.credentials.read_text())
+        self.assertNotEqual(before, self.credentials.read_text())
+        self.assertEqual(os.stat(self.credentials).st_mode & 0o777, 0o600)
+
+    def test_rejected_new_password_keeps_the_old_one(self):
+        self.initialize()
+        with self.assertRaisesRegex(ProvisionError, 'invalid_management_password'):
+            self.auth.change_password('short')
+        self.assertTrue(self.auth.verify_password('administrator', self.password))
+
     def test_different_password_cannot_replace_credentials(self):
         self.initialize()
         with self.assertRaisesRegex(ProvisionError, 'management_auth_already_initialized'):

@@ -340,11 +340,24 @@ def users_reset_password(payload: dict = Body(...)):
             detail="username_and_password_required",
         )
 
-    return run_users({
+    # The dashboard sign-in keeps its own credential: the administrator's stays the same password.
+    administrator = username == "administrator"
+    if administrator and not 8 <= len(password) <= 128:
+        raise HTTPException(status_code=400, detail="invalid_management_password")
+
+    result = run_users({
         "action": "reset_password",
         "username": username,
         "password": password,
     })
+
+    if administrator:
+        settings = guard_settings()
+        if settings["auth"].credential_path.exists():
+            settings["auth"].change_password(password)
+            settings["revocations"].revoke_all()
+            settings["audit"].record("password_changed", "dashboard")
+    return result
 
 
 @app.post("/api/users/deactivate")
